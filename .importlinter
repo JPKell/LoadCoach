@@ -1,0 +1,39 @@
+[importlinter]
+root_packages = loadcoach
+
+[importlinter:contract:layers]
+name = LoadCoach internal layering
+type = layers
+layers =
+    loadcoach.web
+    loadcoach.cli
+    loadcoach.services
+    loadcoach.domain
+containers = loadcoach
+
+[importlinter:contract:web-cli-independence]
+name = Web and CLI never import each other
+type = independence
+modules =
+    loadcoach.web
+    loadcoach.cli
+
+[importlinter:contract:domain-purity]
+name = Domain imports no frameworks
+type = forbidden
+source_modules = loadcoach.domain
+forbidden_modules =
+    fastapi
+    starlette
+    sqlalchemy
+    typer
+    httpx
+    jinja2
+
+[importlinter:contract:no-other-applications]
+name = LoadCoach must not import other applications
+type = forbidden
+source_modules = loadcoach
+forbidden_modules =
+    freeweight
+    ideapress
