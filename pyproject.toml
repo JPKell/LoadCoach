@@ -24,7 +24,7 @@ dependencies = [
     "baseaicore>=0.4,<0.5",
     "setspec>=0.4,<0.5",
     "modelrack>=0.5,<0.6",
-    "sweatmeter>=0.3,<0.4",
+    "sweatmeter>=0.4,<0.5",
     "weightsdb>=0.2,<0.3",
     "mirrorwall>=0.2,<0.3",
     "fastapi>=0.115,<1",
@@ -54,8 +54,9 @@ postgres = [
 ]
 
 [project.urls]
-Documentation = "docs/"
-Changelog = "CHANGELOG.md"
+Homepage = "https://github.com/JPKell/LoadCoach"
+Documentation = "https://github.com/JPKell/LoadCoach/tree/main/docs"
+Changelog = "https://github.com/JPKell/LoadCoach/blob/main/CHANGELOG.md"
 
 [project.scripts]
 loadcoach = "loadcoach.cli.main:app"
