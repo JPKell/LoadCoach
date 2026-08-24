@@ -1,9 +1,8 @@
 # LoadCoach — Specification
 
 **Type:** Application · **Import/distribution name:** `loadcoach` · **Default port:** 8766 · **Env prefix:** `LOADCOACH_`
-**Status:** Specified, not implemented. Corrected 2026-08-21 by the
-[final architecture audit](../../reviews/final_architecture_audit.md) (ADR-0022–0027, ADR-0029).
-**Related:** [Routing](routing.md) · [Queue and Scheduling](queue-and-scheduling.md) · [API](api.md) · [Data Model](data-model.md) · [Development Plan](development-plan.md) · [Risks](risks.md)
+**Status:** Specified, not implemented.
+**Related:** [API](api.md) · [Development Plan](development-plan.md)
 
 ---
 
@@ -38,7 +37,7 @@ every decision afterwards.
 * No general agent loop. Tool *calls* are returned to the caller; LoadCoach does not execute tools.
 * No access to FreeWeight's or IdeaPress's database.
 * No dependency on FreeWeight to start or to route.
-* No broker, no Redis, no Celery ([ADR-0010](../../adr/0010-queue-implementation.md)).
+* No broker, no Redis, no Celery (ADR-0010).
 
 ## 4. Responsibilities
 
@@ -128,33 +127,33 @@ provider as given. LoadCoach's own prompt records are used for exactly two thing
 originates rather than relays:
 
 * the corrective instruction appended on a structured-output retry
-  ([Queue §7](queue-and-scheduling.md)), and
+  (Queue §7), and
 * the re-probe request a circuit breaker issues.
 
 LoadCoach never prepends a system prompt of its own to a caller's request, never rewrites one, and
 never substitutes a task profile's wording for the caller's. A task profile carries routing intent
-and execution parameters; it does not carry a prompt ([Routing §2](routing.md)). This matters most to
+and execution parameters; it does not carry a prompt (Routing §2). This matters most to
 IdeaPress, whose per-attempt provenance records the `prompt_id`, `version` and `sha256` of what it
 sent — a record that would be a lie if LoadCoach altered the text. Every prompt record LoadCoach does
 apply is recorded on the attempt that used it, so the job history shows exactly what the model saw.
 
 **Every response names its execution subject**: the selected model, the resolved
 `runtime_profile_hash`, the served context and its source, and the target GPU index
-([ADR-0023](../../adr/0023-runtime-profile-resolution.md),
-[ADR-0027](../../adr/0027-multi-gpu-semantics.md)).
+(ADR-0023,
+ADR-0027).
 
 ## 10. Data ownership
 
 Owns `loadcoach.sqlite3` exclusively: models, model_capabilities, runtime_profiles, task_profiles,
 capability_evidence (imported), evidence_sources, jobs, job_attempts, job_events, routing_decisions,
 routing_candidates, validations, feedback, reliability_stats, residency, api_tokens, settings.
-See [Data Model](data-model.md).
+See Data Model.
 
 LoadCoach holds no `machines` table. It knows exactly one machine — its own, whose fingerprint comes
 from SweatMeter at startup — and it compares imported evidence's `machine_fingerprint` against that
 single value. Evidence measured elsewhere is retained with a machine badge and is not used for
 performance, memory or energy constraints
-([ADR-0017](../../adr/0017-benchmark-confidence-and-freshness.md)).
+(ADR-0017).
 
 ## 11. Public contracts
 
@@ -166,7 +165,7 @@ performance, memory or energy constraints
    unsupported majors are rejected with both versions named.
 4. **Feedback contract.** `POST /jobs/{id}/feedback` accepts an acceptance signal and optional
    quality/validation detail; it is idempotent per `(job_id, source)`.
-5. **Streaming contract.** SSE per [API Standards §8](../../standards/api-and-contract-standards.md),
+5. **Streaming contract.** SSE per API Standards §8,
    with `token` deltas and a terminal `result` event.
 6. **Degradation contract.** No evidence, no FreeWeight, or no GPU each produce a documented degraded
    behaviour, never a failure to serve.
@@ -232,7 +231,7 @@ as `INTERNAL_ERROR`:
 | `GenerationCancelled` | `GENERATION_CANCELLED` — terminal, never retried | 200 with a cancelled job |
 
 `EVIDENCE_SOURCE_REFUSED` is returned when an import URL fails the fetch allowlist
-([ADR-0026 §3](../../adr/0026-local-http-hardening.md)); it is distinct from
+(ADR-0026 §3); it is distinct from
 `EVIDENCE_IMPORT_FAILED`, which means the bundle itself was unusable.
 
 Behavioural rules:
@@ -254,7 +253,7 @@ Behavioural rules:
   can never execute anything or alter task profiles.
 * An import that names a **URL** is a fetch LoadCoach performs on a caller's behalf, so it obeys the
   scheme, host-allowlist (loopback only by default), literal-IP, redirect and size rules in
-  [ADR-0026 §3](../../adr/0026-local-http-hardening.md). A credential configured for one evidence
+  ADR-0026 §3. A credential configured for one evidence
   source is never sent to any other host.
 * `Host` header allowlist on every request, before routing and before authentication; non-loopback
   binding additionally requires `server.allowed_hosts`. This is the application most likely to be
@@ -344,7 +343,7 @@ disabled where the provider cannot report it.
 10b. A task profile requiring 16 384 context tokens does not select a model the provider will serve
     at 4 096, and where the served context can only be assumed the decision says so.
 11. Full test suite passes with no GPU, no Ollama, no FreeWeight and no network.
-12. All LoadCoach gold standards in [Gold Standards §2](../../standards/gold-standards.md) are met.
+12. All LoadCoach gold standards in Gold Standards §2 are met.
 
 ## 21. Future extensions
 
@@ -355,4 +354,4 @@ disabled where the provider cannot report it.
 * Cost-aware routing for remote providers.
 * Speculative execution of a cheap model with escalation on validation failure.
 * A `LoadCoachClient` package, once a second external consumer exists
-  ([ADR-0011](../../adr/0011-shared-package-boundaries.md)).
+  (ADR-0011).
