@@ -9,10 +9,9 @@ both need every constraint and index to have a stable, predictable name; without
 recreated by batch mode gets an auto-generated name that differs from the one the model produces,
 and the parity check (database standards §5.2) fails forever on a schema that is actually correct.
 
-``models``, ``model_capabilities``, ``runtime_profiles`` and ``task_profiles`` are declared now,
-per Phase 1's migration ``0001``, but are not yet read or written anywhere — that starts at Phase 2
-(registry and task profiles). ``settings`` and ``api_tokens`` mirror FreeWeight's own tables
-(data model §2).
+``models``, ``model_capabilities``, ``runtime_profiles`` and ``task_profiles`` come from Phase 1's
+migration ``0001``; ``routing_decisions`` and ``routing_candidates`` from Phase 3's ``0002``.
+``settings`` and ``api_tokens`` mirror FreeWeight's own tables (data model §2).
 """
 
 from __future__ import annotations
@@ -37,6 +36,8 @@ __all__ = [
     "Base",
     "Model",
     "ModelCapability",
+    "RoutingCandidate",
+    "RoutingDecision",
     "RuntimeProfile",
     "Setting",
     "TaskProfile",
@@ -215,3 +216,87 @@ class ApiToken(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
     expires_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
     revoked_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
+
+
+class RoutingDecision(Base):
+    """One complete routing decision, persisted for every decision — never sampled (routing §8).
+
+    ``job_id`` is absent from Phase 3 entirely: the ``jobs`` table arrives with Phase 4, and a
+    nullable foreign key to a table that does not exist yet is not a column, it is a migration
+    that cannot run. Phase 4 adds it, which is additive and needs no rewrite here (data model's
+    own ``routing_decisions`` sketch marks the column ``FK NULL`` for exactly the ``/route``
+    case this phase serves).
+
+    ``explanation_json`` holds routing §8's document verbatim. The individual columns beside it
+    are what queries filter and sort on; the document is what a person reads. Both are written
+    from one in-memory structure, so they cannot disagree.
+    """
+
+    __tablename__ = "routing_decisions"
+    __table_args__ = (Index("ix_routing_decisions_requested_at", "requested_at"),)
+
+    id: Mapped[str] = ulid_primary_key()
+    task_profile_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    task_profile_version: Mapped[str] = mapped_column(String, nullable=False)
+    strategy_name: Mapped[str] = mapped_column(String, nullable=False)
+    strategy_version: Mapped[str] = mapped_column(String, nullable=False)
+    confidence_policy_version: Mapped[str] = mapped_column(String, nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    selected_model_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("models.id", ondelete="SET NULL"), nullable=True
+    )
+    selected_score: Mapped[float | None] = mapped_column(nullable=True)
+    selected_runtime_profile_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("runtime_profiles.id", ondelete="SET NULL"), nullable=True
+    )
+    selected_served_context: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    selected_served_context_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    selected_target_gpu_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    flags_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    evidence_summary_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    overrides_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    telemetry_snapshot_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    explanation_json: Mapped[object] = mapped_column(PortableJSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+
+
+class RoutingCandidate(Base):
+    """One model as this decision saw it: scored and ranked, or rejected with its numbers.
+
+    ``rank`` is ``NULL`` for a rejected candidate. ``runtime_profile_id``, ``served_context`` and
+    ``served_context_source`` are here rather than on the decision because a candidate *is* the
+    pair ``(identity, resolved runtime profile)`` (ADR-0023): two candidates in one decision can
+    resolve to different profiles and different served contexts, so the values belong to the
+    candidate row. ``target_gpu_index`` likewise names the device that satisfied admission for
+    that candidate specifically (ADR-0027 §2).
+    """
+
+    __tablename__ = "routing_candidates"
+    __table_args__ = (Index("ix_routing_candidates_decision_id_rank", "decision_id", "rank"),)
+
+    id: Mapped[str] = ulid_primary_key()
+    decision_id: Mapped[str] = mapped_column(
+        String(26),
+        ForeignKey("routing_decisions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    model_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("models.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    runtime_profile_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("runtime_profiles.id", ondelete="SET NULL"), nullable=True
+    )
+    served_context: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    served_context_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_gpu_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    task_fit: Mapped[float | None] = mapped_column(nullable=True)
+    final_score: Mapped[float | None] = mapped_column(nullable=True)
+    estimated_vram_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    capability_breakdown_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    factors_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    rejected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    rejection_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    rejection_detail_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)

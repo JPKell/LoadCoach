@@ -327,6 +327,16 @@ class RoutingSettings(BaseModel):
     min_confidence: float = Field(default=0.05, ge=0, le=1, examples=[0.05])
     prefer_resident_bonus: float = Field(default=0.05, ge=0, le=1, examples=[0.05])
     min_present_weight: float = Field(default=0.5, ge=0, le=1, examples=[0.5])
+    remote_cost_factor: float = Field(
+        default=0.9,
+        gt=0,
+        le=1,
+        description=(
+            "The cost factor applied to a remote provider's candidates (routing §6). 1.0 is "
+            "always used for local providers; anything below 1 prefers local at equal capability."
+        ),
+        examples=[0.9],
+    )
     explanation_retention_days: int = Field(
         default=0, ge=0, description="0 = forever.", examples=[0]
     )

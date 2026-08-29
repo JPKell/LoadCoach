@@ -11,15 +11,37 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 import setspec
-from baseaicore import ModelCapabilityFlag, ModelDescriptor, SuiteError
+from baseaicore import ModelCapabilityFlag, ModelDescriptor, SuiteError, is_supported
 
 __all__ = [
+    "DESCRIPTOR_GEOMETRY_FIELDS",
     "DeclaredCapability",
     "ManualCapabilityScore",
     "ManualScoreInvalid",
     "declared_capabilities_for",
+    "descriptor_geometry",
+    "geometry_from_json",
     "validate_manual_score",
 ]
+
+DESCRIPTOR_GEOMETRY_FIELDS: tuple[str, ...] = (
+    "layers",
+    "kv_heads",
+    "head_dim",
+    "attention_heads",
+    "embedding_dim",
+    "vocab_size",
+    "sliding_window",
+)
+"""The descriptor fields the VRAM/KV estimator needs that the ``models`` table has no column for.
+
+``layers``, ``kv_heads`` and ``head_dim`` are the three the theoretical KV figure is computed
+from; the rest are stored alongside them because they cost nothing and a later phase that wants
+one should not need a migration to get it. Everything here is a
+:class:`~baseaicore.Measurement`, so a field the provider never reported is **omitted** rather
+than stored as zero — reading it back gives ``None``, which the estimator treats as "cannot
+compute", not as "needs none" (ADR-0016).
+"""
 
 # Only flags with an honest, unambiguous SetSpec capability counterpart are translated. VISION,
 # THINKING and EMBEDDING have no corresponding entry in the vocabulary (1.1) — inventing one would
@@ -136,3 +158,37 @@ def validate_manual_score(file: str, index: int, raw: dict[str, object]) -> Manu
         score=float(score),
         confidence=float(confidence),
     )
+
+
+def descriptor_geometry(descriptor: ModelDescriptor) -> dict[str, int]:
+    """Return the descriptor's model geometry, omitting everything unreported.
+
+    Args:
+        descriptor: One model as reported by a provider.
+
+    Returns:
+        Field name -> value, containing only the fields this provider actually reported. An
+        empty mapping is a legitimate result and means the provider exposed no geometry at all.
+    """
+    geometry: dict[str, int] = {}
+    for name in DESCRIPTOR_GEOMETRY_FIELDS:
+        value = getattr(descriptor, name)
+        if is_supported(value):
+            geometry[name] = int(value)
+    return geometry
+
+
+def geometry_from_json(stored: object, field: str) -> int | None:
+    """Read one geometry field back out of a stored ``descriptor_json`` column.
+
+    Args:
+        stored: Whatever the column held. Anything that is not a mapping yields ``None``.
+        field: The field to read.
+
+    Returns:
+        The value, or ``None`` when it was never stored — never ``0``.
+    """
+    if not isinstance(stored, dict):
+        return None
+    value = stored.get(field)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None

@@ -53,12 +53,20 @@ class TaskProfileConstraints(BaseModel):
 
 
 class TaskProfileExecution(BaseModel):
-    """Parameters the provider call is made with."""
+    """Parameters the provider call is made with.
+
+    ``min_output_tokens`` is what makes context budgeting's reduction *permitted* rather than
+    assumed (routing §9): a profile that sets it accepts a shorter answer to make a long request
+    fit, down to that floor; a profile that leaves it unset is rejected with the numbers instead.
+    Unset is the default, because quietly returning a truncated answer to a caller who never
+    agreed to one is the failure this phase exists to prevent.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     max_output_tokens: int = Field(default=1024, gt=0)
+    min_output_tokens: int | None = Field(default=None, gt=0)
     response_format: str = Field(default="text")
     json_schema_ref: str | None = Field(default=None)
     max_attempts: int = Field(default=1, ge=1)
@@ -154,6 +162,16 @@ def _validate_one(
             file,
             profile_id,
             "execution.response_format is 'json_schema' but json_schema_ref is unset",
+        )
+    if (
+        profile.execution.min_output_tokens is not None
+        and profile.execution.min_output_tokens > profile.execution.max_output_tokens
+    ):
+        raise _fail(
+            file,
+            profile_id,
+            f"execution.min_output_tokens ({profile.execution.min_output_tokens}) exceeds "
+            f"max_output_tokens ({profile.execution.max_output_tokens})",
         )
     if profile.validation.require_schema and not profile.execution.json_schema_ref:
         raise _fail(

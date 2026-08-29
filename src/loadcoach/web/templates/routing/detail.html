@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Decision {{ explanation.decision_id }} — LoadCoach{% endblock %}
+{% block content %}
+<h1>Routing explanation</h1>
+<p class="muted mono">{{ explanation.decision_id }}</p>
+
+<table>
+  <caption class="muted">The decision</caption>
+  <tbody>
+    <tr><th scope="row">Task profile</th><td>{{ explanation.task_profile.id }} <span class="muted">{{ explanation.task_profile.version }}</span></td></tr>
+    <tr><th scope="row">Strategy</th><td>{{ explanation.strategy.name }} <span class="muted">{{ explanation.strategy.version }}</span></td></tr>
+    <tr><th scope="row">Confidence policy</th><td>{{ explanation.confidence_policy_version }}</td></tr>
+    <tr><th scope="row">Requested at</th><td>{{ explanation.requested_at }}</td></tr>
+    <tr><th scope="row">Took</th><td>{{ explanation.duration_ms }} ms</td></tr>
+    <tr><th scope="row">Flags</th><td>{% for flag in explanation.flags %}<span class="badge">{{ flag }}</span> {% else %}<span class="muted">none</span>{% endfor %}</td></tr>
+    <tr><th scope="row">Evidence</th><td>{{ explanation.evidence_summary.source }}
+      <span class="muted">({{ explanation.evidence_summary.contributing_sources|join(", ") or "no contributing source" }})</span></td></tr>
+  </tbody>
+</table>
+
+{% if explanation.selected %}
+<h2>Selected</h2>
+<table>
+  <tbody>
+    <tr><th scope="row">Model</th><td class="mono">{{ explanation.selected.canonical_id }}</td></tr>
+    <tr><th scope="row">Runtime profile</th><td class="mono">{{ explanation.selected.runtime_profile_hash }}</td></tr>
+    <tr><th scope="row">Served context</th><td>{{ explanation.selected.served_context }} tokens
+      <span class="muted">({{ explanation.selected.served_context_source }})</span></td></tr>
+    <tr><th scope="row">Target GPU</th><td>{% if explanation.selected.target_gpu_index is not none %}{{ explanation.selected.target_gpu_index }}{% else %}<span class="muted">no GPU evaluated</span>{% endif %}</td></tr>
+    <tr><th scope="row">Final score</th><td>{{ "%.4f"|format(explanation.selected.final_score) }}</td></tr>
+  </tbody>
+</table>
+{% else %}
+<p class="empty-state">No candidate was eligible.</p>
+{% endif %}
+
+<h2>Candidates</h2>
+{% if explanation.candidates %}
+{% for candidate in explanation.candidates %}
+<h3>{{ candidate.rank }}. <span class="mono">{{ candidate.canonical_id }}</span></h3>
+<p class="muted">task_fit {{ "%.4f"|format(candidate.task_fit) }} × reliability {{ candidate.factors.reliability }}
+  × availability {{ candidate.factors.availability }} × residency {{ candidate.factors.residency }}
+  × cost {{ candidate.factors.cost }} = <strong>{{ "%.4f"|format(candidate.final_score) }}</strong>
+  · served {{ candidate.served_context }} ({{ candidate.served_context_source }})
+  · profile <span class="mono">{{ candidate.runtime_profile_hash }}</span>
+  {% if candidate.estimated_vram_bytes is not none %}· est. VRAM {{ candidate.estimated_vram_bytes|bytes }}{% endif %}</p>
+<table>
+  <thead>
+    <tr><th scope="col">Capability</th><th scope="col">Weight</th><th scope="col">Score</th>
+      <th scope="col">Confidence</th><th scope="col">Source</th><th scope="col">Note</th></tr>
+  </thead>
+  <tbody>
+    {% for capability in candidate.capabilities %}
+    <tr>
+      <td>{{ capability.capability }}</td>
+      <td>{{ capability.weight }}</td>
+      <td>{% if capability.score is not none %}{{ "%.3f"|format(capability.score) }}{% else %}<span class="muted">absent</span>{% endif %}</td>
+      <td>{% if capability.confidence is not none %}{{ "%.3f"|format(capability.confidence) }}{% else %}—{% endif %}</td>
+      <td>{{ capability.source }}</td>
+      <td class="muted">{{ capability.note or "" }}{% if capability.remedy %}<br><code>{{ capability.remedy }}</code>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endfor %}
+{% else %}
+<p class="empty-state">No candidate survived the hard constraints.</p>
+{% endif %}
+
+{% if explanation.rejected %}
+<h2>Rejected</h2>
+<table>
+  <thead><tr><th scope="col">Model</th><th scope="col">Reason</th><th scope="col">Numbers</th></tr></thead>
+  <tbody>
+    {% for rejection in explanation.rejected %}
+    <tr>
+      <td class="mono">{{ rejection.canonical_id }}</td>
+      <td><span class="badge badge-unavailable">{{ rejection.reason }}</span></td>
+      <td class="muted mono">{{ rejection.detail }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

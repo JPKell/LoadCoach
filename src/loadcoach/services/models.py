@@ -17,7 +17,11 @@ from baseaicore import is_supported
 from modelrack import ProviderError
 from weightsdb import upsert
 
-from loadcoach.domain.registry import declared_capabilities_for, validate_manual_score
+from loadcoach.domain.registry import (
+    declared_capabilities_for,
+    descriptor_geometry,
+    validate_manual_score,
+)
 from loadcoach.infrastructure.db.models import Model, ModelCapability
 
 if TYPE_CHECKING:
@@ -94,8 +98,11 @@ def _upsert_model(session: Session, descriptor: ModelDescriptor, *, now: datetim
         int(descriptor.parameter_count) if is_supported(descriptor.parameter_count) else None
     )
 
+    geometry = descriptor_geometry(descriptor)
+
     if existing is None:
         model = Model(
+            descriptor_json=geometry,
             provider_kind=provider_kind,
             provider_model_name=identity.provider_model_name,
             artifact_digest=identity.artifact_digest,
@@ -115,6 +122,7 @@ def _upsert_model(session: Session, descriptor: ModelDescriptor, *, now: datetim
         session.flush()
         return model
 
+    existing.descriptor_json = geometry
     existing.artifact_digest = identity.artifact_digest
     existing.canonical_id = identity.canonical_id
     existing.identity_confidence = identity.identity_confidence.value

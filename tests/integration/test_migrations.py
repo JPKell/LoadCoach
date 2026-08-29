@@ -1,4 +1,9 @@
-"""LoadCoach's own migration 0001, and the WeightsDB two-schemas proof (dev-plan P1 Tests)."""
+"""LoadCoach's own migration history, and the WeightsDB two-schemas proof (dev-plan P1 Tests).
+
+Head is read from the script directory rather than written down, so adding a revision (P3's
+``0002``, and every phase after it) does not require editing an assertion that was never about
+the revision number in the first place.
+"""
 
 from __future__ import annotations
 
@@ -17,18 +22,31 @@ from loadcoach.services.database import MIGRATIONS_LOCATION
 _OTHER_APP_SCRIPT_LOCATION = str(Path(__file__).parent / "_other_app_fixture")
 _OTHER_APP_TABLE = "machines"
 
-_BROKEN_REVISION = (
-    '"""broken\n\nRevision ID: 0002\nRevises: 0001\n"""\n'
-    "from __future__ import annotations\n\n"
-    'revision: str = "0002"\n'
-    'down_revision: str | None = "0001"\n'
-    "branch_labels = None\n"
-    "depends_on = None\n\n"
-    "def upgrade() -> None:\n"
-    "    raise RuntimeError('deliberate failure')\n\n"
-    "def downgrade() -> None:\n"
-    "    pass\n"
-)
+_BROKEN_REVISION_ID = "9999"
+
+
+def _broken_revision(down_revision: str) -> str:
+    """A revision that always fails, stacked on whatever the real head currently is."""
+    return (
+        f'"""broken\n\nRevision ID: {_BROKEN_REVISION_ID}\nRevises: {down_revision}\n"""\n'
+        "from __future__ import annotations\n\n"
+        f'revision: str = "{_BROKEN_REVISION_ID}"\n'
+        f'down_revision: str | None = "{down_revision}"\n'
+        "branch_labels = None\n"
+        "depends_on = None\n\n"
+        "def upgrade() -> None:\n"
+        "    raise RuntimeError('deliberate failure')\n\n"
+        "def downgrade() -> None:\n"
+        "    pass\n"
+    )
+
+
+def _head() -> str:
+    """The single head of LoadCoach's own linear history."""
+    with temporary_sqlite() as engine:
+        heads = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION).heads()
+    assert len(heads) == 1, f"LoadCoach's history must stay linear; found heads {heads}"
+    return heads[0]
 
 
 def test_fresh_database_migrates_to_head_sqlite() -> None:
@@ -36,7 +54,7 @@ def test_fresh_database_migrates_to_head_sqlite() -> None:
         runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
         assert runner.current() is None
         outcome = runner.upgrade(backup=False)
-        assert outcome.to_revision == "0001"
+        assert outcome.to_revision == _head()
         assert runner.is_at_head()
 
 
@@ -44,7 +62,7 @@ def test_fresh_database_migrates_to_head_postgres() -> None:
     with temporary_postgres() as engine:
         runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
         outcome = runner.upgrade(backup=False)
-        assert outcome.to_revision == "0001"
+        assert outcome.to_revision == _head()
         assert runner.is_at_head()
 
 
@@ -54,11 +72,11 @@ def test_upgrade_head_twice_is_idempotent() -> None:
         runner.upgrade(backup=False)
         second = runner.upgrade(backup=False)
         assert second.backed_up is False
-        assert second.from_revision == second.to_revision == "0001"
+        assert second.from_revision == second.to_revision == _head()
 
 
 def test_check_parity_matches_models_after_upgrade() -> None:
-    """models.py and migration 0001 describe the same schema (database standards §5.2)."""
+    """models.py and the migration history describe the same schema (database standards §5.2)."""
     with temporary_sqlite() as engine:
         runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
         runner.upgrade(backup=False)
@@ -121,14 +139,15 @@ def test_two_independent_migration_histories_share_one_database_no_collision() -
 
 
 def test_failed_migration_restores_backup_on_sqlite(tmp_path: Path) -> None:
-    """A deliberately failing revision on top of 0001: backup restored, both outcomes reported."""
+    """A deliberately failing revision on top of head: backup restored, both outcomes reported."""
+    head = _head()
     broken_dir = tmp_path / "broken_migrations"
     shutil.copytree(MIGRATIONS_LOCATION, broken_dir)
-    (broken_dir / "versions" / "0002_broken.py").write_text(_BROKEN_REVISION)
+    (broken_dir / "versions" / "9999_broken.py").write_text(_broken_revision(head))
 
     with temporary_sqlite() as engine:
         runner = MigrationRunner(engine, script_location=str(broken_dir))
-        runner.upgrade("0001", backup=False)
+        runner.upgrade(head, backup=False)
 
         with engine.connect() as connection:
             connection.execute(
@@ -138,9 +157,9 @@ def test_failed_migration_restores_backup_on_sqlite(tmp_path: Path) -> None:
             connection.commit()
 
         with pytest.raises(MigrationFailed) as excinfo:
-            runner.upgrade("0002")
+            runner.upgrade(_BROKEN_REVISION_ID)
         assert excinfo.value.details["restored"] is True
-        assert runner.current() == "0001"
+        assert runner.current() == head
 
         with engine.connect() as connection:
             rows = connection.execute(text("SELECT key FROM settings")).fetchall()

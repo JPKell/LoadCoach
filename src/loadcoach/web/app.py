@@ -33,6 +33,7 @@ from loadcoach.infrastructure.providers.factory import build_provider
 from loadcoach.observability.logging import bind_context
 from loadcoach.services.database import Database
 from loadcoach.web.routes import models as models_routes
+from loadcoach.web.routes import routing as routing_routes
 from loadcoach.web.routes import system as system_routes
 from loadcoach.web.routes import task_profiles as task_profiles_routes
 
@@ -47,6 +48,11 @@ _STATUS_BY_CODE: dict[str, int] = {
     "CONFIGURATION_ERROR": status.HTTP_500_INTERNAL_SERVER_ERROR,
     "INSECURE_BINDING": status.HTTP_500_INTERNAL_SERVER_ERROR,
     "MISDIRECTED_REQUEST": 421,
+    "TASK_PROFILE_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+    "NO_ELIGIBLE_MODEL": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "CONTEXT_LIMIT_EXCEEDED": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "CAPABILITY_UNSUPPORTED": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "INSUFFICIENT_RESOURCES": status.HTTP_503_SERVICE_UNAVAILABLE,
     "DATABASE_ERROR": status.HTTP_500_INTERNAL_SERVER_ERROR,
     "DATABASE_UNAVAILABLE": status.HTTP_503_SERVICE_UNAVAILABLE,
     "MIGRATION_REQUIRED": status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -296,8 +302,9 @@ def create_app(settings: Settings) -> FastAPI:
     """Build the FastAPI application for the given settings.
 
     Registers, from outermost to innermost: the request-ID middleware, Host-header validation, the
-    standard error envelope handlers, the ``/api/v1`` routes (system, models, task-profiles), and
-    the plain (pre-MirrorWall) HTML pages at ``/models`` and ``/task-profiles``.
+    standard error envelope handlers, the ``/api/v1`` routes (system, models, task-profiles,
+    routing), and the plain (pre-MirrorWall) HTML pages at ``/models``, ``/task-profiles`` and
+    ``/routing``.
 
     Still a pure function of its arguments — it opens nothing; the database and provider handles
     are created by the lifespan, which runs only when the application is actually served (or when
@@ -313,6 +320,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.settings = settings
     app.state.database = None
     app.state.provider = None
+    app.state.telemetry_collector = None
 
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(HostValidationMiddleware, allowed_hosts=_resolve_allowed_hosts(settings))
@@ -322,7 +330,9 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(system_routes.router, prefix="/api/v1")
     app.include_router(models_routes.router, prefix="/api/v1")
     app.include_router(task_profiles_routes.router, prefix="/api/v1")
+    app.include_router(routing_routes.router, prefix="/api/v1")
     app.include_router(models_routes.ui_router)
     app.include_router(task_profiles_routes.ui_router)
+    app.include_router(routing_routes.ui_router)
 
     return app

@@ -13,6 +13,35 @@ packaging and release standards §3.
   NVML GPU backend, selected automatically wherever the optional `pynvml` extra is installed.
 
 ### Added
+- Phase 3: routing without evidence, and `POST /route`.
+  - `domain/routing/subject.py`: runtime profile resolution (ADR-0023 §1) and the `served_context`
+    derivation (§4). A context set on a provider that declares `context_configurable=False` is
+    **not** recorded as `configured` — the provider will ignore it, and a recorded context that
+    never happened is a fabricated measurement.
+  - `domain/routing/constraints.py`: the VRAM/KV estimator as a pure function (queue §5) and
+    routing §4's ten hard constraints, each rejecting with the numbers that caused it. Devices are
+    evaluated independently and never summed (ADR-0027 §2). An unknown estimate is `None`, never
+    `0`, and never fits.
+  - `domain/routing/scoring.py`: capability scoring with the absent-evidence rule — a capability
+    with nothing behind it is excluded from the numerator *and* the denominator, never scored
+    zero. Benchmark evidence under a different `runtime_profile_hash` is absent with both hashes
+    and a remedy, not reused and not zeroed; no prior papers over an excluded measurement.
+  - `domain/routing/ranking.py`: routing §7's total order, with the model ULID as the final
+    tie-break so the order is total for every input.
+  - `domain/routing/context_budget.py`: budgeting against `served_context` only; output tokens
+    reduced where `execution.min_output_tokens` permits, rejected with numbers otherwise. The
+    caller's input is never shortened.
+  - `domain/routing/explanation.py`: routing §8's persisted document, with the `low_evidence` and
+    `assumed_context` flags.
+  - `services/routing.py`, `web/routes/routing.py`, `cli/commands/route.py`: the pipeline,
+    `POST /api/v1/route`, `GET /api/v1/routing-decisions[/{id}]`, the `/routing` pages and
+    `loadcoach route explain`.
+  - Migration `0002`: `routing_decisions` and `routing_candidates`. `runtime_profile_id`,
+    `served_context`, `served_context_source` and `target_gpu_index` sit on the candidate, because
+    a candidate *is* the pair `(identity, resolved runtime profile)`.
+  - `[routing].remote_cost_factor` and `execution.min_output_tokens` added; discovery now persists
+    the descriptor geometry (`layers`, `kv_heads`, `head_dim`, …) the KV estimate needs, omitting
+    every field the provider did not report rather than storing a zero.
 - Repository scaffold generated from the suite's development plan (no functional code yet).
 - Phase 1: skeleton, storage and the WeightsDB extraction handshake.
   - `config.py`: typed, source-tracked settings with the full precedence chain and the

@@ -128,3 +128,58 @@ def test_db_upgrade_is_idempotent_no_op_on_second_call() -> None:
     second = runner.invoke(app, ["db", "upgrade"])
     assert second.exit_code == 0
     assert "(empty)" not in second.stdout
+
+
+def _prepared_database() -> None:
+    """Migrate and discover, so ``route explain`` has a registry to route over."""
+    from datetime import UTC, datetime
+
+    from modelrack.testing import FakeProvider
+
+    from loadcoach.config import load_settings
+    from loadcoach.services.database import Database, ensure_ready
+    from loadcoach.services.models import discover_models
+
+    url = load_settings().settings.storage.database_url
+    assert url is not None
+    with Database.from_url(url) as database:
+        ensure_ready(database, auto_migrate=True)
+        discover_models(database, FakeProvider(), now=datetime.now(UTC))
+
+
+def test_route_explain_prints_the_resolved_subject() -> None:
+    """dev-plan P3 Work item: `loadcoach route explain`, and acceptance criterion 1a."""
+    _prepared_database()
+    result = runner.invoke(app, ["route", "explain", "--task", "general.chat"])
+    assert result.exit_code == 0, result.stdout
+    assert "runtime_profile_hash" in result.stdout
+    assert "served_context" in result.stdout
+    assert "evidence  none" in result.stdout
+
+
+def test_route_explain_json_flag_produces_the_whole_explanation() -> None:
+    import json
+
+    _prepared_database()
+    result = runner.invoke(app, ["route", "explain", "--task", "general.chat", "--json"])
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["selected"]["runtime_profile_hash"]
+    assert payload["selected"]["served_context_source"] in {"configured", "reported", "assumed"}
+
+
+def test_route_explain_exits_five_for_an_unknown_task() -> None:
+    _prepared_database()
+    result = runner.invoke(app, ["route", "explain", "--task", "no.such.task"])
+    assert result.exit_code == 5
+
+
+def test_route_explain_exits_four_and_lists_every_rejection() -> None:
+    """`NO_ELIGIBLE_MODEL` is useless without the candidates and their reasons."""
+    _prepared_database()
+    result = runner.invoke(
+        app, ["route", "explain", "--task", "general.chat", "--input-tokens", "10000000"]
+    )
+    assert result.exit_code == 4
+    assert "NO_ELIGIBLE_MODEL" in result.output
+    assert "context_limit_exceeded" in result.output

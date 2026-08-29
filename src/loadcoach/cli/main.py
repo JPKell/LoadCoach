@@ -15,6 +15,7 @@ import typer
 from loadcoach.cli.commands import config as config_commands
 from loadcoach.cli.commands import db as db_commands
 from loadcoach.cli.commands import models as models_commands
+from loadcoach.cli.commands import route as route_commands
 from loadcoach.cli.commands import system as system_commands
 from loadcoach.cli.commands import tasks as tasks_commands
 
@@ -60,3 +61,6 @@ app.add_typer(config_commands.app, name="config", help="Configuration inspection
 app.add_typer(db_commands.app, name="db", help="Database migration and maintenance.")
 app.add_typer(models_commands.app, name="models", help="Model discovery and inspection.")
 app.add_typer(tasks_commands.app, name="tasks", help="Task profile inspection and validation.")
+app.add_typer(
+    route_commands.app, name="route", help="Explain a routing decision without executing it."
+)
