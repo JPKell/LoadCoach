@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from loadcoach.bootstrap import bootstrap
+from loadcoach.config import load_settings
 
 
 @pytest.fixture
@@ -55,6 +56,36 @@ def test_task_profiles_ui_page_renders(client: TestClient) -> None:
 
 
 def test_ui_pages_escape_untrusted_content(client: TestClient) -> None:
-    """A model or profile field reaching a template is never trusted markup (Jinja autoescape)."""
+    """A model field reaching a template is never trusted markup (Jinja autoescape).
+
+    The name is injected into the registry first: asserting that a page with nothing hostile on it
+    contains nothing hostile proves nothing, and passed for years before this became a real test.
+    """
+    from datetime import UTC, datetime
+
+    from loadcoach.infrastructure.db.models import Model
+    from loadcoach.services.database import Database
+
+    hostile = '<script>alert("xss")</script>'
+    url = load_settings().settings.storage.database_url
+    assert url is not None
+    with Database.from_url(url) as database, database.write() as session:
+        session.add(
+            Model(
+                provider_kind="fake",
+                provider_model_name=hostile,
+                artifact_digest=None,
+                canonical_id=f"fake/{hostile}@unknown",
+                identity_confidence="name_only",
+                first_seen_at=datetime.now(UTC),
+                last_seen_at=datetime.now(UTC),
+            )
+        )
+
     response = client.get("/models")
-    assert "<script>" not in response.text
+    assert response.status_code == 200
+    assert hostile not in response.text
+    assert "&lt;script&gt;" in response.text
+    # The shell's own theme bootstrap is a legitimate inline script and must still be there: it
+    # runs before first paint, which is what stops a dark-mode reader seeing a white flash.
+    assert "localStorage.getItem" in response.text

@@ -1,37 +1,30 @@
-{% extends "base.html" %}
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import badge, empty_state, table %}
 {% block title %}Routing — LoadCoach{% endblock %}
 {% block content %}
-<h1>Routing decisions</h1>
-{% if decisions %}
-<table>
-  <caption class="muted">Every decision is persisted, not sampled. Newest first.</caption>
-  <thead>
-    <tr>
-      <th scope="col">Decision</th>
-      <th scope="col">Task profile</th>
-      <th scope="col">Selected</th>
-      <th scope="col">Score</th>
-      <th scope="col">Flags</th>
-      <th scope="col">Took</th>
-      <th scope="col">Requested</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for decision in decisions %}
-    <tr>
-      <td class="mono"><a href="/routing/{{ decision.decision_id }}">{{ decision.decision_id }}</a></td>
-      <td>{{ decision.task_profile_id }} <span class="muted">{{ decision.task_profile_version }}</span></td>
-      <td class="mono">{{ decision.selected_canonical_id or "—" }}</td>
-      <td>{% if decision.selected_score is not none %}{{ "%.4f"|format(decision.selected_score) }}{% else %}—{% endif %}</td>
-      <td>{% for flag in decision.flags %}<span class="badge">{{ flag }}</span> {% else %}<span class="muted">none</span>{% endfor %}</td>
-      <td>{{ decision.duration_ms }} ms</td>
-      <td class="muted">{{ decision.requested_at.isoformat() }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<h2>Routing decisions</h2>
+{% if not decisions %}
+{{ empty_state("No routing decision has been made yet. POST /api/v1/route, or run
+`loadcoach route explain --task general.chat`, makes one.") }}
 {% else %}
-<p class="empty-state">No routing decision has been made yet. <code>POST /api/v1/route</code> or
-<code>loadcoach route explain --task general.chat</code> makes one.</p>
+{% set columns = [
+  {"label": "Decision"}, {"label": "Task profile"}, {"label": "Selected"},
+  {"label": "Score", "numeric": true}, {"label": "Flags"},
+  {"label": "Took", "numeric": true}, {"label": "Requested"}
+] %}
+{% set rows = [] %}
+{% for decision in decisions %}
+{% set _ = rows.append([
+  ('<a class="mono" href="/routing/' ~ decision.decision_id ~ '">' ~ decision.decision_id ~ "</a>") | safe,
+  decision.task_profile_id ~ " " ~ decision.task_profile_version,
+  decision.selected_canonical_id or "—",
+  "%.4f"|format(decision.selected_score) if decision.selected_score is not none else "—",
+  (decision.flags | map("string") | join(" ")) or "none",
+  decision.duration_ms ~ " ms",
+  decision.requested_at | timestamp
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Every decision is persisted, not sampled. Newest first.",
+         table_id="routing-decisions", sortable=true, complete=true, row_count=decisions | length) }}
 {% endif %}
 {% endblock %}

@@ -1,32 +1,24 @@
-{% extends "base.html" %}
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import badge, empty_state, table %}
 {% block title %}Task profiles — LoadCoach{% endblock %}
 {% block content %}
 <h2>Task profiles</h2>
 {% if not task_profiles %}
-<p class="empty-state">No task profiles loaded.</p>
+{{ empty_state("No task profiles loaded.") }}
 {% else %}
-<table>
-  <caption class="muted">{{ task_profiles | length }} profile(s)</caption>
-  <thead>
-    <tr>
-      <th>Profile</th>
-      <th>Version</th>
-      <th>Description</th>
-      <th>Weighted capabilities</th>
-      <th>Enabled</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for profile in task_profiles %}
-    <tr>
-      <td class="mono">{{ profile.profile_id }}</td>
-      <td>{{ profile.version }}</td>
-      <td>{{ profile.description }}</td>
-      <td>{{ profile.weights.keys() | join(", ") }}</td>
-      <td>{{ "yes" if profile.enabled else "no" }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+{% set columns = [
+  {"label": "Profile"}, {"label": "Version"}, {"label": "Description"},
+  {"label": "Weighted capabilities"}, {"label": "Enabled"}
+] %}
+{% set rows = [] %}
+{% for profile in task_profiles %}
+{% set _ = rows.append([
+  profile.profile_id, profile.version, profile.description,
+  profile.weights.keys() | join(", "),
+  badge("enabled", tone="success") if profile.enabled else badge("disabled", tone="neutral")
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Routing intent, not prompts.", table_id="task-profiles",
+         sortable=true, complete=true, row_count=task_profiles | length) }}
 {% endif %}
 {% endblock %}

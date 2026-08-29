@@ -42,6 +42,11 @@ packaging and release standards §3.
   - `[routing].remote_cost_factor` and `execution.min_output_tokens` added; discovery now persists
     the descriptor geometry (`layers`, `kv_heads`, `head_dim`, …) the KV estimate needs, omitting
     every field the provider did not report rather than storing a zero.
+- MirrorWall adoption (that package's Phase 1): every page now renders through
+  `mirrorwall.create_template_environment` on `mirrorwall/base.html`'s shell and its component
+  macros. LoadCoach's own `base.html` is deleted rather than kept in parallel, and MirrorWall's
+  assets are served from the installed package at `/static/mirrorwall` — no CDN, no network
+  request at page load.
 - Repository scaffold generated from the suite's development plan (no functional code yet).
 - Phase 1: skeleton, storage and the WeightsDB extraction handshake.
   - `config.py`: typed, source-tracked settings with the full precedence chain and the

@@ -1,55 +1,55 @@
-"""loadcoach.web.rendering — the Jinja environment the plain, pre-MirrorWall pages render through.
+"""loadcoach.web.rendering — the one Jinja environment every page renders through.
 
-Not in the Phase 2 file list verbatim, but required by it: the Work item asks for "first UI pages
-(plain, pre-MirrorWall)", and rendering them needs an environment somewhere — this mirrors
-FreeWeight's own module of the same name and purpose, deliberately kept unstyled: MirrorWall's
-design tokens land at Phase 4's extraction, not here.
+Since Phase 3 this is MirrorWall's environment, not a local one: the shell, the component macros,
+the design tokens and the shared filters all come from the package, and this module supplies only
+what is LoadCoach's — the product name, the navigation, and the template directory holding this
+application's own pages.
+
+Built once and cached: templates are compiled and cached on the environment, so a per-request
+environment recompiles the layout on every page view.
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from mirrorwall import create_template_environment
 
-__all__ = ["render", "templates"]
+from loadcoach.__about__ import __version__
+
+if TYPE_CHECKING:
+    from jinja2 import Environment
+
+__all__ = ["NAV_ITEMS", "render", "templates"]
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
-
-def _format_bytes(value: int | None) -> str:
-    """Render a byte count at human scale; ``None`` becomes an em dash, never ``0``."""
-    if value is None:
-        return "—"
-    if value < 1024:
-        return f"{value} B"
-    scaled = float(value)
-    for unit in ("KiB", "MiB", "GiB", "TiB"):
-        scaled /= 1024
-        if scaled < 1024 or unit == "TiB":
-            return f"{scaled:.1f} {unit}"
-    raise AssertionError("unreachable: the TiB branch always returns")  # pragma: no cover
+NAV_ITEMS: tuple[dict[str, str], ...] = (
+    {"key": "models", "href": "/models", "label": "Models"},
+    {"key": "task-profiles", "href": "/task-profiles", "label": "Task profiles"},
+    {"key": "routing", "href": "/routing", "label": "Routing"},
+)
 
 
 @lru_cache(maxsize=1)
 def templates() -> Environment:
     """Return the process-wide Jinja environment, building it on first use.
 
-    Autoescaping is on for HTML by default — a model name or a description reaches a template from
-    outside this process (the provider, or an operator's own task profile file), and neither is
-    trusted markup.
+    MirrorWall supplies autoescaping, ``StrictUndefined`` and every shared filter; this function
+    adds only the shell's slot values. LoadCoach's own templates come first on the search path, so
+    a page here can override a package template by name if it ever needs to.
     """
-    environment = Environment(
-        loader=FileSystemLoader(_TEMPLATES_DIR),
-        autoescape=select_autoescape(),
-        auto_reload=False,
-        trim_blocks=True,
-        lstrip_blocks=True,
+    return create_template_environment(
+        app_template_dirs=(_TEMPLATES_DIR,),
+        globals_={
+            "product_name": "LoadCoach",
+            "product_version": __version__,
+            "nav_items": NAV_ITEMS,
+            "theme_storage_key": "loadcoach-theme",
+        },
     )
-    environment.filters["bytes"] = _format_bytes
-    return environment
 
 
 def render(template_name: str, /, **context: Any) -> str:

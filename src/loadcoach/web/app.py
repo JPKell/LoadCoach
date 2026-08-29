@@ -4,9 +4,10 @@
 without touching environment variables or the filesystem — the database handle is created by the
 lifespan, which runs only when the application is actually served.
 
-Host validation and request-ID middleware are defined here rather than in MirrorWall, which does
-not exist until Phase 4's extraction (ADR-0011); FreeWeight built the identical pair in-application
-before its own extraction, and this is the same move at the same point in the sequence.
+Host validation and request-ID middleware are still defined here rather than taken from
+MirrorWall: Phase 3 adopts MirrorWall's *UI* half (tokens, shell, components, filters), and the
+middleware half arrives with that package's own Phase 2. The pair here is deliberately identical
+in behaviour to the one being extracted, so that adoption is a deletion.
 """
 
 from __future__ import annotations
@@ -22,6 +23,8 @@ from baseaicore.timeutil import to_rfc3339, utc_now
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from mirrorwall import PACKAGE_STATIC_DIR, STATIC_URL_PREFIX
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -334,5 +337,15 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(models_routes.ui_router)
     app.include_router(task_profiles_routes.ui_router)
     app.include_router(routing_routes.ui_router)
+
+    # MirrorWall's own assets, served from the installed package: no CDN, no network request at
+    # page load. MirrorWall's Phase 2 replaces this with its `mount_static`, which adds the
+    # content-hashed URLs and the cache headers; the URL prefix is the same either way, so no
+    # template changes when it does.
+    app.mount(
+        STATIC_URL_PREFIX,
+        StaticFiles(directory=PACKAGE_STATIC_DIR),
+        name="mirrorwall-static",
+    )
 
     return app
