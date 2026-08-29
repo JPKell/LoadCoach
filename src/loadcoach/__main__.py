@@ -1,4 +1,12 @@
-"""loadcoach.__main__.
+"""loadcoach.__main__ — ``python -m loadcoach``.
 
-TODO: implement per docs/apps/loadcoach/development-plan.md.
+Delegates to the Typer app, whose root callback starts ``serve`` when invoked with no subcommand
+(CLI Standards §1).
 """
+
+from __future__ import annotations
+
+from loadcoach.cli.main import app
+
+if __name__ == "__main__":
+    app()

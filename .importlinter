@@ -1,14 +1,15 @@
 [importlinter]
-root_packages = loadcoach
+root_package = loadcoach
+include_external_packages = True
 
 [importlinter:contract:layers]
 name = LoadCoach internal layering
 type = layers
 layers =
-    loadcoach.web
-    loadcoach.cli
-    loadcoach.services
-    loadcoach.domain
+    web
+    cli
+    services
+    domain
 containers = loadcoach
 
 [importlinter:contract:web-cli-independence]

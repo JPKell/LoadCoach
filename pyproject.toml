@@ -79,6 +79,9 @@ ignore = ["D100", "D104"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "D1"]
+# Alembic-generated: upgrade()/downgrade() carry no behaviour beyond the revision's own docstring,
+# and their bodies are op.* DDL calls Alembic itself generated, not hand-written business logic.
+"src/loadcoach/infrastructure/db/migrations/versions/*.py" = ["D1"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -87,6 +90,8 @@ convention = "google"
 python_version = "3.12"
 strict = true
 warn_unused_configs = true
+mypy_path = "src"
+explicit_package_bases = true
 
 [tool.pytest.ini_options]
 addopts = "-m 'not live and not performance'"
