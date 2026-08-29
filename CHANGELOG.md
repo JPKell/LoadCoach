@@ -42,6 +42,10 @@ packaging and release standards §3.
   - `[routing].remote_cost_factor` and `execution.min_output_tokens` added; discovery now persists
     the descriptor geometry (`layers`, `kv_heads`, `head_dim`, …) the KV estimate needs, omitting
     every field the provider did not report rather than storing a zero.
+- MirrorWall adoption (that package's Phases 1 and 2): `RequestIdMiddleware`,
+  `HostValidationMiddleware`, `error_body` and `mount_static` now come from the package, and this
+  application's own copies are deleted rather than kept in parallel. Assets are served with
+  content-hashed, immutable-cacheable URLs, and every response carries `X-Response-Time-Ms`.
 - MirrorWall adoption (that package's Phase 1): every page now renders through
   `mirrorwall.create_template_environment` on `mirrorwall/base.html`'s shell and its component
   macros. LoadCoach's own `base.html` is deleted rather than kept in parallel, and MirrorWall's
