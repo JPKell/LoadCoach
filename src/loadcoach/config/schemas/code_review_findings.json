@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "code.review findings",
+  "type": "object",
+  "required": ["findings", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "summary": { "type": "string" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "severity", "description"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string" },
+          "line": { "type": ["integer", "null"] },
+          "severity": { "type": "string", "enum": ["info", "minor", "major", "critical"] },
+          "description": { "type": "string" },
+          "suggestion": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "content.review findings",
+  "type": "object",
+  "required": ["findings", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "summary": { "type": "string" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["requirement", "status", "explanation"],
+        "additionalProperties": false,
+        "properties": {
+          "requirement": { "type": "string" },
+          "status": { "type": "string", "enum": ["met", "partially_met", "not_met"] },
+          "explanation": { "type": "string" },
+          "quote": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

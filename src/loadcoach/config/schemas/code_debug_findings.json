@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "code.debug findings",
+  "type": "object",
+  "required": ["diagnosis", "fix"],
+  "additionalProperties": false,
+  "properties": {
+    "diagnosis": { "type": "string" },
+    "root_cause": { "type": ["string", "null"] },
+    "fix": { "type": "string" },
+    "confidence": { "type": "string", "enum": ["low", "medium", "high"] }
+  }
+}

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Models — LoadCoach{% endblock %}
+{% block content %}
+<h2>Models</h2>
+{% if not models %}
+<p class="empty-state">No models discovered yet. Run <code>loadcoach models refresh</code> or start the provider.</p>
+{% else %}
+<table>
+  <caption class="muted">{{ models | length }} model(s)</caption>
+  <thead>
+    <tr>
+      <th>Canonical ID</th>
+      <th>Family</th>
+      <th>Context</th>
+      <th>Size</th>
+      <th>Declared capabilities</th>
+      <th>Availability</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for model in models %}
+    <tr>
+      <td class="mono">{{ model.canonical_id }}</td>
+      <td>{{ model.family or "—" }}</td>
+      <td>{{ model.max_context if model.max_context is not none else "—" }}</td>
+      <td>{{ model.size_bytes | bytes }}</td>
+      <td>
+        {% if model.declared_capabilities %}
+          {{ model.declared_capabilities.keys() | join(", ") }}
+        {% else %}
+          <span class="muted">none declared</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if model.available %}
+          <span class="badge badge-ok">available</span>
+        {% else %}
+          <span class="badge badge-unavailable">unavailable</span> {{ model.unavailable_reason }}
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,15 @@
+# LoadCoach — manual capability scores (dev-plan P2: "Manual capability scores from
+# configuration, marked source: manual").
+#
+# Nothing is shipped here — the suite has no benchmark-independent judgment to assert on anyone's
+# behalf, so this file exists as a mechanism, not a dataset. An operator who has direct experience
+# with a model's real-world quality on a capability FreeWeight has not (yet) measured can record
+# that judgment here; it is imported at startup, upserted per (canonical_id, capability_id),
+# and is always the lowest-confidence source LoadCoach's routing considers below any measured
+# evidence (data model §2, model_capabilities.source).
+#
+# [[scores]]
+# canonical_id  = "ollama/qwen3.5:14b@sha256:1f3a9c4e2b70..."   # must already be a discovered model
+# capability_id = "code_review"                                 # must be in the SetSpec vocabulary
+# score         = 0.6                                           # 0.0-1.0
+# confidence    = 0.3                                           # 0.0-1.0; kept below a declared flag's

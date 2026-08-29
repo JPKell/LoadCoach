@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "content.fact_check findings",
+  "type": "object",
+  "required": ["claims", "verdict"],
+  "additionalProperties": false,
+  "properties": {
+    "verdict": { "type": "string", "enum": ["all_supported", "some_unsupported", "unverifiable"] },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["claim", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "claim": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["supported", "unsupported", "unverifiable"]
+          },
+          "explanation": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

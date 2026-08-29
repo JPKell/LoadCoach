@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Task profiles — LoadCoach{% endblock %}
+{% block content %}
+<h2>Task profiles</h2>
+{% if not task_profiles %}
+<p class="empty-state">No task profiles loaded.</p>
+{% else %}
+<table>
+  <caption class="muted">{{ task_profiles | length }} profile(s)</caption>
+  <thead>
+    <tr>
+      <th>Profile</th>
+      <th>Version</th>
+      <th>Description</th>
+      <th>Weighted capabilities</th>
+      <th>Enabled</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for profile in task_profiles %}
+    <tr>
+      <td class="mono">{{ profile.profile_id }}</td>
+      <td>{{ profile.version }}</td>
+      <td>{{ profile.description }}</td>
+      <td>{{ profile.weights.keys() | join(", ") }}</td>
+      <td>{{ "yes" if profile.enabled else "no" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

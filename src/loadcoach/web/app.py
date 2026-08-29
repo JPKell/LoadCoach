@@ -32,7 +32,9 @@ from loadcoach.config import LOOPBACK_HOSTS, Settings
 from loadcoach.infrastructure.providers.factory import build_provider
 from loadcoach.observability.logging import bind_context
 from loadcoach.services.database import Database
+from loadcoach.web.routes import models as models_routes
 from loadcoach.web.routes import system as system_routes
+from loadcoach.web.routes import task_profiles as task_profiles_routes
 
 __all__ = ["create_app"]
 
@@ -294,7 +296,8 @@ def create_app(settings: Settings) -> FastAPI:
     """Build the FastAPI application for the given settings.
 
     Registers, from outermost to innermost: the request-ID middleware, Host-header validation, the
-    standard error envelope handlers, and the ``/api/v1`` system routes (health, version).
+    standard error envelope handlers, the ``/api/v1`` routes (system, models, task-profiles), and
+    the plain (pre-MirrorWall) HTML pages at ``/models`` and ``/task-profiles``.
 
     Still a pure function of its arguments — it opens nothing; the database and provider handles
     are created by the lifespan, which runs only when the application is actually served (or when
@@ -317,5 +320,9 @@ def create_app(settings: Settings) -> FastAPI:
     register_exception_handlers(app)
 
     app.include_router(system_routes.router, prefix="/api/v1")
+    app.include_router(models_routes.router, prefix="/api/v1")
+    app.include_router(task_profiles_routes.router, prefix="/api/v1")
+    app.include_router(models_routes.ui_router)
+    app.include_router(task_profiles_routes.ui_router)
 
     return app

@@ -20,8 +20,11 @@ from sqlalchemy import func, select
 
 from loadcoach.config import LOOPBACK_HOSTS, InsecureBindingError, LoadedSettings, load_settings
 from loadcoach.infrastructure.db.models import ApiToken
+from loadcoach.infrastructure.providers.factory import build_provider
 from loadcoach.observability.logging import configure_logging
 from loadcoach.services.database import Database, ensure_ready
+from loadcoach.services.models import import_manual_capability_scores, try_discover_models
+from loadcoach.services.task_profiles import import_task_profiles, read_task_profiles_file
 from loadcoach.web.app import create_app
 
 __all__ = ["Application", "bootstrap", "create_app_from_environment"]
@@ -71,6 +74,13 @@ def bootstrap() -> Application:
     :class:`~loadcoach.config.Settings` precisely so tests can build an app without touching the
     filesystem, and opening a database is neither pure nor free.
 
+    The shipped task profiles are validated and imported here too, before anything can route: a
+    malformed profile is a startup failure (dev-plan P2 acceptance criterion 3), not a
+    routing-time surprise. Model discovery is best-effort
+    (:func:`~loadcoach.services.models.try_discover_models`) — spec §5 promises LoadCoach starts
+    and serves with no provider, so an unreachable one at startup degrades health rather than
+    blocking the server.
+
     Returns:
         The wired :class:`Application`.
 
@@ -80,6 +90,7 @@ def bootstrap() -> Application:
         MigrationRequired: The database is behind head and ``storage.auto_migrate`` is false.
         SchemaAhead: The database was written by a newer application version.
         DatabaseUnavailable: The configured database could not be reached at all.
+        TaskProfileInvalid: A shipped task profile fails validation.
     """
     loaded = load_settings()
     configure_logging(
@@ -103,6 +114,13 @@ def bootstrap() -> Application:
                 "must have at least one token created first: `loadcoach token create`.",
                 details={"field": "server.host", "host": loaded.settings.server.host},
             )
+        profiles = read_task_profiles_file()
+        import_task_profiles(database, profiles, now=datetime.now(UTC))
+        provider = build_provider(loaded.settings.provider)
+        try_discover_models(database, provider, now=datetime.now(UTC))
+        # After discovery: a manual score names a model by canonical_id and is skipped, not an
+        # error, if that model has not been discovered yet.
+        import_manual_capability_scores(database, now=datetime.now(UTC))
     return Application(loaded_settings=loaded, app=create_app(loaded.settings))
 
 
