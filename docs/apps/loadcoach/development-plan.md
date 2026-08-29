@@ -4,6 +4,8 @@
 evidence bundles exist to build against.
 **Milestones:** M4 (beta) at P6 · **M5 (LoadCoach 1.0) at P9**.
 **Also produces:** WeightsDB (extracted at P1), MirrorWall and `setspec.prompts` (extracted at P4).
+**Corrected 2026-08-21** by the final architecture audit:
+P3's resource constraints, P4's runtime-profile resolution, P5's queue mechanics.
 
 ---
 
@@ -299,6 +301,12 @@ priority inversion.
 * `capability_evidence` and `evidence_sources` tables; staleness evaluation; scheduled refresh.
 * Scoring switches to measured evidence where present, retaining declared/manual as a labelled
   fallback.
+* **`user.*` capabilities are opt-in.** The scorer weights a `user.*` capability only when the
+  active task profile names it explicitly in its capability weights; an imported `user.*` record
+  is stored and shown in the evidence UI like any other, but contributes nothing to routing until
+  named. A routing explanation that used one names the goal, its `kappa_w` and its `n_holdout` in
+  words — not just the confidence number
+  (ADR-0032 §6).
 * `POST /evidence/import`, `GET /evidence`, `GET /evidence/sources`; CLI; a Benchmarks (evidence) UI
   page showing source, age, confidence and coverage per capability.
 
@@ -322,6 +330,11 @@ tests/integration/test_evidence_routing_change.py
 * Import is `admin`-scoped; oversize import rejected.
 * Evidence for a model that has not been discovered imports successfully, is reported as unmatched,
   contributes nothing, and binds automatically on the next discovery pass.
+* A `user.*` record imports and displays normally but scores nothing in a routing decision whose
+  task profile does not name it; naming it in the profile makes it score on the next decision with
+  no re-import needed.
+* A routing explanation that drew on a `user.*` capability states the goal slug, `kappa_w` and
+  `n_holdout` in its rendered text, not only in the machine-readable score breakdown.
 * Freshness uses `measured_at`: a producer that re-aggregates old runs does not gain confidence here.
 * A `file://` URL, a host outside `allowed_source_hosts`, a link-local address and a cross-host
   redirect are each refused with `EVIDENCE_SOURCE_REFUSED` before any bytes are parsed.
@@ -412,7 +425,7 @@ tests/accessibility/test_ui_checklist.py
 
 **Acceptance criteria**
 1. A user can answer "why did it pick that model?" entirely from the UI in under a minute.
-2. Every acceptance item in ui ux standards passes.
+2. Every acceptance item in UI/UX Standards §13 passes.
 
 **Known risks:** explanation rendering that is technically complete but unreadable. Mitigated by the
 one-minute usability criterion above.

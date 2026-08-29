@@ -163,6 +163,13 @@ performance, memory or energy constraints
    candidates, scores, rejections and fallbacks — retrievable for the lifetime of the job.
 3. **Evidence contract.** `POST /evidence/import` accepts SetSpec `benchmark.evidence_bundle`;
    unsupported majors are rejected with both versions named.
+3a. **Subjective-evidence contract.** A `user.*` capability — FreeWeight's user-authored goal
+   evidence (ADR-0032) — is
+   **opt-in**: it is never weighted unless a task profile names it explicitly, because a capability
+   that one person's taste defines must not acquire routing influence merely by existing. Its
+   `judge_validity_factor` is applied as part of the confidence LoadCoach receives, never
+   recomputed. Any explanation that used one names the goal, its `kappa_w` and its `n_holdout` in
+   words. `goal_hash` and judge set identity are hard separations, handled like a benchmark version.
 4. **Feedback contract.** `POST /jobs/{id}/feedback` accepts an acceptance signal and optional
    quality/validation detail; it is idempotent per `(job_id, source)`.
 5. **Streaming contract.** SSE per API Standards §8,

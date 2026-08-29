@@ -47,7 +47,8 @@ dev = [
     "ruff>=0.6,<1",
     "import-linter>=2.0,<3",
     "respx>=0.21,<1",
-    "freeweight  # test-only: OpenAPI snapshot for contract tests, never imported under src/",
+    # test-only: the OpenAPI snapshot the contract tests read; never imported under src/.
+    "freeweight",
 ]
 postgres = [
     "psycopg[binary]>=3.2,<4",
