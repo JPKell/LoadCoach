@@ -30,13 +30,15 @@ from weightsdb import (
     create_engine_for,
     database_size_bytes,
     integrity_check,
-    redact_url,
     session_factory,
     session_scope,
     transaction,
 )
 from weightsdb import (
     backup as weightsdb_backup,
+)
+from weightsdb import (
+    database_health as weightsdb_database_health,
 )
 from weightsdb import (
     restore as weightsdb_restore,
@@ -210,7 +212,7 @@ def ensure_ready(
         raise
     except Exception as exc:  # noqa: BLE001 — translated into the suite's own error type below
         raise DatabaseUnavailable(
-            f"Could not open the database to check its migration state: {redact_url(str(exc))}",
+            f"Could not open the database to check its migration state: {exc}",
         ) from exc
 
     if not heads:
@@ -326,7 +328,7 @@ def get_status(database: Database) -> DatabaseStatus:
     except DatabaseError:
         raise
     except Exception as exc:  # noqa: BLE001 — translated into the suite's own error type below
-        raise DatabaseUnavailable(f"Could not open the database: {redact_url(str(exc))}") from exc
+        raise DatabaseUnavailable(f"Could not open the database: {exc}") from exc
 
     return DatabaseStatus(
         dialect=engine.dialect.name,
@@ -343,28 +345,15 @@ def get_status(database: Database) -> DatabaseStatus:
 def database_health_component(database: Database) -> HealthComponent:
     """Build the ``database`` :class:`~loadcoach.services.health.HealthComponent`.
 
-    Never raises: a health check that itself crashes takes the whole health endpoint down with it.
+    Entirely from :func:`weightsdb.database_health` (WeightsDB spec §7, Phase 3 acceptance
+    criterion 2) — this function only translates that dialect-portable, application-agnostic
+    report into LoadCoach's own :class:`~loadcoach.services.health.HealthComponent` shape.
     """
-    try:
-        status = get_status(database)
-    except DatabaseUnavailable as exc:
-        return HealthComponent(name="database", status="unavailable", detail=exc.message)
-    except DatabaseError as exc:
-        return HealthComponent(name="database", status="degraded", detail=exc.message)
-
-    if not status.is_at_head:
-        return HealthComponent(
-            name="database",
-            status="degraded",
-            detail=(
-                f"pending migration: at {status.current_revision!r}, "
-                f"head is {status.head_revision!r}"
-            ),
-        )
-    if not status.integrity_ok:
-        return HealthComponent(
-            name="database",
-            status="degraded",
-            detail=f"integrity check failed: {status.integrity_detail}",
-        )
-    return HealthComponent(name="database", status="ok", detail=f"{status.dialect} at head")
+    report = weightsdb_database_health(database.engine, migration_runner(database.engine))
+    if report.status == "unavailable":
+        detail = "; ".join(report.degraded_reasons) or "database unreachable"
+    elif report.status == "degraded":
+        detail = "; ".join(report.degraded_reasons)
+    else:
+        detail = f"{report.dialect} at head"
+    return HealthComponent(name="database", status=report.status, detail=detail)
