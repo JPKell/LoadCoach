@@ -1,0 +1,14 @@
+{
+  "pack_id": "loadcoach.core",
+  "pack_version": "1.0.0",
+  "schema_version": "1.0",
+  "generated_at": "2026-08-29T00:00:00Z",
+  "prompts": [
+    {
+      "prompt_id": "execution.structured_output.retry",
+      "version": "1.0.0",
+      "sha256": "sha256:7f11219995424a156d9dd4f9c259d8b1b54bc4636ffcba1320bd50b5435643d9"
+    }
+  ],
+  "pack_sha256": "sha256:34ddf50a8e21fcb65df28368ca74f6f069772180e59644529b170b07f95c4965"
+}

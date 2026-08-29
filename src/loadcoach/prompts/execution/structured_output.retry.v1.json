@@ -1,0 +1,38 @@
+{
+  "prompt_id": "execution.structured_output.retry",
+  "version": "1.0.0",
+  "schema_version": "1.0",
+  "purpose": "Ask a model that returned output failing its task profile's structured-output policy to return the same answer in the required shape, naming exactly what was wrong.",
+  "task": "execution.corrective_retry",
+  "capability": "structured_output",
+  "system": "Return only the corrected JSON document. Do not explain, do not apologise, and do not add commentary before or after it.",
+  "template": "Your previous answer did not satisfy the required output format.\n\nWHAT WAS WRONG\n{{ problems }}\n\nREQUIRED SHAPE\n{{ schema }}\n\nYOUR PREVIOUS ANSWER\n{{ previous_output }}\n\nReturn the same answer, unchanged in substance, as a JSON document that satisfies the required shape. Do not invent content to fill a field you have no answer for; use null where the shape permits it.",
+  "variables": {
+    "problems": {
+      "type": "string",
+      "required": true,
+      "description": "The failing checks, one per line, each naming a field path and what was wrong with it, so the model corrects the specific defect rather than guessing."
+    },
+    "schema": {
+      "type": "string",
+      "required": true,
+      "description": "The JSON Schema the output must satisfy, as text."
+    },
+    "previous_output": {
+      "type": "string",
+      "required": true,
+      "description": "The model's own previous answer, so the correction preserves its substance rather than regenerating it."
+    }
+  },
+  "response": {
+    "format": "json",
+    "json_schema_ref": null,
+    "expectations": [
+      "A single JSON document and nothing else."
+    ]
+  },
+  "metadata": {
+    "change_reason": "First version. Originated by LoadCoach for the structured-output corrective retry (spec §9): the one prompt LoadCoach applies to a caller's job, recorded on the attempt that used it.",
+    "owner": "loadcoach"
+  }
+}

@@ -293,6 +293,7 @@ def _facts_for(model: Model, *, is_remote: bool) -> ModelFacts:
         canonical_id=model.canonical_id,
         provider_kind=model.provider_kind,
         provider_model_name=model.provider_model_name,
+        artifact_digest=model.artifact_digest,
         available=model.available,
         unavailable_reason=model.unavailable_reason,
         max_context=model.max_context,

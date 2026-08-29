@@ -35,12 +35,16 @@ __all__ = [
     "ApiToken",
     "Base",
     "Model",
+    "Job",
+    "JobAttempt",
+    "JobEvent",
     "ModelCapability",
     "RoutingCandidate",
     "RoutingDecision",
     "RuntimeProfile",
     "Setting",
     "TaskProfile",
+    "Validation",
     "utcnow",
 ]
 
@@ -221,21 +225,22 @@ class ApiToken(Base):
 class RoutingDecision(Base):
     """One complete routing decision, persisted for every decision — never sampled (routing §8).
 
-    ``job_id`` is absent from Phase 3 entirely: the ``jobs`` table arrives with Phase 4, and a
-    nullable foreign key to a table that does not exist yet is not a column, it is a migration
-    that cannot run. Phase 4 adds it, which is additive and needs no rewrite here (data model's
-    own ``routing_decisions`` sketch marks the column ``FK NULL`` for exactly the ``/route``
-    case this phase serves).
+    ``job_id`` is ``NULL`` for a ``POST /route`` call, which makes a decision without a job — the
+        cheapest way to understand the system, and the one to reach for when a decision looks wrong.
+        It was added by Phase 4's migration, once ``jobs`` existed for it to point at.
 
-    ``explanation_json`` holds routing §8's document verbatim. The individual columns beside it
-    are what queries filter and sort on; the document is what a person reads. Both are written
-    from one in-memory structure, so they cannot disagree.
+        ``explanation_json`` holds routing §8's document verbatim. The individual columns beside it
+        are what queries filter and sort on; the document is what a person reads. Both are written
+        from one in-memory structure, so they cannot disagree.
     """
 
     __tablename__ = "routing_decisions"
     __table_args__ = (Index("ix_routing_decisions_requested_at", "requested_at"),)
 
     id: Mapped[str] = ulid_primary_key()
+    job_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     task_profile_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     task_profile_version: Mapped[str] = mapped_column(String, nullable=False)
     strategy_name: Mapped[str] = mapped_column(String, nullable=False)
@@ -299,4 +304,166 @@ class RoutingCandidate(Base):
     rejected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     rejection_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     rejection_detail_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+
+
+class Job(Base):
+    """One execution, synchronous or queued (data model's ``jobs``).
+
+    A synchronous ``POST /generate`` gets a job row too, so every execution has an explanation and
+    a history — the alternative is two classes of execution, only one of which can be debugged.
+
+    Phase 3's ``routing_decisions`` gains its ``job_id`` here: it was deliberately absent from
+    migration ``0002`` because a nullable foreign key to a table that did not exist yet is not a
+    column, it is a migration that cannot run.
+
+    Queue columns (``class``, priorities, lease, ``scheduled_for``, ``max_wait_seconds``) are
+    declared now and written only by Phase 5. Declaring them here rather than in a later migration
+    keeps one table definition rather than two, and costs nothing: an unwritten nullable column is
+    free.
+    """
+
+    __tablename__ = "jobs"
+    __table_args__ = (
+        UniqueConstraint("source", "idempotency_key"),
+        Index(
+            "ix_jobs_state_effective_priority_created_at",
+            "state",
+            "effective_priority",
+            "created_at",
+        ),
+        Index("ix_jobs_task_profile_id_created_at", "task_profile_id", "created_at"),
+        Index("ix_jobs_selected_model_id_created_at", "selected_model_id", "created_at"),
+        Index("ix_jobs_lease_expires_at", "lease_expires_at"),
+        Index("ix_jobs_state_queued_at", "state", "queued_at"),
+    )
+
+    id: Mapped[str] = ulid_primary_key()
+    task_profile_id: Mapped[str] = mapped_column(String, nullable=False)
+    task_profile_version: Mapped[str] = mapped_column(String, nullable=False)
+    job_class: Mapped[str] = mapped_column("class", String, nullable=False, default="normal")
+    base_priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    effective_priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    source: Mapped[str] = mapped_column(String, nullable=False, default="anonymous")
+    state: Mapped[str] = mapped_column(String, nullable=False)
+    state_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    idempotent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    idempotency_expires_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    request_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    prompt_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    prompt_text: Mapped[str | None] = mapped_column(String, nullable=True)
+    response_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    response_text: Mapped[str | None] = mapped_column(String, nullable=True)
+    structured_output_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    tool_calls_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    reasoning_available: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reasoning_summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    reasoning_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    selected_model_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("models.id", ondelete="SET NULL"), nullable=True
+    )
+    runtime_profile_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("runtime_profiles.id", ondelete="SET NULL"), nullable=True
+    )
+    runtime_profile_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    served_context: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    served_context_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_gpu_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    lease_owner: Mapped[str | None] = mapped_column(String, nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+    scheduled_for: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    queued_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    max_wait_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    queue_wait_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    provider_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    loadcoach_overhead_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ttft_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    thinking_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    validation_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    degradations_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_text: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class JobAttempt(Base):
+    """One try at one job, on one model (data model's ``job_attempts``).
+
+    A corrective retry is a **new row**, never an edit of the previous one: the original attempt's
+    output, timings and failure are what make the retry explicable, and a retry that overwrote
+    them would leave a job history saying only that it eventually worked.
+    """
+
+    __tablename__ = "job_attempts"
+    __table_args__ = (UniqueConstraint("job_id", "attempt"),)
+
+    id: Mapped[str] = ulid_primary_key()
+    job_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("models.id", ondelete="SET NULL"), nullable=True
+    )
+    runtime_profile_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    outcome: Mapped[str] = mapped_column(String, nullable=False)
+    provider_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ttft_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    finish_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_text: Mapped[str | None] = mapped_column(String, nullable=True)
+    partial_response_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    prompt_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    prompt_sha256: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class JobEvent(Base):
+    """One entry in a job's event stream (data model's ``job_events``).
+
+    The persisted half of the SSE contract: a reconnecting client replays from here by
+    ``sequence``, which is why ``(job_id, sequence)`` is unique rather than merely indexed.
+    """
+
+    __tablename__ = "job_events"
+    __table_args__ = (UniqueConstraint("job_id", "sequence"),)
+
+    id: Mapped[str] = ulid_primary_key()
+    job_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    message: Mapped[str | None] = mapped_column(String, nullable=True)
+    data_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+
+
+class Validation(Base):
+    """One validation check's result (data model's ``validations``)."""
+
+    __tablename__ = "validations"
+
+    id: Mapped[str] = ulid_primary_key()
+    job_attempt_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("job_attempts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    detail_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)

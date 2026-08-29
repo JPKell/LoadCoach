@@ -42,6 +42,29 @@ packaging and release standards §3.
   - `[routing].remote_cost_factor` and `execution.min_output_tokens` added; discovery now persists
     the descriptor geometry (`layers`, `kv_heads`, `head_dim`, …) the KV estimate needs, omitting
     every field the provider did not report rather than storing a zero.
+- Phase 4: execution, streaming and validation.
+  - `services/execution.py`: the executor. The caller's `system`/`prompt` (or `messages`) reaches
+    the provider **byte-for-byte** — no system prompt of LoadCoach's own is prepended, nothing is
+    substituted, and a test asserts the transcript ModelRack received equals what the caller sent.
+    The provider is always called through `stream()`, in both endpoints, so cancellation, the
+    idle timeout and partial-response preservation are uniform; a provider that cannot stream
+    records `cancellation_deferred_to_completion`. Provider time and LoadCoach overhead are
+    measured separately and never summed into one figure.
+  - `domain/validation.py`: JSON, JSON Schema, required fields, regex and length. The schema
+    validator implements the keywords the suite's schemas use and **refuses** a schema using any
+    other, because an ignored constraint is a validation that passed for a reason nobody intended.
+    Every failing field path is reported, not the first.
+  - The corrective retry is a **new attempt row**, never an edit of the previous one, and it
+    records the `prompt_id`, `version` and `sha256` of the prompt LoadCoach applied.
+  - `prompts/`: the pack LoadCoach originates, through `setspec.prompts`. One record so far —
+    `execution.structured_output.retry`.
+  - `POST /api/v1/generate` and `POST /api/v1/generate/stream`, the latter on MirrorWall's SSE.
+    Every frame carries the SetSpec event envelope except `token`, which is bare (ADR-0025 §3).
+    A reconnect with the same `idempotency_key` and a `Last-Event-ID` attaches to the execution
+    already running and receives exactly the frames it missed.
+  - Migration `0003`: `jobs`, `job_attempts`, `job_events`, `validations`, and `job_id` on
+    `routing_decisions`. Every execution gets a job row, synchronous or not, so every execution
+    has an explanation and a history.
 - MirrorWall adoption (that package's Phases 1 and 2): `RequestIdMiddleware`,
   `HostValidationMiddleware`, `error_body` and `mount_static` now come from the package, and this
   application's own copies are deleted rather than kept in parallel. Assets are served with

@@ -38,6 +38,7 @@ from loadcoach.config import LOOPBACK_HOSTS, Settings
 from loadcoach.infrastructure.providers.factory import build_provider
 from loadcoach.services.database import Database
 from loadcoach.web.rendering import templates
+from loadcoach.web.routes import generate as generate_routes
 from loadcoach.web.routes import models as models_routes
 from loadcoach.web.routes import routing as routing_routes
 from loadcoach.web.routes import system as system_routes
@@ -56,6 +57,11 @@ _STATUS_BY_CODE: dict[str, int] = {
     "MISDIRECTED_REQUEST": 421,
     "TASK_PROFILE_NOT_FOUND": status.HTTP_404_NOT_FOUND,
     "NO_ELIGIBLE_MODEL": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "ALL_CANDIDATES_FAILED": status.HTTP_502_BAD_GATEWAY,
+    "PROVIDER_UNAVAILABLE": status.HTTP_503_SERVICE_UNAVAILABLE,
+    "PROVIDER_TIMEOUT": status.HTTP_504_GATEWAY_TIMEOUT,
+    "PROVIDER_PROTOCOL_ERROR": status.HTTP_502_BAD_GATEWAY,
+    "MODEL_NOT_FOUND": status.HTTP_404_NOT_FOUND,
     "CONTEXT_LIMIT_EXCEEDED": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "CAPABILITY_UNSUPPORTED": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "INSUFFICIENT_RESOURCES": status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -253,6 +259,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(models_routes.router, prefix="/api/v1")
     app.include_router(task_profiles_routes.router, prefix="/api/v1")
     app.include_router(routing_routes.router, prefix="/api/v1")
+    app.include_router(generate_routes.router, prefix="/api/v1")
     app.include_router(models_routes.ui_router)
     app.include_router(task_profiles_routes.ui_router)
     app.include_router(routing_routes.ui_router)

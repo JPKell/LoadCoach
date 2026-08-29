@@ -55,6 +55,10 @@ class ModelFacts:
         canonical_id: ``provider/name@sha256:digest`` (ADR-0008). Display and lookup only.
         provider_kind: The provider family, e.g. ``"ollama"``.
         provider_model_name: The name this provider reports.
+        artifact_digest: The digest, when the provider exposed one. The executor calls the
+            provider with the full identity triple rather than the name alone, because a tag can
+            be repointed between discovery and execution and a name-only call would silently run
+            a different model (ADR-0008, ADR-0024).
         available: Whether the most recent discovery still saw it.
         unavailable_reason: Why not, when ``available`` is false.
         max_context: The **advertised** maximum. Never a constraint input on its own (ADR-0023);
@@ -72,6 +76,7 @@ class ModelFacts:
     canonical_id: str
     provider_kind: str
     provider_model_name: str
+    artifact_digest: str | None = None
     available: bool = True
     unavailable_reason: str | None = None
     max_context: int | None = None
