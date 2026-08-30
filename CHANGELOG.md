@@ -8,6 +8,30 @@ packaging and release standards §3.
 ## [Unreleased]
 
 ### Added
+- Phase 5, unit 3: enqueue, the atomic claim, leases and the ageing sweep (`services/queue.py`,
+  queue §3–§4, ADR-0029 §1–§2, ADR-0010).
+  - `enqueue`: durable idempotency on `(source, idempotency_key)` with `idempotency_expires_at`
+    written from `queue.idempotency_ttl_hours`; an expired key is released for reuse and a raced
+    duplicate resolves to the row that won the unique index; `QUEUE_FULL` above `max_depth`.
+  - `claim`: one `UPDATE … WHERE id = (SELECT … ORDER BY effective_priority DESC, created_at
+    LIMIT 1) RETURNING` under `BEGIN IMMEDIATE` (`FOR UPDATE SKIP LOCKED` on PostgreSQL). It never
+    touches `attempt`. Affinity batching prefers a resident model's job within the top-priority
+    tie only, bounded by `max_affinity_streak`.
+  - `transition`/`move`: every state change is a compare-and-set on `state` (and `lease_owner`
+    for a worker) plus its event in one transaction; a lost lease is a refusal, not an overwrite.
+    Only lease-holding states carry a lease, so reaping selects on `lease_expires_at` alone.
+  - `ageing_sweep`: the one set-based `UPDATE` over `queued`/`waiting_resources` with `queued_at`
+    as the origin, in each dialect's own date arithmetic, sharing `AGEING_EPSILON_POINTS` with
+    the domain formula so SQL and Python agree at exact minute boundaries.
+  - `renew_leases` (the keeper's statement), `reap_expired_leases` (idempotent work requeues,
+    non-idempotent fails with `worker_lost`), `expire_max_wait` (`MAX_WAIT_EXCEEDED`),
+    `queue_snapshot` (depth by state and class, oldest age, starvation counter), `get_job`,
+    `list_jobs`.
+  - `services/job_events.py`: persisted job events with one gap-free sequence per job, published
+    only after commit; token deltas are fanned out live from the same sequence and never stored.
+  - Query plans asserted on the real compiled statements: the claim walks its index with no temp
+    B-tree, the sweep uses the state index, reaping uses `lease_expires_at`; none scans `jobs`.
+  - Stress test: eight threads claiming two hundred jobs, every job claimed exactly once.
 - Phase 5, unit 2: the scheduling simulator (`tests/simulation/simulator.py`, queue §12), built
   before the scheduler it will drive. A settable `FakeClock`; a discrete-event `Driver` that runs
   real worker threads through handshakes so exactly one thread runs at a time and the interleaving

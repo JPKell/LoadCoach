@@ -15,6 +15,7 @@ from typing import Final
 from baseaicore import ValidationError
 
 __all__ = [
+    "AGEING_EPSILON_POINTS",
     "BANDS",
     "STARVATION_FRACTION_OF_MAX_WAIT",
     "JobClass",
@@ -43,6 +44,15 @@ BANDS: Final[dict[JobClass, tuple[int, int]]] = {
 }
 """Inclusive ``(bottom, top)`` priority band per class (queue §1). A caller may choose a priority
 within its class's band; the band itself is not escapable."""
+
+AGEING_EPSILON_POINTS: Final[float] = 1e-6
+"""Added before flooring the aged points, in SQL and here alike.
+
+SQLite's ``julianday`` arithmetic carries a few tens of microseconds of floating-point error, so at
+an exact minute boundary ``minutes x rate`` can land at 0.9999997 and floor one point low. One
+millionth of a point is sixty microseconds at one point per minute — far below the sweep's 30 s
+granularity — and it makes the set-based statement and this function agree on every row.
+"""
 
 STARVATION_FRACTION_OF_MAX_WAIT: Final[float] = 0.5
 """A job counts as starving once it has waited this fraction of its own ``max_wait_seconds``.
@@ -131,7 +141,7 @@ def effective_priority(
         The effective priority — never below ``base``, never above the cap.
     """
     minutes = max(waiting_seconds, 0.0) / 60.0
-    aged = base + math.floor(minutes * ageing_priority_per_minute)
+    aged = base + math.floor(minutes * ageing_priority_per_minute + AGEING_EPSILON_POINTS)
     return min(aged, ageing_cap(job_class, overflow_allowance=overflow_allowance))
 
 

@@ -31,7 +31,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Final, Protocol
+from typing import Any, Final
 
 from baseaicore import UNSUPPORTED, ModelDescriptor, ModelIdentity, ProviderKind, RuntimeProfile
 from baseaicore.measurement import Measurement, is_supported
@@ -56,8 +56,11 @@ from loadcoach.config import (
     StorageSettings,
     TelemetrySettings,
 )
+from loadcoach.domain.priority import JobClass
 from loadcoach.services.database import Database, ensure_ready
+from loadcoach.services.job_events import JobEventSink
 from loadcoach.services.models import discover_models
+from loadcoach.services.queue import EnqueueOutcome, JobSubmission, Wakeup, enqueue
 from loadcoach.services.task_profiles import import_task_profiles, read_task_profiles_file
 
 __all__ = [
@@ -110,30 +113,6 @@ class SimulationStopped(BaseException):
     A ``BaseException`` rather than an ``Exception`` so the worker loop's ordinary failure handling
     (which catches ``Exception`` so one bad job cannot kill a worker) does not swallow it.
     """
-
-
-class Wakeup(Protocol):
-    """The wake-up primitive a worker waits on between polls — ``threading.Event``'s shape.
-
-    Production hands the worker a ``threading.Event``; the simulator hands it a
-    :class:`SimulatedWakeup`. The worker cannot tell them apart, which is the point.
-    """
-
-    def wait(self, timeout: float) -> bool:
-        """Block until set or until ``timeout`` seconds pass; return whether it was set."""
-        ...
-
-    def set(self) -> None:
-        """Wake every waiter and leave the flag set until :meth:`clear`."""
-        ...
-
-    def clear(self) -> None:
-        """Reset the flag so the next :meth:`wait` blocks."""
-        ...
-
-    def is_set(self) -> bool:
-        """Whether the flag is currently set."""
-        ...
 
 
 class FakeClock:
@@ -761,6 +740,7 @@ class Simulation:
         self.provider.on_load = self._on_load
         self.provider.on_unload = self._on_unload
         self.wakeup = SimulatedWakeup(self.driver)
+        self.sink = JobEventSink()
         url = self.settings.storage.database_url
         assert url is not None
         self.database = Database.from_url(url)
@@ -805,6 +785,47 @@ class Simulation:
     def occupy(self, gpu_index: int, bytes_used: int) -> None:
         """Simulate memory held by something other than a model (another process, a display)."""
         self.gpus[gpu_index].used_bytes = bytes_used
+
+    # ---------------------------------------------------------------------------- submitting
+
+    def submit(
+        self,
+        label: str,
+        *,
+        task: str = "general.chat",
+        job_class: JobClass = JobClass.NORMAL,
+        priority: int | None = None,
+        max_wait_seconds: int | None = None,
+        idempotent: bool = True,
+        idempotency_key: str | None = None,
+        source: str = "simulation",
+        model: str | None = None,
+        stream: bool = False,
+    ) -> EnqueueOutcome:
+        """Enqueue a job whose generation follows ``label``'s script, through the real service."""
+        from loadcoach.domain.routing.subject import RuntimeOverrides
+
+        submission = JobSubmission(
+            task=task,
+            prompt=sim_prompt(label),
+            job_class=job_class,
+            priority=priority,
+            max_wait_seconds=max_wait_seconds,
+            idempotent=idempotent,
+            idempotency_key=idempotency_key,
+            source=source,
+            overrides=None if model is None else RuntimeOverrides(model=model),
+            stream=stream,
+        )
+        return enqueue(
+            self.database,
+            submission,
+            now=self.clock.now(),
+            queue_settings=self.settings.queue,
+            execution_settings=self.settings.execution,
+            sink=self.sink,
+            wakeup=self.wakeup,
+        )
 
     # ------------------------------------------------------------------------------- driving
 
