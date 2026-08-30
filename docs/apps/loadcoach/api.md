@@ -260,7 +260,13 @@ that reaches a service directly with a read-scoped principal is refused too.
 A browser cannot add `Authorization` to a page navigation, so on a tokened bind the same bearer token
 is carried by the `loadcoach_token` cookie (`HttpOnly`, `Secure`, `SameSite=Strict`), set once from the
 401 page by pasting the token and cleared by `POST /token-cookie/clear`. No account, no password: the
-cookie *is* the token, and revoking the token revokes it.
+cookie *is* the token, and revoking the token revokes it. **The tokened-bind UI needs HTTPS or
+loopback**: both this cookie and the CSRF cookie are `Secure` (the CSRF cookie `__Host`-prefixed
+besides), so on a plain-HTTP non-loopback origin the browser stores neither — `POST /token-cookie`
+is then refused with `CSRF_FAILED` and pages stay 401. That is the flags working as intended, not a
+defect; terminate TLS at the reverse proxy (ADR-0014 §7) rather than weakening them. The API's
+`Authorization` header is unaffected, and `serve` warns at startup on a non-loopback bind with no
+`trusted_proxies` configured.
 
 Per-token rate limits and queue-depth caps prevent one caller from starving others. The limit is a
 token bucket keyed by the credential's digest (by address before authentication): `[server]

@@ -312,8 +312,51 @@ def test_scoped_endpoints_reject_wrong_scopes_and_accept_right_ones_over_http(
         assert client.get("/", headers={"Accept": "text/html"}).status_code == 401
         page = client.get("/", headers={"Accept": "text/html"})
         assert 'action="/token-cookie"' in page.text  # the 401 page offers to carry a token
+        # F5 (M5C-5): the form's cookies are Secure, so the page says where the flow works.
+        assert "HTTPS or loopback" in page.text
         assert client.get("/", headers={"Cookie": "loadcoach_token=read-token"}).status_code == 200
         assert client.get("/queue", headers={"Cookie": "loadcoach_token=nope"}).status_code == 401
+
+
+def test_a_non_loopback_bind_without_a_proxy_warns_at_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """F5 (M5C-5) / ADR-0014 §7: plain HTTP beyond loopback, no evidence of a proxy — warn.
+
+    `trusted_proxies` being configured is the evidence; without it the warning says what breaks
+    (the UI's Secure cookies) and what is unaffected (the bearer-token API). The warning must
+    not fire on loopback or once a proxy is declared.
+    """
+    import logging
+
+    from typer.testing import CliRunner
+
+    from loadcoach.bootstrap import bootstrap
+    from loadcoach.cli.main import app as cli
+
+    url = f"sqlite:///{tmp_path / 'warn.sqlite3'}"
+    monkeypatch.setenv("LOADCOACH_STORAGE__DATABASE_URL", url)
+    monkeypatch.setenv("LOADCOACH_PROVIDER__KIND", "fake")
+    seed = Database.from_url(url)
+    ensure_ready(seed, auto_migrate=True)
+    seed.close()
+    # bootstrap()'s configure_logging replaces the root handlers, which would silently remove
+    # caplog's capturing handler; the warning under test is emitted after it runs.
+    monkeypatch.setattr("loadcoach.bootstrap.configure_logging", lambda *a, **k: None)
+    assert CliRunner().invoke(cli, ["token", "create", "ops", "--scope", "admin"]).exit_code == 0
+    monkeypatch.setenv("LOADCOACH_SERVER__HOST", "192.0.2.10")
+    monkeypatch.setenv("LOADCOACH_SERVER__ALLOWED_HOSTS", "coach.test")
+    with caplog.at_level(logging.WARNING, logger="loadcoach.bootstrap"):
+        bootstrap()
+    exposure = [r for r in caplog.records if r.message == "server.plain_http_exposure"]
+    assert len(exposure) == 1
+    assert "HTTPS or loopback" in exposure[0].detail  # type: ignore[attr-defined]  # extra
+
+    caplog.clear()
+    monkeypatch.setenv("LOADCOACH_SERVER__TRUSTED_PROXIES", "127.0.0.0/8")
+    with caplog.at_level(logging.WARNING, logger="loadcoach.bootstrap"):
+        bootstrap()
+    assert not [r for r in caplog.records if r.message == "server.plain_http_exposure"]
 
 
 def test_host_validation_precedes_authentication_on_both_binds(

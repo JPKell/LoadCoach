@@ -17,6 +17,13 @@ packaging and release standards §3.
   other peer the header is ignored entirely. The brake stays keyed per address, deliberately:
   keyed per `(address, credential)` a guesser would mint a fresh bucket with every guess.
   api.md §11 now says what the brake does to valid tokens.
+- `serve` now warns at startup (`server.plain_http_exposure`) on a non-loopback bind with no
+  `trusted_proxies` configured — ADR-0014 §7's "no evidence of a proxy" warning. The 401 page,
+  api.md §11 and docs/security.md now say plainly that the tokened-bind browser flow needs
+  HTTPS or loopback: its cookies are `Secure` (the CSRF cookie `__Host`-prefixed), so on a
+  plain-HTTP non-loopback origin the browser stores neither and `POST /token-cookie` is refused
+  with `CSRF_FAILED`. The cookie flags are unchanged, deliberately; the API's `Authorization`
+  header is unaffected.
 
 ### Fixed
 

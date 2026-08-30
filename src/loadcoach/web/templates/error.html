@@ -25,6 +25,7 @@
     <label for="token">Use an API token in this browser</label>
     <input type="password" id="token" name="token" autocomplete="off" required>
     <p class="field-hint">The token is kept in an HttpOnly cookie for this browser only; <span class="mono">loadcoach token create</span> issues one.</p>
+    <p class="field-hint">This form needs HTTPS or loopback: its cookies are <span class="mono">Secure</span>, and over plain HTTP anywhere else the browser will not store them — put a TLS proxy in front (see <span class="mono">docs/security.md</span>). The API's <span class="mono">Authorization</span> header works either way.</p>
     <button type="submit" data-variant="primary">Continue</button>
   </form>
   {% endif %}

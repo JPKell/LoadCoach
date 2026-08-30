@@ -33,8 +33,11 @@ loadcoach serve
 * A non-loopback `host` with no active token is `INSECURE_BINDING` at startup.
 * `0.0.0.0` without `allow_lan_exposure = true` is `INSECURE_BINDING` at startup.
 
-TLS is a reverse proxy's job (ADR-0014 §7); LoadCoach speaks HTTP. Put it behind one, and name
-the proxy's hostname in `allowed_hosts`.
+TLS is a reverse proxy's job (ADR-0014 §7); LoadCoach speaks HTTP. Put it behind one, name the
+proxy's hostname in `allowed_hosts`, and list the proxy's networks in `trusted_proxies` so the
+failed-authentication brake keys on real client addresses from `X-Forwarded-For` rather than
+braking everyone behind the proxy at once. `serve` warns at startup on a non-loopback bind with
+no `trusted_proxies` configured — that is ADR-0014 §7's "no evidence of a proxy" warning.
 
 ## Tokens and scopes
 
@@ -62,6 +65,12 @@ A browser cannot add a header to a page navigation, so the UI carries the same b
 into the 401 page's form, cleared by `POST /token-cookie/clear`. No account, no password: the cookie
 *is* the token, and revoking the token revokes it. The cookies need a secure context, which
 `http://localhost` and a TLS-terminated LAN deployment both are.
+
+**On a plain-HTTP non-loopback bind the UI flow cannot work, by design.** The token cookie and the
+CSRF cookie are both `Secure` (the CSRF cookie `__Host`-prefixed besides), so a browser at
+`http://<lan-address>` stores neither: `POST /token-cookie` is refused with `403 CSRF_FAILED` and
+every page stays 401, while the API's `Authorization` header keeps working. The 401 page says so.
+The fix is HTTPS at the reverse proxy, never weaker cookie flags.
 
 ## Forms, origins, bodies
 

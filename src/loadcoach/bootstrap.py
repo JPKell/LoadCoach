@@ -12,6 +12,7 @@ at the source level while still running the same application in one process.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -28,6 +29,8 @@ from loadcoach.services.task_profiles import import_task_profiles, read_task_pro
 from loadcoach.web.app import create_app
 
 __all__ = ["Application", "bootstrap", "create_app_from_environment"]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +116,27 @@ def bootstrap() -> Application:
                 "server.host is not loopback but no active API token exists. A non-loopback bind "
                 "must have at least one token created first: `loadcoach token create`.",
                 details={"field": "server.host", "host": loaded.settings.server.host},
+            )
+        if (
+            loaded.settings.server.host not in LOOPBACK_HOSTS
+            and not loaded.settings.server.trusted_proxies
+        ):
+            # ADR-0014 §7's startup warning (F5/M5C-5): LoadCoach speaks HTTP and expects a TLS
+            # reverse proxy on any non-loopback bind; `trusted_proxies` being set is the one
+            # piece of configuration that evidences one. Without it, warn — and say what breaks:
+            # the UI's cookies are `Secure`, so over plain HTTP beyond loopback the browser
+            # stores neither the CSRF nor the token cookie and the 401 page's flow cannot work.
+            logger.warning(
+                "server.plain_http_exposure",
+                extra={
+                    "host": loaded.settings.server.host,
+                    "detail": (
+                        "non-loopback bind with no [server] trusted_proxies configured: "
+                        "ADR-0014 §7 expects a TLS reverse proxy here. Over plain HTTP the "
+                        "browser refuses the UI's Secure cookies, so the tokened-bind page "
+                        "flow needs HTTPS or loopback; the bearer-token API is unaffected."
+                    ),
+                },
             )
         profiles = read_task_profiles_file()
         import_task_profiles(database, profiles, now=datetime.now(UTC))
