@@ -27,6 +27,9 @@ def test_system_page_shows_every_named_section(client: TestClient) -> None:
     assert "Workers" in text and "of max_concurrent_jobs" in text and "in flight" in text
     assert "Dispatch latency" in text and "Starving" in text
     assert "Machine fingerprint" in text
+    # F11 (M5C-11): the 64-character fingerprint made the whole page scroll at 375 px; the
+    # stopgap wrap rule must be on the page until MirrorWall 0.2.1 carries it in components.css.
+    assert "overflow-wrap: anywhere" in text
     # The deterministic telemetry fixture: one 48 GiB device with 1 GiB used; unmeasured
     # readings are dashes carrying the reason, never zeros.
     assert "48.0 GB" in text or "48 GB" in text or "GiB" in text

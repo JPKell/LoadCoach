@@ -253,7 +253,10 @@ def test_what_a_person_must_still_check() -> None:
     """The §13 items no test here can hold, and what to do for each.
 
     * Layout at 1280×720 and at 375 px: open every navigation entry at both widths and confirm no
-      primary control is clipped; tables scroll horizontally inside their own container.
+      primary control is clipped; tables scroll horizontally inside their own container. Check
+      ``/jobs/{id}`` and ``/system`` first: both scrolled the page at 375 px (F6/F11, M5C-6 and
+      M5C-11 — an escaped link blob and the 64-character fingerprint) and now carry a stopgap
+      ``overflow-wrap`` rule; confirm ``document.documentElement.scrollWidth <= window.innerWidth``.
     * Keyboard-only: tab through the Queue page's three controls, the Settings form and the
       Jobs filter bar; every focusable element shows a ring; Enter submits.
     * JavaScript disabled: the Queue page shows the report and the controls still work (the
