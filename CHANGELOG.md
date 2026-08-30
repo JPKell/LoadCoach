@@ -17,6 +17,17 @@ packaging and release standards §3.
     directions), freshness from `measured_at` alone, staleness with its four reasons, environment
     drift, the machine and runtime-profile hard separations, the `user.*` opt-in gate, and a
     selection rule that never averages two records.
+- Phase 6, unit 2: the importer (api.md §7, spec §14, ADR-0022, ADR-0025 §2).
+  - `loadcoach.services.evidence.import_bundle`: size guard, then schema-version negotiation,
+    then per-record validation — every one of them before the transaction opens, so an
+    unsupported major leaves existing evidence byte-identical. Per-record reporting of
+    imported / updated / unmatched / ambiguous / rejected, with a `DUPLICATE_RECORD` rejection
+    where two records in one bundle would otherwise merge onto a single row.
+  - A complete bundle marks the rows it omits `superseded`; an incremental one removes nothing.
+  - `rebind_evidence_in` runs inside every discovery pass, so evidence imported before its
+    models were discovered binds with no re-import.
+  - `[evidence] accept_schema_majors` may narrow what this build reads and never widen it — a
+    major with no payload models cannot be handed to a v1 reader.
 - Phase 5, unit 8: the surface (api.md §5, §8; spec §7.2).
   - `POST /jobs` (202; a repeated key returns the original job with `X-Idempotent-Replay`),
     `GET /jobs` (filters by state, class, task and source; opaque cursor pagination),

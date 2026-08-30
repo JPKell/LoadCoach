@@ -23,6 +23,7 @@ from loadcoach.domain.registry import (
     validate_manual_score,
 )
 from loadcoach.infrastructure.db.models import Model, ModelCapability
+from loadcoach.services.evidence import rebind_evidence_in
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -163,6 +164,9 @@ def discover_models(database: Database, provider: Provider, *, now: datetime) ->
     A model previously discovered but absent from this pass is marked ``available=False`` with a
     reason — never deleted (dev-plan P2 test list, database standards §8).
 
+    Imported evidence is re-bound in the same transaction (ADR-0022 §4), so a bundle that arrived
+    before its models were discovered starts scoring on this pass rather than on a re-import.
+
     Args:
         database: The application's database handle.
         provider: The provider to discover through.
@@ -205,6 +209,12 @@ def discover_models(database: Database, provider: Provider, *, now: datetime) ->
                 model.available = False
                 model.unavailable_reason = "not reported by the provider's most recent discovery"
                 unavailable += 1
+
+        # ADR-0022 §4: every evidence row's `match_state` is re-evaluated on every discovery
+        # pass, inside this same transaction. That is what makes evidence imported before a
+        # model was known bind by itself, with no re-import — and what unbinds a row whose
+        # model this pass just upgraded away from the identity it was bound to.
+        rebind_evidence_in(session)
 
     return DiscoveryOutcome(
         added=added,

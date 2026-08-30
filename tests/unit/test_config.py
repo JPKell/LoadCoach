@@ -153,3 +153,28 @@ def test_queue_idempotency_ttl_and_watchdog_defaults(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigurationError, match="idempotency_ttl_hours"):
         load_settings(config_path=config_file)
+
+
+def test_evidence_defaults_are_the_documented_not_configured_state(tmp_path: Path) -> None:
+    """`freeweight_url = ""` means **not configured**, which is not "unavailable" (spec §12)."""
+    loaded = load_settings(config_path=tmp_path / "missing.toml")
+    evidence = loaded.settings.evidence
+    assert evidence.freeweight_url == ""
+    assert evidence.freeweight_api_key_env == ""
+    assert evidence.freeweight_api_key_file == ""
+    assert evidence.allowed_source_hosts == ("127.0.0.1", "localhost", "::1")
+    assert evidence.accept_schema_majors == (1,)
+
+
+def test_accept_schema_majors_may_narrow_but_never_widen(tmp_path: Path) -> None:
+    """A major this build has no payload models for cannot be accepted into a v1 reader."""
+    from baseaicore import ConfigurationError
+
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("[evidence]\naccept_schema_majors = [1, 2]\n")
+    with pytest.raises(ConfigurationError, match="accept_schema_majors"):
+        load_settings(config_path=config_file)
+
+    narrowing = tmp_path / "narrow.toml"
+    narrowing.write_text("[evidence]\naccept_schema_majors = []\n")
+    assert load_settings(config_path=narrowing).settings.evidence.accept_schema_majors == ()

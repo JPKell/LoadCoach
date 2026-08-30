@@ -394,9 +394,51 @@ class EvidenceSettings(BaseModel):
         examples=[["127.0.0.1", "localhost", "::1"]],
     )
     import_interval_hours: float = Field(default=24.0, gt=0, examples=[24.0])
-    accept_schema_majors: tuple[int, ...] = Field(default=(1,), examples=[[1]])
+    accept_schema_majors: tuple[int, ...] = Field(
+        default=(1,),
+        description=(
+            "Which `benchmark.evidence_bundle` schema majors this installation reads. May only "
+            "narrow what this build carries payload models for, never widen it."
+        ),
+        examples=[[1]],
+    )
 
     _split_allowed_source_hosts = field_validator("allowed_source_hosts", mode="before")(_split_csv)
+
+    @field_validator("accept_schema_majors")
+    @classmethod
+    def _check_majors_are_readable(cls, value: tuple[int, ...]) -> tuple[int, ...]:
+        """Refuse a schema major this build has no payload models for.
+
+        Accepting a major SetSpec does not ship models for would let a bundle past version
+        negotiation and into a v1 reader, which is the "partially parse a newer major" failure
+        the import contract exists to prevent. The setting may therefore *narrow* what this build
+        can read — an installation that wants to refuse a major it could read is entitled to —
+        and never widen it.
+
+        Args:
+            value: The configured majors.
+
+        Returns:
+            The same tuple.
+
+        Raises:
+            ValueError: A configured major is not one this build carries models for; the message
+                names both what was asked for and what is available.
+        """
+        import setspec
+
+        available = sorted(setspec.SUPPORTED_SCHEMAS["benchmark.evidence_bundle"])
+        unknown = sorted(set(value) - set(available))
+        if unknown:
+            message = (
+                f"evidence.accept_schema_majors names major version(s) {unknown}, which this "
+                f"build has no benchmark.evidence_bundle payload models for; it carries "
+                f"{available}. A consumer cannot read a shape it does not have a model for, and "
+                "accepting one anyway would let a newer major be parsed by an older reader."
+            )
+            raise ValueError(message)
+        return value
 
 
 class ResidencySettings(BaseModel):

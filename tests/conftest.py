@@ -7,11 +7,17 @@ standards §9), so every test runs against a throwaway tree by default.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from setspec import (
+    GeneratorInfo,
+    SchemaVersion,
+    dump_envelope,
+    golden_payloads,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -39,3 +45,49 @@ def _isolated_xdg_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterat
 def frozen_instant() -> datetime:
     """A fixed, timezone-aware UTC instant for deterministic timestamp assertions."""
     return datetime(2026, 8, 26, 12, 0, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def wrap_bundle() -> Callable[..., str]:
+    """Return a helper that wraps an evidence payload in a SetSpec envelope.
+
+    The payload is whatever the caller supplies — a golden, a mutated golden, or a hand-built
+    minimal bundle — and the envelope is built by ``setspec.dump_envelope`` rather than by string
+    formatting, so a test can never accidentally assert against an envelope shape SetSpec would
+    not produce.
+    """
+
+    def wrap(
+        payload: Mapping[str, object],
+        *,
+        major: int = 1,
+        minor: int = 0,
+        generator: str = "freeweight",
+        generator_version: str = "1.0.0",
+        generated_at: datetime | None = None,
+    ) -> str:
+        return dump_envelope(
+            payload,
+            schema="benchmark.evidence_bundle",
+            version=SchemaVersion(major, minor),
+            generator=GeneratorInfo(name=generator, version=generator_version),
+            generated_at=generated_at or datetime(2026, 8, 21, 12, 0, tzinfo=UTC),
+        )
+
+    return wrap
+
+
+@pytest.fixture
+def golden_bundle() -> dict[str, object]:
+    """The ``full`` ``benchmark.evidence_bundle`` golden, straight from the installed SetSpec.
+
+    Three records: a digest-identified ``coding.python``, a ``user.noir_tech_voice`` with
+    calibration, and a ``name_only`` ``reasoning`` measured under a different runtime profile.
+    Between them they exercise every branch P6 has to get right, which is why the goldens are
+    imported rather than hand-authored (ADR-0009 rule 7).
+    """
+    for payload in golden_payloads("benchmark.evidence_bundle", SchemaVersion(1, 0)):
+        if payload.get("evidence"):
+            return payload
+    message = "the installed setspec ships no evidence_bundle golden carrying records"
+    raise AssertionError(message)
