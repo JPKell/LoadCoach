@@ -24,6 +24,11 @@ jobs:
       - run: pip install ruff
       - run: ruff check .
 
+  # Every job below installs this package's dependency set, and every one of them is red until
+  # `weightsdb 0.2.0` and `mirrorwall 0.2.0` are published: both are runtime dependencies and
+  # neither is on any index. Locally the repository works because both are editable installs
+  # pointing at sibling checkouts. `requirements/README.md` records the proof and the two-line
+  # conversion to `--require-hashes -r requirements/ci.lock` to make once they are published.
   types:
     runs-on: ubuntu-latest
     steps:
@@ -70,11 +75,18 @@ jobs:
     services:
       postgres:
         image: postgres:16
+        # Credentials and database name match `weightsdb.testing`'s documented default URL, so the
+        # service this job starts is the one the package looks for. The previous values named a
+        # `postgres`/`postgres` server nothing ever connected to: `temporary_postgres` reads
+        # WEIGHTSDB_POSTGRES_URL, not DATABASE_URL, and under REQUIRE_POSTGRES=1 the unused
+        # default was a hard failure rather than a skip — so this job had never run a query.
         env:
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: weightsdb
+          POSTGRES_PASSWORD: weightsdb
+          POSTGRES_DB: weightsdb_test
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+          --health-cmd "pg_isready -U weightsdb -d weightsdb_test" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -83,7 +95,9 @@ jobs:
       - run: pytest -m "not live and not performance" tests/integration
         env:
           WEIGHTSDB_REQUIRE_POSTGRES: "1"
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+          # Set explicitly rather than relying on the default, so the job states which server it
+          # is testing.
+          WEIGHTSDB_POSTGRES_URL: postgresql+psycopg://weightsdb:weightsdb@localhost:5432/weightsdb_test
 
   coverage:
     needs: [tests]
@@ -117,7 +131,11 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install pip-audit
-      - run: pip-audit
+      # Audit the locked set, not the job's own environment: a bare `pip-audit` here would
+      # inspect an environment containing only pip-audit itself (Security Standards §11).
+      # `requirements/ci.lock` joins this list the moment it can be generated — see
+      # requirements/README.md.
+      - run: pip-audit --require-hashes -r requirements/release.lock
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -128,8 +146,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install build twine
-      - run: python -m build
+      # The pinned build chain, byte-for-byte what `release.yml` uses, so a release is the
+      # artifact CI proved rather than a fresh resolution of `build` and `hatchling`.
+      - run: pip install --require-hashes -r requirements/release.lock
+      - run: python -m build --no-isolation
       - run: twine check dist/*
       - uses: actions/upload-artifact@v4
         with: { name: dist, path: dist/ }

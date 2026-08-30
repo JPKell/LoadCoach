@@ -7,6 +7,18 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+## [0.9.0b0] — 2026-08-30
+
+The M4 beta. Phases 1 through 6 of the
+[development plan](docs/apps/loadcoach/development-plan.md): the registry and task profiles,
+evidence-weighted routing with a persisted explanation for every decision, synchronous and
+streaming generation with validation and corrective retries, a durable priority queue, and
+FreeWeight evidence import that visibly changes routing.
+
+**Prepared, not published.** No tag, no upload. `weightsdb` and `mirrorwall` — two runtime
+dependencies extracted from this repository's own work — are not on any index, so this package
+cannot yet be installed from one; see [`requirements/README.md`](requirements/README.md).
+
 ### Added
 - Phase 6, unit 1: the evidence schema and its pure rules (data model §2–§4, ADR-0022, ADR-0023,
   ADR-0017, ADR-0032 §6).
@@ -77,8 +89,34 @@ packaging and release standards §3.
     and no source touched — asserted column by column, not by counting.
   - `pytest -m contract` is green in LoadCoach for the first time; MirrorWall's was already
     closed by its 0.2.0 release.
+- Phase 6, unit 7: LoadCoach's release plumbing, which had never existed.
+  - `requirements/release.in` and `requirements/release.lock` — the hash-pinned build and publish
+    chain, byte-identical to the one WeightsDB, ModelRack and SetSpec release from, and clean
+    under `pip-audit --require-hashes`.
+  - `release.yml` replaces an 803-byte scaffold stub: tag-only publishing through an
+    `environment: pypi` trusted publisher, a manual `workflow_dispatch` TestPyPI dry run, and the
+    same pinned build chain in both.
+  - `ci.yml`'s `build` job now uses that pinned chain with `--no-isolation`, and `security` audits
+    the lock rather than an environment containing only `pip-audit`.
+
+### Changed
+- `pytest>=9.0.3,<10`, up from `>=8,<9`: PYSEC-2026-1845 affects pytest through 9.0.2, and the
+  old range admitted only vulnerable versions. Matches the pin every other repository in the
+  suite carries.
+- `[tool.coverage.run] source` names the importable package `loadcoach` rather than
+  `src/loadcoach`, with a `[tool.coverage.paths]` mapping. A path-based source measures nothing
+  against the non-editable install CI uses.
+
+### Removed
+- `freeweight` from the `dev` extra. It was never importable, is not published, and LoadCoach's
+  contract tests do not read FreeWeight's OpenAPI snapshot — they read SetSpec's goldens. Its
+  presence made `pip install -e ".[dev]"` unresolvable in CI.
 
 ### Fixed
+- The PostgreSQL job had never executed a query: it set `DATABASE_URL`, while
+  `weightsdb.testing.temporary_postgres` reads `WEIGHTSDB_POSTGRES_URL`, and under
+  `WEIGHTSDB_REQUIRE_POSTGRES=1` the unused default is a hard failure rather than a skip. The
+  service container's credentials now match the URL the code actually reads.
 - Four tests read the developer's real GPU through the application's own telemetry collector and
   failed with `insufficient_vram` whenever another process held the card. `tests/conftest.py`
   now pins one deterministic machine for the whole suite, which is what coding standards §5's
