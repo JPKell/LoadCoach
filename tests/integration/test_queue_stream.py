@@ -44,13 +44,14 @@ def _frames(client: TestClient, count: int, *, last_event_id: str | None = None)
         response = await get_queue_stream(Request(scope))
         iterator = cast("AsyncGenerator[bytes | str, None]", response.body_iterator)
         collected: list[str] = []
-        async for chunk in iterator:
-            text = chunk.decode() if isinstance(chunk, bytes) else chunk
-            if text.startswith(":"):
-                continue  # a heartbeat comment
-            collected.append(text)
-            if len(collected) >= count:
-                break
+        with anyio.fail_after(5.0):  # a stream that never delivers is a failure, not a hang
+            async for chunk in iterator:
+                text = chunk.decode() if isinstance(chunk, bytes) else chunk
+                if text.startswith(":"):
+                    continue  # a heartbeat comment
+                collected.append(text)
+                if len(collected) >= count:
+                    break
         await iterator.aclose()
         return collected
 
@@ -76,6 +77,9 @@ def test_the_first_frame_is_the_whole_current_state_with_the_fragment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with _client(tmp_path, monkeypatch) as client:
+        # Wait for the publisher's first poll: a client connecting before it would receive the
+        # frame from the broker rather than from replay, and this test is about replay.
+        _wait_for_frame_after(_publisher(client), 0)
         frames = _frames(client, 1)
         assert len(frames) == 1
         frame = frames[0]
