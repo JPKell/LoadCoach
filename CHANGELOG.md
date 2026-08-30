@@ -8,6 +8,36 @@ packaging and release standards §3.
 ## [Unreleased]
 
 ### Added
+- Phase 5, unit 5: admission and residency (`domain/admission.py`, `services/residency.py`;
+  queue §5–§6, ADR-0027, ADR-0036 §3).
+  - Admission is built around P3's estimator, not instead of it. Routing evaluates a
+    **reservation-adjusted** snapshot: every other in-flight job's estimate is subtracted from
+    *its* device (never summed across devices), a model already resident there is not reserved
+    twice, and an idle resident model's memory counts as reclaimable. A model resident on a device
+    fits there whatever the estimate says — the one exception to "unknown does not fit" — and its
+    device is preferred over another that merely has room (`ConstraintInputs.resident_devices`).
+  - When routing rejects every candidate and at least one rejection is resource-shaped, the job
+    moves `leased → waiting_resources` with the lease released and the numbers recorded on the
+    event (required bytes, headroom, free per device, unknown reasons); when none is, it fails
+    with `NO_ELIGIBLE_MODEL`. The scheduler re-evaluates waiting jobs by admission's own rule —
+    never more optimistically, so nothing bounces — on its cadence and at once when a job leaves
+    flight or a model unloads.
+  - `ResidencyService`: loads a candidate on its target device before execution, evicting the
+    least-recently-used *idle* resident while the device holds `max_resident_models` or lacks
+    the room; unloads after `unload_idle_seconds`, per device; reconciles with the provider's
+    own report; degrades to load-on-demand with `residency_unmanaged` recorded where the provider
+    declares no residency control. Every episode is a `residency` row.
+  - Affinity batching is now fed: a pinned model is recorded at enqueue, routing's residency
+    tie-break and the affinity claim both read the table.
+  - Properties proven by simulation: insufficient VRAM defers with the device's numbers and
+    resumes when it frees, with no claim-defer thrash in between; the two-GPU fixture (larger
+    than either device, smaller than their sum) is deferred, not admitted; above one concurrent
+    job, a second job on the same device waits while the first holds it and runs once the first
+    is idle and evicted; jobs on different devices run concurrently; affinity batching cuts model
+    loads from ten to two without breaching the wait bound (and the mutation without affinity
+    reloads nearly every job); idle unload and per-device LRU eviction; and the starvation bound
+    under a **running** clock with continuous interactive load — which the same scenario with the
+    sweep switched off fails, exactly as ADR-0029 §1 predicts of a startup-only recomputation.
 - Phase 5, unit 4: workers, the scheduler thread and the lease keeper (`services/worker.py`,
   queue §3, §9, ADR-0029 §4).
   - `Worker`: claims atomically, then runs one job through `leased → admitted → executing →

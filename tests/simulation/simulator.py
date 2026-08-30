@@ -865,6 +865,16 @@ class Simulation:
         """Read one job's record."""
         return get_job(self.database, job_id)
 
+    def canonical_id(self, name: str) -> str:
+        """The registry's canonical ID for a catalogue name."""
+        from loadcoach.services.models import list_registry
+
+        for entry in list_registry(self.database):
+            if entry.provider_model_name == name:
+                return entry.canonical_id
+        message = f"no registry entry for {name!r}"
+        raise KeyError(message)
+
     def events(self, job_id: str) -> list[tuple[int, str]]:
         """The persisted event stream of one job as ``(sequence, type)`` pairs."""
         from sqlalchemy import select

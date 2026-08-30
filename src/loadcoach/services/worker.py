@@ -35,7 +35,15 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from baseaicore import SuiteError, new_id
 from modelrack import CancellationToken
 
-from loadcoach.domain.queue_state import JobState, event_type_for
+from loadcoach.domain.admission import (
+    Reservation,
+    adjust_snapshot,
+    classify_rejections,
+    reserved_bytes_by_device,
+    waiting_job_can_proceed,
+)
+from loadcoach.domain.queue_state import IN_FLIGHT_STATES, JobState, event_type_for
+from loadcoach.domain.routing.constraints import free_vram_by_gpu
 from loadcoach.domain.routing.context_budget import estimate_input_tokens
 from loadcoach.domain.routing.subject import RuntimeOverrides
 from loadcoach.services.execution import (
@@ -44,6 +52,7 @@ from loadcoach.services.execution import (
     ExecutionOutcome,
     StreamChunk,
     corrective_turns,
+    identity_of,
     link_decision,
     load_task_schema,
     provider_facts_for,
@@ -58,10 +67,13 @@ from loadcoach.services.queue import (
     ageing_sweep,
     claim,
     expire_max_wait,
+    move,
     reap_expired_leases,
     renew_leases,
     transition,
+    waiting_deferrals,
 )
+from loadcoach.services.residency import ResidencyService
 from loadcoach.services.routing import (
     NoEligibleModel,
     RouteRequest,
@@ -72,13 +84,14 @@ from loadcoach.services.routing import (
 from loadcoach.services.task_profiles import DEFAULT_SCHEMAS_DIR
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
 
     from modelrack.provider import Provider
     from sweatmeter import TelemetrySnapshot
 
     from loadcoach.config import Settings
+    from loadcoach.domain.admission import AdmissionVerdict
     from loadcoach.domain.routing.ranking import RankedCandidate
     from loadcoach.domain.routing.subject import ProviderFacts
     from loadcoach.domain.validation import ValidationOutcome
@@ -108,6 +121,9 @@ POLL_IDLE_SECONDS: Final = 1.0
 _REAPER_INTERVAL_SECONDS: Final = 1.0
 _MAX_WAIT_INTERVAL_SECONDS: Final = 5.0
 _FLAGS_INTERVAL_SECONDS: Final = 1.0
+_REEVALUATE_INTERVAL_SECONDS: Final = 5.0
+_EVICT_INTERVAL_SECONDS: Final = 10.0
+_SYNC_INTERVAL_SECONDS: Final = 60.0
 
 
 @dataclass
@@ -236,7 +252,10 @@ class QueueRuntime:
         owner_prefix: The lease owner prefix — unique per process, so a lease from a previous
             process is recognisably not ours.
         flags: Operator control state.
-        resident_model_ids: Which registry models are resident, for affinity (unit 5 fills it).
+        residency: The residency policy, or ``None`` before :func:`build_runtime` sets it.
+        resources_changed: Set by a worker when a job leaves flight and by an unload — the
+            scheduler re-evaluates ``waiting_resources`` jobs at once rather than on its cadence.
+        resident_model_ids: Which registry models are resident, for the affinity claim.
     """
 
     settings: Settings
@@ -252,6 +271,8 @@ class QueueRuntime:
     schemas_dir: Path
     owner_prefix: str
     flags: QueueFlags = field(default_factory=QueueFlags)
+    residency: ResidencyService | None = None
+    resources_changed: threading.Event = field(default_factory=threading.Event)
     resident_model_ids: Callable[[], frozenset[str]] = lambda: frozenset()
     workers: list[Worker] = field(default_factory=list)
     scheduler: Scheduler | None = None
@@ -260,6 +281,45 @@ class QueueRuntime:
     def provider_facts(self) -> ProviderFacts:
         """Read the provider's declared capabilities."""
         return provider_facts_for(self.provider)
+
+    def in_use_model_ids(self, *, excluding_job: str | None = None) -> frozenset[str]:
+        """Registry models in-flight jobs are executing on — never evicted, never reserved twice."""
+        return frozenset(
+            entry.model_id
+            for entry in self.in_flight.snapshot()
+            if entry.model_id is not None and entry.job_id != excluding_job
+        )
+
+    def admission_snapshot(self, *, excluding_job: str | None = None) -> TelemetrySnapshot | None:
+        """The telemetry admission evaluates against: reservations applied, idle residents freed.
+
+        Per device (ADR-0027 §2): every other in-flight job's estimate on GPU 0 is reserved on
+        GPU 0 — unless its model is already resident there, in which case the snapshot already
+        counts it — and the memory held by idle resident models is counted as reclaimable.
+        """
+        resident_devices = self.residency.resident_devices() if self.residency else {}
+        reservations = [
+            Reservation(entry.job_id, entry.target_gpu_index, entry.estimated_bytes)
+            for entry in self.in_flight.snapshot()
+            if entry.job_id != excluding_job
+            and entry.target_gpu_index is not None
+            and entry.estimated_bytes is not None
+            and entry.state in {state.value for state in IN_FLIGHT_STATES}
+            and not (
+                entry.canonical_id is not None
+                and entry.target_gpu_index in resident_devices.get(entry.canonical_id, frozenset())
+            )
+        ]
+        evictable = (
+            self.residency.evictable_bytes_by_device(
+                self.in_use_model_ids(excluding_job=excluding_job)
+            )
+            if self.residency
+            else {}
+        )
+        return adjust_snapshot(
+            self.snapshot(), reserved=reserved_bytes_by_device(reservations), evictable=evictable
+        )
 
     def start(self) -> None:
         """Start the scheduler thread and every worker thread (production only)."""
@@ -399,6 +459,7 @@ class Worker:
             self._fail_after_crash(job, exc)
         finally:
             runtime.in_flight.remove(job.job_id, self.owner)
+            runtime.resources_changed.set()
 
     def _fail_after_crash(self, job: ClaimedJob, exc: Exception) -> None:
         """A bug in the pipeline must not strand the job: fail it from whatever state it is in."""
@@ -478,16 +539,72 @@ class Worker:
                 ),
                 provider=runtime.provider_facts(),
                 policy=runtime.policy,
-                snapshot=runtime.snapshot(),
+                snapshot=runtime.admission_snapshot(excluding_job=job.job_id),
                 resident_models=self._resident_canonical_ids(),
+                resident_devices=runtime.residency.resident_devices()
+                if runtime.residency
+                else None,
                 now=now,
             )
         except NoEligibleModel as exc:
-            self._fail_admission(job, exc)
+            verdict = classify_rejections(
+                cast("Sequence[Mapping[str, Any]]", exc.details.get("candidates", ()))
+            )
+            if verdict.defer:
+                self._defer(job, verdict, exc)
+            else:
+                self._fail_admission(job, exc)
             return None
 
     def _resident_canonical_ids(self) -> frozenset[str]:
-        return frozenset()
+        residency = self.runtime.residency
+        return residency.resident_canonical_ids() if residency else frozenset()
+
+    def _defer(self, job: ClaimedJob, verdict: AdmissionVerdict, exc: NoEligibleModel) -> None:
+        """``leased -> waiting_resources`` with the numbers, releasing the lease (queue §5)."""
+        runtime = self.runtime
+        now = runtime.clock()
+        decision_id = cast("str | None", exc.details.get("decision_id"))
+        candidates = cast("Sequence[Mapping[str, Any]]", exc.details.get("candidates", ()))
+        first_model_id = next(
+            (
+                cast("str | None", item.get("model_id"))
+                for item in candidates
+                if item.get("canonical_id") in verdict.candidates
+            ),
+            None,
+        )
+        summary = (
+            f"insufficient VRAM: needs {verdict.required_bytes} B + {verdict.headroom_bytes} B "
+            f"headroom; free by device {verdict.free_bytes_by_gpu}"
+            if verdict.required_bytes is not None
+            else f"VRAM estimate unknown ({', '.join(verdict.unknown_reasons) or 'no reason'}) "
+            "and no candidate is resident"
+        )
+        with runtime.sink.write(runtime.database) as (session, events):
+            transition(
+                session,
+                job.job_id,
+                current=JobState.LEASED,
+                target=JobState.WAITING_RESOURCES,
+                now=now,
+                owner=self.owner,
+                reason="INSUFFICIENT_RESOURCES",
+                values={"error_text": summary, "selected_model_id": first_model_id},
+            )
+            if decision_id is not None:
+                link_decision(session, decision_id, job.job_id)
+            events.append(
+                job.job_id,
+                event_type_for(JobState.WAITING_RESOURCES),
+                now=now,
+                message=summary,
+                data={
+                    "reason": "INSUFFICIENT_RESOURCES",
+                    "decision_id": decision_id,
+                    **verdict.as_json(),
+                },
+            )
 
     def _fail_admission(self, job: ClaimedJob, exc: NoEligibleModel) -> None:
         """No candidate at all: ``leased -> failed`` with the rejections (ADR-0036 §3)."""
@@ -601,7 +718,8 @@ class Worker:
                     self._fail(execution, state, records, "ATTEMPTS_EXHAUSTED")
                     return
                 attempt_number += 1
-                state = self._start_executing(execution, state, attempt_number)
+                residency = self._ensure_resident(job, candidate)
+                state = self._start_executing(execution, state, attempt_number, residency)
                 on_chunk = self._on_chunk(job) if job.submission.stream else None
                 outcome = run_attempt(
                     runtime.provider,
@@ -619,6 +737,7 @@ class Worker:
                     correction=correction,
                 )
                 records.append(outcome.record)
+                self._record_use(candidate)
                 if outcome.cancelled or entry.cancel.is_cancelled:
                     self._cancel_from(job, JobState.EXECUTING, records=tuple(records))
                     return
@@ -642,8 +761,50 @@ class Worker:
                 state = self._readmit(execution, state, candidate, reason="corrective_retry")
         self._fail(execution, state, records, "ALL_CANDIDATES_FAILED")
 
+    def _ensure_resident(
+        self, job: ClaimedJob, candidate: RankedCandidate
+    ) -> dict[str, Any] | None:
+        """Load the candidate on its target device first, evicting idle residents as policy says."""
+        runtime = self.runtime
+        residency = runtime.residency
+        if residency is None:
+            return None
+        facts = candidate.subject.facts
+        snapshot = runtime.snapshot()
+        free = (
+            free_vram_by_gpu(snapshot).get(candidate.target_gpu_index)
+            if snapshot is not None and candidate.target_gpu_index is not None
+            else None
+        )
+        outcome = residency.ensure_loaded(
+            model_id=facts.model_id,
+            canonical_id=facts.canonical_id,
+            identity=identity_of(facts),
+            profile=candidate.subject.runtime_profile,
+            gpu_index=candidate.target_gpu_index,
+            in_use_model_ids=runtime.in_use_model_ids(excluding_job=job.job_id),
+            required_bytes=candidate.estimated_vram_bytes,
+            free_bytes=free,
+            headroom_bytes=runtime.policy.vram_headroom_bytes,
+            now=runtime.clock(),
+        )
+        if outcome.evicted:
+            runtime.resources_changed.set()
+        return outcome.as_json()
+
+    def _record_use(self, candidate: RankedCandidate) -> None:
+        residency = self.runtime.residency
+        if residency is not None and candidate.target_gpu_index is not None:
+            residency.record_use(
+                candidate.subject.facts.model_id, candidate.target_gpu_index, self.runtime.clock()
+            )
+
     def _start_executing(
-        self, execution: _Execution, state: JobState, attempt_number: int
+        self,
+        execution: _Execution,
+        state: JobState,
+        attempt_number: int,
+        residency: dict[str, Any] | None = None,
     ) -> JobState:
         runtime = self.runtime
         job = execution.job
@@ -667,7 +828,7 @@ class Worker:
                 event_type_for(JobState.EXECUTING),
                 now=now,
                 message=f"attempt {attempt_number} started",
-                data={"attempt": attempt_number},
+                data={"attempt": attempt_number, "residency": residency},
             )
         runtime.in_flight.update(job.job_id, self.owner, state=JobState.EXECUTING.value)
         return JobState.EXECUTING
@@ -1025,9 +1186,13 @@ class Scheduler:
             "sweep": None,
             "max_wait": None,
             "flags": None,
+            "reevaluate": None,
+            "evict": None,
+            "sync": None,
         }
         self.renewals = 0
         self.sweeps = 0
+        self.requeued = 0
 
     def stop(self) -> None:
         """Ask :meth:`run` to exit."""
@@ -1066,8 +1231,83 @@ class Scheduler:
         if self.sweep_enabled and self._due("sweep", now, queue.ageing_interval_seconds):
             ageing_sweep(self.runtime.database, now=now, settings=queue)
             self.sweeps += 1
+        if self.runtime.resources_changed.is_set() or self._due(
+            "reevaluate", now, _REEVALUATE_INTERVAL_SECONDS
+        ):
+            self.runtime.resources_changed.clear()
+            self._last["reevaluate"] = now
+            self.reevaluate_waiting(now)
+        if self._due("evict", now, _EVICT_INTERVAL_SECONDS):
+            self.evict_idle(now)
+        if self._due("sync", now, _SYNC_INTERVAL_SECONDS) and self.runtime.residency is not None:
+            self.runtime.residency.sync(now)
         if self._due("flags", now, _FLAGS_INTERVAL_SECONDS):
             self.refresh_flags()
+
+    def reevaluate_waiting(self, now: datetime) -> tuple[str, ...]:
+        """Re-queue every ``waiting_resources`` job that could be admitted now (queue §5).
+
+        Applies exactly admission's rule to each job's recorded deferral — never more
+        optimistic, so a job cannot bounce between claim and deferral while nothing changed.
+        A job with no deferral record is re-queued and left to admission.
+        """
+        runtime = self.runtime
+        waiting = waiting_deferrals(runtime.database)
+        if not waiting:
+            return ()
+        snapshot = runtime.admission_snapshot()
+        free = free_vram_by_gpu(snapshot) if snapshot is not None else {}
+        resident_devices = runtime.residency.resident_devices() if runtime.residency else {}
+        requeued: list[str] = []
+        for job_id, record in waiting:
+            if record is None or snapshot is None or not snapshot.gpus:
+                proceed = (
+                    True  # nothing recorded, or no device to be short of: let admission decide
+                )
+            else:
+                candidates = cast("Sequence[str]", record.get("candidates", ()))
+                resident_on: set[int] = set()
+                for canonical_id in candidates:
+                    resident_on |= resident_devices.get(canonical_id, frozenset())
+                headroom = record.get("headroom_bytes")
+                proceed = waiting_job_can_proceed(
+                    required_bytes=cast("int | None", record.get("required_bytes")),
+                    headroom_bytes=int(headroom)
+                    if isinstance(headroom, int)
+                    else runtime.policy.vram_headroom_bytes,
+                    free_bytes_by_gpu=free,
+                    resident_on=frozenset(resident_on),
+                )
+            if not proceed:
+                continue
+            try:
+                move(
+                    runtime.database,
+                    runtime.sink,
+                    job_id,
+                    current=JobState.WAITING_RESOURCES,
+                    target=JobState.QUEUED,
+                    now=now,
+                    reason="resources_freed",
+                    message="resources may now be available: re-queued for admission",
+                )
+            except TransitionRefused:
+                continue  # cancelled or expired meanwhile
+            requeued.append(job_id)
+        if requeued:
+            self.requeued += len(requeued)
+            runtime.wakeup.set()
+        return tuple(requeued)
+
+    def evict_idle(self, now: datetime) -> tuple[str, ...]:
+        """Unload models idle for ``unload_idle_seconds`` (queue §6), then re-evaluate waiters."""
+        residency = self.runtime.residency
+        if residency is None:
+            return ()
+        unloaded = residency.evict_idle(now, in_use_model_ids=self.runtime.in_use_model_ids())
+        if unloaded:
+            self.runtime.resources_changed.set()
+        return unloaded
 
     def keep_leases(self, now: datetime) -> None:
         """The lease keeper (ADR-0029 §4): renew every in-flight lease this process holds."""
@@ -1163,6 +1403,11 @@ def build_runtime(
         schemas_dir=schemas_dir,
         owner_prefix=owner_prefix if owner_prefix is not None else new_id(),
     )
+    residency = ResidencyService(
+        database, provider, settings=settings.residency, clock=runtime.clock
+    )
+    runtime.residency = residency
+    runtime.resident_model_ids = residency.resident_model_ids
     count = workers if workers is not None else settings.execution.max_concurrent_jobs
     runtime.workers = [Worker(runtime, index) for index in range(count)]
     runtime.scheduler = Scheduler(runtime, tick_seconds=settings.queue.poll_interval_ms / 1000.0)

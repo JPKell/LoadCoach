@@ -312,3 +312,345 @@ def test_a_lost_lease_on_non_idempotent_work_fails_with_worker_lost(tmp_path: Pa
         assert len(sim.provider.calls) == 1  # never re-run: that is what non-idempotent means
     finally:
         sim.close()
+
+
+# --- admission and residency (queue §5, §6; ADR-0027) ------------------------------------------
+
+GIB = 1024**3
+
+
+# A sim_model of S bytes needs S x 1.05 (weights) + 0.5 GiB (KV at general.chat's 4096-token
+# served context) + 256 MiB (activation) + 512 MiB (headroom) free: about 9.65 GiB for 8 GiB.
+
+
+def test_insufficient_vram_defers_with_numbers_and_resumes_when_it_frees(tmp_path: Path) -> None:
+    """Acceptance criterion 3: defers with a reason rather than failing or thrashing."""
+    sim = Simulation(
+        tmp_path, models=(sim_model("alpha:8b", size_bytes=8 * GIB, load_seconds=1.0),)
+    )
+    try:
+        sim.provider.script("job", GenerationSpec(duration_seconds=5.0, chunks=1))
+        sim.occupy(0, 10 * GIB)  # 6 GiB free; the model needs about 9.65 GiB free
+        runtime = sim.start_queue()
+        job_id = sim.submit("job").job_id
+        sim.run_for(30)
+        record = sim.job(job_id)
+        assert record.state is JobState.WAITING_RESOURCES
+        assert record.state_reason == "INSUFFICIENT_RESOURCES"
+        assert record.lease_owner is None and record.lease_expires_at is None
+        assert record.error_text is not None and "free by device" in record.error_text
+        events = sim.events(job_id)
+        assert [t for _, t in events] == ["job.queued", "job.leased", "job.waiting_resources"]
+        from sqlalchemy import select
+
+        from loadcoach.infrastructure.db.models import JobEvent
+
+        with sim.database.read() as session:
+            data = session.execute(
+                select(JobEvent.data_json).where(
+                    JobEvent.job_id == job_id, JobEvent.event_type == "job.waiting_resources"
+                )
+            ).scalar_one()
+        assert isinstance(data, dict)
+        assert data["free_bytes_by_gpu"] == {"0": 6 * GIB}
+        assert data["required_bytes"] is not None and data["required_bytes"] > 6 * GIB
+        assert data["headroom_bytes"] == 512 * 1024**2
+        # Thirty seconds of the scheduler's re-evaluation changed nothing: no claim-defer thrash.
+        assert len(sim.provider.calls) == 0
+        assert runtime.scheduler is not None and runtime.scheduler.requeued == 0
+
+        sim.occupy(0, 0)  # the other tenant leaves
+        sim.run_for(30)
+        record = sim.job(job_id)
+        assert record.state is JobState.COMPLETED
+        types = [t for _, t in sim.events(job_id)]
+        assert types[:5] == [
+            "job.queued",
+            "job.leased",
+            "job.waiting_resources",
+            "job.queued",
+            "job.leased",
+        ]
+        assert types.count("job.waiting_resources") == 1
+        assert runtime.scheduler.requeued == 1
+    finally:
+        sim.close()
+
+
+def test_two_gpus_are_never_summed_for_admission(tmp_path: Path) -> None:
+    """Queue §12's two-GPU fixture: bigger than either device, smaller than their sum: deferred."""
+    sim = Simulation(
+        tmp_path,
+        models=(sim_model("big:14b", size_bytes=14 * GIB, load_seconds=1.0),),
+        gpus=((0, 12 * GIB), (1, 12 * GIB)),
+    )
+    try:
+        sim.start_queue()
+        job_id = sim.submit("job").job_id
+        sim.run_for(120)
+        record = sim.job(job_id)
+        assert record.state is JobState.WAITING_RESOURCES
+        assert record.error_text is not None
+        assert "'0': 12884901888" in record.error_text and "'1': 12884901888" in record.error_text
+        assert len(sim.provider.calls) == 0 and sim.provider.loads == 0
+    finally:
+        sim.close()
+
+
+def test_the_per_device_aggregate_defers_a_second_job_while_the_first_holds_the_device(
+    tmp_path: Path,
+) -> None:
+    """Above max_concurrent_jobs = 1, concurrent jobs targeting GPU 0 sum against GPU 0's memory."""
+    sim = Simulation(
+        tmp_path,
+        models=(
+            sim_model("alpha:8b", size_bytes=8 * GIB, load_seconds=1.0),
+            sim_model("beta:8b", size_bytes=8 * GIB, load_seconds=1.0),
+        ),
+        execution=ExecutionSettings(max_concurrent_jobs=2),
+    )
+    try:
+        sim.provider.script("a", GenerationSpec(duration_seconds=20.0, chunks=4))
+        sim.provider.script("b", GenerationSpec(duration_seconds=5.0, chunks=1))
+        runtime = sim.start_queue()
+        alpha = sim.canonical_id("alpha:8b")
+        beta = sim.canonical_id("beta:8b")
+        first = sim.submit("a", model=alpha).job_id
+        sim.run_for(3)  # alpha loaded and executing: 8 GiB used of 16, 8 GiB free
+        second = sim.submit("b", model=beta).job_id
+        sim.run_for(5)
+        assert sim.job(first).state is JobState.EXECUTING
+        assert sim.job(second).state is JobState.WAITING_RESOURCES  # 8 GiB free < 9.65 needed
+        sim.run_for(60)
+        assert sim.job(first).state is JobState.COMPLETED
+        assert sim.job(second).state is JobState.COMPLETED
+        # Once alpha's job finished, alpha was idle and evictable; beta's load evicted it.
+        assert sim.provider.unloads == 1
+        assert runtime.scheduler is not None and runtime.scheduler.requeued == 1
+        assert (_seconds(sim, second, "started_at") or 0) >= 21.0
+    finally:
+        sim.close()
+
+
+def test_jobs_on_different_devices_run_concurrently(tmp_path: Path) -> None:
+    """The aggregate is per device: a job on GPU 1 does not wait for GPU 0.
+
+    GPU 0 (12 GiB) holds one 8 GiB model with 4 GiB to spare; the second job cannot fit there
+    beside it and is admitted on GPU 1 instead of waiting — devices are independent.
+    """
+    sim = Simulation(
+        tmp_path,
+        models=(
+            sim_model("alpha:8b", size_bytes=8 * GIB, load_seconds=1.0),
+            sim_model("beta:8b", size_bytes=8 * GIB, load_seconds=1.0),
+        ),
+        gpus=((0, 12 * GIB), (1, 16 * GIB)),
+        placement={"alpha:8b": 0, "beta:8b": 1},
+        execution=ExecutionSettings(max_concurrent_jobs=2),
+    )
+    try:
+        sim.provider.script("a", GenerationSpec(duration_seconds=20.0, chunks=4))
+        sim.provider.script("b", GenerationSpec(duration_seconds=20.0, chunks=4))
+        sim.start_queue()
+        first = sim.submit("a", model=sim.canonical_id("alpha:8b")).job_id
+        sim.run_for(3)
+        second = sim.submit("b", model=sim.canonical_id("beta:8b")).job_id
+        sim.run_for(60)
+        assert sim.job(first).state is JobState.COMPLETED
+        assert sim.job(second).state is JobState.COMPLETED
+        # Started while the first was still running, on the other device.
+        assert (_seconds(sim, second, "started_at") or 0) < (
+            _seconds(sim, first, "completed_at") or 0
+        )
+        assert {sim.job(first).target_gpu_index, sim.job(second).target_gpu_index} == {0, 1}
+    finally:
+        sim.close()
+
+
+def test_affinity_batching_cuts_model_loads_without_breaching_the_wait_bound(
+    tmp_path: Path,
+) -> None:
+    """Queue §12: affinity improves the load count without becoming a starvation source."""
+
+    def run(path: Path, *, affinity: bool) -> tuple[int, float]:
+        sim = Simulation(
+            path,
+            models=(
+                sim_model("alpha:4b", size_bytes=4 * GIB, load_seconds=20.0),
+                sim_model("beta:4b", size_bytes=4 * GIB, load_seconds=20.0),
+            ),
+        )
+        try:
+            sim.provider.script("job", GenerationSpec(duration_seconds=5.0, chunks=1))
+            runtime = sim.start_queue()
+            if not affinity:
+                runtime.resident_model_ids = lambda: frozenset()  # the mutation: no affinity
+            alpha, beta = sim.canonical_id("alpha:4b"), sim.canonical_id("beta:4b")
+            blocker = sim.submit("job", model=alpha).job_id
+            sim.run_for(1)  # the worker is busy: everything below queues at equal priority
+            job_ids = [
+                sim.submit("job", model=alpha if index % 2 == 0 else beta).job_id
+                for index in range(10)
+            ]
+            sim.run_for(600)
+            assert sim.job(blocker).state is JobState.COMPLETED
+            assert all(sim.job(job_id).state is JobState.COMPLETED for job_id in job_ids)
+            slowest = max(_seconds(sim, job_id, "completed_at") or 0 for job_id in job_ids)
+            return sim.provider.loads, slowest
+        finally:
+            sim.close()
+
+    loads_with, slowest_with = run(tmp_path / "affinity", affinity=True)
+    loads_without, slowest_without = run(tmp_path / "plain", affinity=False)
+    assert loads_with <= 3, loads_with  # alpha once (the blocker), beta once, maybe alpha again
+    assert loads_without >= 8, loads_without  # alternating: nearly every job reloads
+    assert slowest_with < slowest_without
+    # The bound: no job waited longer than the whole batch plus every load it could imply.
+    assert slowest_with <= 11 * 5 + 3 * 20 + 5
+
+
+def test_idle_models_are_unloaded_after_unload_idle_seconds(tmp_path: Path) -> None:
+    from loadcoach.config import ResidencySettings
+
+    sim = Simulation(
+        tmp_path,
+        models=(sim_model("alpha:8b", load_seconds=1.0),),
+        residency=ResidencySettings(unload_idle_seconds=30, max_resident_models=1),
+    )
+    try:
+        sim.provider.script("job", GenerationSpec(duration_seconds=4.0, chunks=1))
+        runtime = sim.start_queue()
+        assert runtime.residency is not None
+        job_id = sim.submit("job").job_id
+        sim.run_for(10)
+        assert sim.job(job_id).state is JobState.COMPLETED
+        assert sim.provider.resident_names() == frozenset({"alpha:8b"})
+        assert runtime.residency.resident_canonical_ids() == frozenset(
+            {sim.canonical_id("alpha:8b")}
+        )
+        assert sim.gpus[0].used_bytes == 4 * GIB
+        sim.run_for(50)
+        assert sim.provider.unloads == 1
+        assert sim.provider.resident_names() == frozenset()
+        assert runtime.residency.resident_canonical_ids() == frozenset()
+        assert sim.gpus[0].used_bytes == 0
+        from sqlalchemy import select
+
+        from loadcoach.infrastructure.db.models import Residency
+
+        with sim.database.read() as session:
+            rows = session.execute(select(Residency)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].resident is False and rows[0].unload_reason == "idle"
+        assert rows[0].gpu_index == 0 and rows[0].vram_bytes == float(4 * GIB)
+    finally:
+        sim.close()
+
+
+def test_max_resident_models_evicts_the_least_recently_used_per_device(tmp_path: Path) -> None:
+    from loadcoach.config import ResidencySettings
+
+    sim = Simulation(
+        tmp_path,
+        models=(
+            sim_model("alpha:4b", size_bytes=4 * GIB, load_seconds=1.0),
+            sim_model("beta:4b", size_bytes=4 * GIB, load_seconds=1.0),
+            sim_model("gamma:4b", size_bytes=4 * GIB, load_seconds=1.0),
+        ),
+        residency=ResidencySettings(unload_idle_seconds=3600, max_resident_models=2),
+    )
+    try:
+        sim.provider.script("job", GenerationSpec(duration_seconds=2.0, chunks=1))
+        sim.start_queue()
+        for name in ("alpha:4b", "beta:4b", "alpha:4b", "gamma:4b"):
+            sim.submit("job", model=sim.canonical_id(name))
+            sim.run_for(10)
+        # alpha was used more recently than beta, so beta is the one gamma evicts.
+        assert sim.provider.resident_names() == frozenset({"alpha:4b", "gamma:4b"})
+        assert sim.provider.unloads == 1
+        from sqlalchemy import select
+
+        from loadcoach.infrastructure.db.models import Model, Residency
+
+        with sim.database.read() as session:
+            evicted = session.execute(
+                select(Model.provider_model_name, Residency.unload_reason)
+                .join(Model, Model.id == Residency.model_id)
+                .where(Residency.resident.is_(False))
+            ).all()
+        assert [(name, reason) for name, reason in evicted] == [
+            ("beta:4b", f"evicted_for:{sim.canonical_id('gamma:4b')}")
+        ]
+    finally:
+        sim.close()
+
+
+# --- ageing under a running clock (queue §4, ADR-0029 §1) ------------------------------------
+
+
+def _starvation_scenario(path: Path, *, sweep: bool) -> tuple[float | None, JobState]:
+    """One worker, 30 s jobs; an interactive job every 60 s; three normal jobs always queued.
+
+    A background job submitted at t=0 can only run once ageing lifts it to a fresh normal job's
+    priority. At ten points per minute and a 300-point gap that is thirty minutes — plus one
+    sweep interval and the jobs already ahead of it. Returns its start and final state.
+    """
+    sim = Simulation(
+        path,
+        models=(sim_model("alpha:8b", load_seconds=0.0),),
+        queue=QueueSettings(ageing_priority_per_minute=10.0, max_wait_seconds=7200),
+    )
+    try:
+        sim.provider.script("job", GenerationSpec(duration_seconds=30.0, chunks=1))
+        runtime = sim.start_queue()
+        assert runtime.scheduler is not None
+        runtime.scheduler.sweep_enabled = sweep
+
+        def refill() -> None:
+            from loadcoach.services.queue import queue_snapshot
+
+            depth = queue_snapshot(
+                sim.database, now=sim.clock.now(), default_max_wait_seconds=7200
+            ).depth_by_class.get("normal", 0)
+            for _ in range(max(3 - depth, 0)):
+                sim.submit("job", job_class=JobClass.NORMAL)
+
+        def interactive() -> None:
+            sim.submit("job", job_class=JobClass.INTERACTIVE)
+
+        # The worker is busy with the first interactive job and three normal jobs are queued
+        # before the background job arrives, so it competes from its first second.
+        interactive()
+        refill()
+        sim.run_for(1)
+        background = sim.submit("job", job_class=JobClass.BACKGROUND).job_id
+        sim.driver.every(10.0, refill, label="refill")
+        sim.driver.every(60.0, interactive, label="interactive")
+        sim.run_for(45 * 60)
+        return _seconds(sim, background, "started_at"), sim.job(background).state
+    finally:
+        sim.close()
+
+
+def test_the_starvation_bound_holds_under_a_running_clock_with_continuous_interactive_load(
+    tmp_path: Path,
+) -> None:
+    """Acceptance criterion 2, proven by simulation: the background job's wait is bounded.
+
+    The bound, from the policy: the 300-point gap to a fresh normal job at ten points a minute is
+    thirty minutes; the normal jobs it competes with age too, and a filler job waits up to ninety
+    seconds in the queue (fifteen points, ninety seconds more); then one sweep interval, the job
+    executing at that moment and one interactive job that may be ahead — thirty seconds each.
+    Thirty-four minutes. With the sweep switched off — a startup-only recomputation — the same
+    job is still queued at forty-five minutes: the mutation this test exists to catch
+    (ADR-0029 §1).
+    """
+    started, state = _starvation_scenario(tmp_path / "with-sweep", sweep=True)
+    assert state is JobState.COMPLETED
+    assert started is not None
+    bound = 30 * 60 + 90 + 30 + 30 + 30
+    assert 29 * 60 <= started <= bound, (started, bound)
+
+    started_without, state_without = _starvation_scenario(tmp_path / "no-sweep", sweep=False)
+    assert started_without is None
+    assert state_without is JobState.QUEUED

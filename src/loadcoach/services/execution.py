@@ -93,6 +93,7 @@ __all__ = [
     "StreamChunk",
     "corrective_turns",
     "execute",
+    "identity_of",
     "link_decision",
     "load_task_schema",
     "provider_facts_for",
@@ -738,6 +739,11 @@ def _execute_attempts(
             )
 
     return records, None, None, validation
+
+
+def identity_of(facts: ModelFacts) -> ModelIdentity:
+    """The exact identity the registry resolved for ``facts`` (see :func:`_identity_of`)."""
+    return _identity_of(facts)
 
 
 def _identity_of(facts: ModelFacts) -> ModelIdentity:

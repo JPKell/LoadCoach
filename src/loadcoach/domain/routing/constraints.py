@@ -18,7 +18,7 @@ larger than either of two devices but smaller than their sum does not fit.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
 
 from baseaicore import is_supported
@@ -342,8 +342,12 @@ class ConstraintInputs:
             incapacity (routing §5).
         snapshot: The telemetry the VRAM and RAM constraints read.
         vram_headroom_bytes: Per-device reserve (ADR-0027 §2).
-        open_circuit_breakers: Canonical IDs currently excluded by the breaker. Empty until P7
-            has production evidence to open one with.
+        open_circuit_breakers: Canonical IDs currently excluded by the breaker. Populated by
+            Phase 5's breaker over ``job_attempts`` outcomes; P7 drives it from
+            ``reliability_stats``.
+        resident_devices: Canonical ID -> devices the model is resident on. A resident model
+            fits on its device whatever the estimate says — its memory is already allocated —
+            which is the one exception to "an unknown estimate does not fit" (queue §5).
     """
 
     min_context_tokens: int = 0
@@ -356,6 +360,7 @@ class ConstraintInputs:
     snapshot: TelemetrySnapshot | None = None
     vram_headroom_bytes: int = DEFAULT_VRAM_HEADROOM_BYTES
     open_circuit_breakers: frozenset[str] = frozenset()
+    resident_devices: Mapping[str, frozenset[int]] = field(default_factory=dict)
 
 
 _CAPABILITY_SUPPORT_ATTRIBUTE: Final[Mapping[str, str]] = {
@@ -464,8 +469,14 @@ def evaluate_constraints(
     if inputs.snapshot is not None:
         fits = device_fits(estimate, inputs.snapshot, headroom_bytes=inputs.vram_headroom_bytes)
         if fits:
+            resident_on = inputs.resident_devices.get(facts.canonical_id, frozenset())
+            resident_here = [fit for fit in fits if fit.gpu_index in resident_on]
             satisfying = [fit for fit in fits if fit.fits]
-            if not satisfying:
+            if resident_here:
+                # Already loaded there: its memory is allocated, so the device holds it whatever
+                # the estimate says, and choosing another device would load a second copy.
+                target_gpu_index = resident_here[0].gpu_index
+            elif not satisfying:
                 return (
                     Rejection(
                         "insufficient_vram",
@@ -481,7 +492,8 @@ def evaluate_constraints(
                     fits,
                     None,
                 )
-            target_gpu_index = satisfying[0].gpu_index
+            else:
+                target_gpu_index = satisfying[0].gpu_index
         else:
             ram_rejection = _check_host_ram(estimate, inputs.snapshot)
             if ram_rejection is not None:

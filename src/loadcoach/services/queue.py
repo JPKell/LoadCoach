@@ -87,7 +87,9 @@ __all__ = [
     "queue_snapshot",
     "reap_expired_leases",
     "renew_leases",
+    "resolve_model_id",
     "transition",
+    "waiting_deferrals",
 ]
 
 logger = logging.getLogger(__name__)
@@ -457,11 +459,16 @@ def enqueue(
 
     job_id = new_id()
     transcript = submission.transcript()
+    pinned = submission.overrides.model if submission.overrides is not None else None
+    # A pinned model is recorded at enqueue so the affinity claim (queue §6) can see it before
+    # the job has ever been routed; a job that names no model gains affinity once routed.
+    pinned_model_id = None if pinned is None else resolve_model_id(database, pinned)
     try:
         with sink.write(database) as (session, events):
             session.add(
                 Job(
                     id=job_id,
+                    selected_model_id=pinned_model_id,
                     task_profile_id=profile.profile_id,
                     task_profile_version=profile.version,
                     job_class=submission.job_class.value,
@@ -1127,6 +1134,36 @@ def list_jobs(
         if before is not None:
             statement = statement.where(Job.created_at < before)
         return tuple(_record(job) for job in session.execute(statement).scalars().all())
+
+
+def waiting_deferrals(database: Database) -> tuple[tuple[str, dict[str, Any] | None], ...]:
+    """Every ``waiting_resources`` job with its latest deferral record (queue §5 re-evaluation).
+
+    The record is the ``job.waiting_resources`` event's data — the numbers admission recorded
+    when it deferred the job. ``None`` when no such event exists (a job deferred by an older
+    build), in which case the caller re-queues it and lets admission decide afresh.
+    """
+    from loadcoach.infrastructure.db.models import JobEvent
+
+    with database.read() as session:
+        job_ids = (
+            session.execute(select(Job.id).where(Job.state == JobState.WAITING_RESOURCES.value))
+            .scalars()
+            .all()
+        )
+        found: list[tuple[str, dict[str, Any] | None]] = []
+        for job_id in job_ids:
+            data = session.execute(
+                select(JobEvent.data_json)
+                .where(
+                    JobEvent.job_id == job_id,
+                    JobEvent.event_type == event_type_for(JobState.WAITING_RESOURCES),
+                )
+                .order_by(JobEvent.sequence.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            found.append((job_id, data if isinstance(data, dict) else None))
+        return tuple(found)
 
 
 def resolve_model_id(database: Database, canonical_id: str) -> str | None:

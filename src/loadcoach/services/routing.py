@@ -407,6 +407,7 @@ def route(
     snapshot: TelemetrySnapshot | None = None,
     resident_models: frozenset[str] = frozenset(),
     open_circuit_breakers: frozenset[str] = frozenset(),
+    resident_devices: Mapping[str, frozenset[int]] | None = None,
     now: datetime,
     persist: bool = True,
 ) -> RoutingResult:
@@ -422,6 +423,8 @@ def route(
             a machine with no telemetry reader honestly supports — not a fabricated zero.
         resident_models: Canonical IDs currently loaded, for the residency tie-break.
         open_circuit_breakers: Canonical IDs the breaker currently excludes.
+        resident_devices: Canonical ID -> devices the model is resident on; a resident model
+            fits on its device whatever the estimate says (queue §5, admission).
         now: The instant the request arrived. Injected, so a decision is reproducible.
         persist: Whether to write the decision. ``False`` is for replaying a stored decision's
             inputs to prove it reproduces (acceptance criterion 3).
@@ -511,6 +514,7 @@ def route(
                 snapshot=snapshot,
                 vram_headroom_bytes=policy.vram_headroom_bytes,
                 open_circuit_breakers=open_circuit_breakers,
+                resident_devices=resident_devices or {},
             ),
         )
         if rejection is not None:

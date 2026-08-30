@@ -385,3 +385,41 @@ def test_constraints_are_applied_in_the_documented_order() -> None:
     )
     assert rejection is not None
     assert rejection.reason == "model_unavailable"
+
+
+def test_a_resident_model_fits_on_its_device_whatever_the_estimate_says() -> None:
+    """Queue §5's one exception to 'unknown does not fit': the model is already loaded there."""
+    subject = _subject(size_bytes=None)  # unknown estimate
+    estimate = estimate_vram(
+        size_bytes=None, served_context=8192, layers=32, kv_heads=8, head_dim=128
+    )
+    assert estimate.total_bytes is None
+    snapshot = _snapshot((0, 16 * GIB, 15 * GIB), (1, 16 * GIB, 15 * GIB))
+    rejection, _, target = evaluate_constraints(
+        subject,
+        estimate,
+        ConstraintInputs(
+            snapshot=snapshot, resident_devices={subject.facts.canonical_id: frozenset({1})}
+        ),
+    )
+    assert rejection is None
+    assert target == 1  # the device it is resident on, not merely the first
+    rejection, _, _ = evaluate_constraints(subject, estimate, ConstraintInputs(snapshot=snapshot))
+    assert rejection is not None and rejection.reason == "insufficient_vram"
+
+
+def test_a_resident_device_is_preferred_over_another_device_that_merely_fits() -> None:
+    """Loading a second copy elsewhere would be the thrash residency exists to prevent."""
+    subject = _subject(size_bytes=2 * GIB)
+    estimate = estimate_vram(
+        size_bytes=2 * GIB, served_context=8192, layers=32, kv_heads=8, head_dim=128
+    )
+    snapshot = _snapshot((0, 16 * GIB, 0), (1, 16 * GIB, 15 * GIB))
+    _, _, target = evaluate_constraints(
+        subject,
+        estimate,
+        ConstraintInputs(
+            snapshot=snapshot, resident_devices={subject.facts.canonical_id: frozenset({1})}
+        ),
+    )
+    assert target == 1
