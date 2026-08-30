@@ -1241,6 +1241,7 @@ def job_document(database: Database, job_id: str) -> dict[str, Any]:
     from baseaicore.timeutil import to_rfc3339
 
     from loadcoach.infrastructure.db.models import JobAttempt, Model, RoutingDecision
+    from loadcoach.services.feedback import feedback_for_job
 
     record = get_job(database, job_id)
     with database.read() as session:
@@ -1250,6 +1251,7 @@ def job_document(database: Database, job_id: str) -> dict[str, Any]:
             .where(JobAttempt.job_id == job_id)
             .order_by(JobAttempt.attempt)
         ).all()
+        feedback = [item.as_json() for item in feedback_for_job(session, job_id)]
         decision = session.execute(
             select(RoutingDecision.id, RoutingDecision.selected_score, RoutingDecision.flags_json)
             .where(RoutingDecision.job_id == job_id)
@@ -1327,6 +1329,7 @@ def job_document(database: Database, job_id: str) -> dict[str, Any]:
             "queue_wait_ms": record.queue_wait_ms,
         },
         "validation": {"passed": record.validation_passed, "attempts": len(attempts)},
+        "feedback": feedback,
         "attempts": [
             {
                 "attempt": row.attempt,

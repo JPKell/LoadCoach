@@ -16,12 +16,13 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Query, Request, Response, status
 from fastapi.responses import HTMLResponse
 from mirrorwall import clamp_limit, paginated_response, sse_response
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from loadcoach.domain.priority import JobClass
 from loadcoach.domain.queue_state import JobState
 from loadcoach.infrastructure.db.models import RoutingDecision
+from loadcoach.services.feedback import FeedbackSubmission, record_feedback
 from loadcoach.services.job_events import TERMINAL_JOB_EVENTS
 from loadcoach.services.queue import (
     JobNotFound,
@@ -32,6 +33,7 @@ from loadcoach.services.queue import (
     job_document,
     list_jobs,
 )
+from loadcoach.web.auth import require_scope
 from loadcoach.web.rendering import render
 from loadcoach.web.routes.generate import (
     GENERATOR,
@@ -44,7 +46,7 @@ from loadcoach.web.routes.generate import (
 if TYPE_CHECKING:
     from starlette.responses import StreamingResponse
 
-__all__ = ["JobBody", "router", "ui_router"]
+__all__ = ["FeedbackBody", "JobBody", "router", "ui_router"]
 
 router = APIRouter(tags=["jobs"])
 ui_router = APIRouter(tags=["ui"], include_in_schema=False)
@@ -221,6 +223,75 @@ def get_job_explanation(request: Request, job_id: str) -> dict[str, Any]:
             f"Job {job_id!r} has no routing decision yet.", details={"job_id": job_id}
         )
     return row
+
+
+class FeedbackValidationBody(BaseModel):
+    """The caller's own validation verdict (api.md §6's ``validation`` object)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    passed: bool | None = Field(default=None)
+    detail: Any = Field(default=None)
+
+
+class FeedbackBody(BaseModel):
+    """``POST /jobs/{id}/feedback``'s body (api.md §6).
+
+    ``source`` is honoured only when neither a token nor ``X-Client-Name`` names the caller.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str | None = Field(default=None, min_length=1, max_length=64)
+    accepted: bool
+    quality_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    validation: FeedbackValidationBody | None = Field(default=None)
+    edited: bool = Field(default=False)
+    notes: str | None = Field(default=None, max_length=4000)
+
+
+def _feedback_source(request: Request, body_source: str | None) -> str:
+    """api.md §6: the token's name; else ``X-Client-Name``; else the body; else anonymous."""
+    attributed = source_of(request)
+    if attributed != "anonymous":
+        return attributed
+    return body_source.strip()[:64] if body_source and body_source.strip() else "anonymous"
+
+
+@router.post("/jobs/{job_id}/feedback", summary="Caller feedback on a job")
+def post_feedback(
+    request: Request, job_id: str, body: FeedbackBody, response: Response
+) -> dict[str, Any]:
+    """Record the caller's verdict on the job; ``write`` scope (spec §14).
+
+    ``201`` with the stored record on a source's first feedback for the job, ``200`` on an
+    update; idempotent per ``(job_id, source)``. ``404 JOB_NOT_FOUND`` otherwise.
+    """
+    app = request.app
+    settings = app.state.settings
+    request.state.token_name = require_scope(
+        app.state.database,
+        required="write",
+        authorization=request.headers.get("authorization"),
+        bind_host=settings.server.host,
+        now=datetime.now(UTC),
+    )
+    outcome = record_feedback(
+        app.state.database,
+        job_id,
+        FeedbackSubmission(
+            source=_feedback_source(request, body.source),
+            accepted=body.accepted,
+            quality_score=body.quality_score,
+            edited=body.edited,
+            validation_passed=None if body.validation is None else body.validation.passed,
+            validation_detail=None if body.validation is None else body.validation.detail,
+            notes=body.notes,
+        ),
+        now=datetime.now(UTC),
+    )
+    response.status_code = status.HTTP_201_CREATED if outcome.created else status.HTTP_200_OK
+    return {**outcome.record.as_json(), "created": outcome.created}
 
 
 @ui_router.get("/jobs", summary="Jobs page", response_class=HTMLResponse)

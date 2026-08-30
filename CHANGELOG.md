@@ -21,6 +21,18 @@ packaging and release standards §3.
     detection against a model's own baseline (an absolute drop **and** a two-proportion z-score),
     and a fold-based ledger whose statistics are required to equal a from-scratch computation on
     every field — a property test, not an example.
+- Phase 7, unit 2: caller feedback (api.md §6, spec §14).
+  - `POST /jobs/{id}/feedback`, `write`-scoped: `201` with the stored record on a source's first
+    verdict, `200` on an update; idempotent per `(job_id, source)`, and two sources that disagree
+    are both kept. `source` is the token's name, else `X-Client-Name`, else the body, else
+    `anonymous` — never the body when a token is present. `GET /jobs/{id}` lists every source's
+    record under `feedback`.
+  - `loadcoach job feedback JOB --accepted|--rejected [--quality] [--edited] [--notes] [--source]`,
+    through the same service.
+  - `loadcoach.services.reliability`: per-pair recomputation of the three `reliability_stats`
+    windows from `job_attempts` and `feedback` (the incremental path), `recompute_all` (the full
+    path it must equal), the breaker's sample source classified by the statistics' own success
+    rule, and persistence of breaker verdicts onto the rows.
 
 ## [0.9.0b0] — 2026-08-30
 

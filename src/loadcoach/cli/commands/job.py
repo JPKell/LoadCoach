@@ -332,3 +332,63 @@ def wait_command(
         raise typer.Exit(4)
     if state != "completed":
         raise typer.Exit(1)
+
+
+@app.command("feedback")
+def feedback(
+    job_id: Annotated[str, typer.Argument(help="The job's ID.")],
+    accepted: Annotated[
+        bool,
+        typer.Option("--accepted/--rejected", help="Whether the output was used."),
+    ],
+    quality: Annotated[
+        float | None,
+        typer.Option("--quality", min=0.0, max=1.0, help="An optional quality score in [0, 1]."),
+    ] = None,
+    edited: Annotated[
+        bool, typer.Option("--edited", help="The output was changed before it was used.")
+    ] = False,
+    notes: Annotated[str | None, typer.Option("--notes", help="Free-text notes.")] = None,
+    source: Annotated[
+        str, typer.Option("--source", help="Who is giving the feedback (idempotency scope).")
+    ] = "cli",
+    config: Annotated[
+        str | None, typer.Option("--config", help="Path to a config.toml file.")
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print the stored record as JSON.")
+    ] = False,
+) -> None:
+    """Record feedback on a job (api.md §6). Mode: local. Exit 5 if there is no such job.
+
+    Idempotent per ``(job, --source)``: repeating the command updates the earlier record.
+    """
+    from datetime import UTC, datetime
+
+    from loadcoach.services.feedback import FeedbackSubmission, record_feedback
+    from loadcoach.services.queue import JobNotFound
+
+    with _open(config) as (database, _settings):
+        try:
+            outcome = record_feedback(
+                database,
+                job_id,
+                FeedbackSubmission(
+                    source=source,
+                    accepted=accepted,
+                    quality_score=quality,
+                    edited=edited,
+                    notes=notes,
+                ),
+                now=datetime.now(UTC),
+            )
+        except JobNotFound as exc:
+            typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
+            raise typer.Exit(5) from exc
+    document = {**outcome.record.as_json(), "created": outcome.created}
+    if json_output:
+        typer.echo(json.dumps(document))
+        return
+    verb = "recorded" if outcome.created else "updated"
+    verdict = "accepted" if accepted else "rejected"
+    typer.echo(f"feedback {verb} for job {job_id} from {source!r}: {verdict}")

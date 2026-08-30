@@ -173,8 +173,12 @@ preservation uniform across both endpoints. Where a provider cannot stream
 
 `source` is set by LoadCoach from the authenticated token's name (or `X-Client-Name` on an
 unauthenticated loopback bind) and the body's value is ignored when a token is present, so one caller
-cannot overwrite another's feedback. Idempotent per `(job_id, source)`; a second call from the same
-source updates the existing record. Feeds the
+cannot overwrite another's feedback; with neither a token nor the header, the body's `source` is used,
+and `anonymous` failing that. Idempotent per `(job_id, source)`; a second call from the same
+source updates the existing record. Returns `201` with the stored record on a source's first feedback
+for a job and `200` on an update; every source's record is also listed under `feedback` in
+`GET /jobs/{id}`. Requires `write`. Accepted for any existing job — feedback on a job that has not
+run yet is kept and attributed once it has. Feeds the
 `reliability_factor` and regression detection ([Routing §11](routing.md)). Never mutates benchmark
 evidence — production and benchmark evidence remain separate sources.
 
