@@ -179,3 +179,108 @@ def test_recovery_of_a_thousand_in_flight_jobs_stays_within_its_budget(tmp_path:
     assert summary.touched == 1000
     assert elapsed <= RECOVERY_BUDGET_SECONDS
     database.close()
+
+
+CANCEL_QUEUED_BUDGET_MS = 50
+CANCEL_EXECUTING_BUDGET_SECONDS = 1.0
+
+
+def test_cancelling_a_queued_job_is_acknowledged_within_its_budget(tmp_path: Path) -> None:
+    from loadcoach.services.queue import cancel_job, set_queue_flag
+
+    runtime = _runtime(tmp_path)
+    database, sink = runtime.database, runtime.sink
+    now = datetime.now(UTC)
+    set_queue_flag(database, "queue.paused", True, now=now)
+    durations: list[float] = []
+    for index in range(_WARMUP + 20):
+        job_id = enqueue(
+            database,
+            JobSubmission(task="general.chat", prompt=f"cancel {index}"),
+            now=now,
+            queue_settings=runtime.settings.queue,
+            execution_settings=runtime.settings.execution,
+            sink=sink,
+        ).job_id
+        started = time.perf_counter()
+        outcome = cancel_job(database, sink, job_id, now=datetime.now(UTC))
+        elapsed = (time.perf_counter() - started) * 1000
+        assert outcome.state.value == "cancelled"
+        if index >= _WARMUP:
+            durations.append(elapsed)
+    median = statistics.median(durations)
+    print(f"cancel queued median {median:.2f} ms, max {max(durations):.2f} ms")  # noqa: T201 — the report
+    assert median <= CANCEL_QUEUED_BUDGET_MS
+    database.close()
+
+
+def test_cancelling_an_executing_job_stops_it_within_its_budget(tmp_path: Path) -> None:
+    """Cancel acknowledged at the next stream boundary (≤ 1 s) on real threads and a real clock."""
+    from modelrack.testing import FakeGeneration
+
+    from loadcoach.config import ProviderSettings, Settings, StorageSettings
+    from loadcoach.services.queue import cancel_job, get_job
+    from loadcoach.services.worker import build_runtime
+
+    settings = Settings(
+        storage=StorageSettings(database_url=f"sqlite:///{tmp_path / 'perf-cancel.sqlite3'}"),
+        provider=ProviderSettings(kind="fake"),
+    )
+    url = settings.storage.database_url
+    assert url is not None
+    database = Database.from_url(url)
+    ensure_ready(database, auto_migrate=True)
+    now = datetime.now(UTC)
+    import_task_profiles(database, read_task_profiles_file(), now=now)
+    # One simulated token every fifty milliseconds, in real time: a boundary every 50 ms.
+    generation = FakeGeneration(word_count=20, chunk_delay_ms=50, first_chunk_delay_ms=50)
+    provider = FakeProvider(
+        FakeScript(models=(_model(),), generations=(generation,), repeat_final_generation=True),
+        sleep=time.sleep,
+    )
+    discover_models(database, provider, now=now)
+    runtime = build_runtime(
+        settings, database=database, provider=provider, sink=JobEventSink(), snapshot=lambda: None
+    )
+    runtime.start()
+    try:
+        latencies: list[float] = []
+        for index in range(5):
+            job_id = enqueue(
+                database,
+                JobSubmission(task="general.chat", prompt=f"long {index}"),
+                now=datetime.now(UTC),
+                queue_settings=runtime.settings.queue,
+                execution_settings=runtime.settings.execution,
+                sink=runtime.sink,
+                wakeup=runtime.wakeup,
+            ).job_id
+            deadline = time.perf_counter() + 5
+            while (
+                time.perf_counter() < deadline
+                and get_job(database, job_id).state.value != "executing"
+            ):
+                time.sleep(0.005)
+            time.sleep(0.2)  # a few chunks in
+            started = time.perf_counter()
+            cancel_job(
+                database,
+                runtime.sink,
+                job_id,
+                now=datetime.now(UTC),
+                on_request=runtime.in_flight.request_cancel,
+            )
+            while (
+                time.perf_counter() < deadline
+                and get_job(database, job_id).state.value != "cancelled"
+            ):
+                time.sleep(0.005)
+            latencies.append(time.perf_counter() - started)
+            assert get_job(database, job_id).state.value == "cancelled"
+        worst = max(latencies)
+        median_ms = statistics.median(latencies) * 1000
+        print(f"cancel executing median {median_ms:.0f} ms, max {worst * 1000:.0f} ms")  # noqa: T201
+        assert worst <= CANCEL_EXECUTING_BUDGET_SECONDS
+    finally:
+        runtime.stop()
+        database.close()
