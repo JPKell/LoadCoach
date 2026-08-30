@@ -152,7 +152,11 @@ def test_a_half_open_model_admits_exactly_one_probe_across_two_workers(
     peak_executing = 0
     saw_probe = False
     terminal = {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
-    deadline = time.monotonic() + 20
+    # Generous on purpose: the loser's path home is requeue -> deferral -> the 10 s breaker
+    # refresh (which wakes the re-evaluation) -> lease -> execute, and a two-core CI runner
+    # under coverage runs every one of those slower. The loop exits the moment both jobs are
+    # terminal, so a healthy run still finishes in a few seconds.
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         states = [get_job(runtime.database, job_id).state for job_id in job_ids]
         peak_executing = max(

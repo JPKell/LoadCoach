@@ -693,7 +693,9 @@ class ReliabilityStat(Base):
     __tablename__ = "reliability_stats"
     __table_args__ = (
         UniqueConstraint("model_id", "task_profile_id", "window"),
-        CheckConstraint("window IN ('7d', '30d', 'all')", name="window"),
+        # `window` is reserved in PostgreSQL; the quotes make the text valid on both dialects
+        # (M5C-15). Must match migration 0006's text or check_parity refuses.
+        CheckConstraint("\"window\" IN ('7d', '30d', 'all')", name="window"),
     )
 
     id: Mapped[str] = ulid_primary_key()

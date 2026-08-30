@@ -430,6 +430,11 @@ class QueueRuntime:
         ]
         if not changed:
             return
+        if any(not verdict.excludes for verdict in changed):
+            # A breaker that just stopped excluding may be exactly what a PROBE_IN_FLIGHT
+            # waiter is deferred on (F2/M5C-2): wake the re-evaluation now rather than leaving
+            # the job to the 5 s cadence on top of this refresh's own 10 s one.
+            self.resources_changed.set()
         try:
             record_breaker_verdicts(self.database, changed, now=now)
         except Exception:  # noqa: BLE001 — the breaker itself is in memory; persistence is a mirror

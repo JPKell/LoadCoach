@@ -43,6 +43,11 @@ M5C-1 … M5C-14). CI is green on the real runner from this state.
 
 ### Fixed
 
+- Migration `0006` was a syntax error on PostgreSQL — `window` is a reserved word there and the
+  `reliability_stats` CHECK constraint's raw text never quoted it — so the migration had never
+  applied on the second supported dialect (SQLite accepted it, hiding the defect from every
+  local run). Found by the first CI run whose pytest step actually executed; the identifier is
+  now quoted, which both dialects accept, in the migration and the model alike.
 - The bare `pytest` console script — the invocation CI, the README and CONTRIBUTING use — could
   not collect the suite at all (`ModuleNotFoundError: No module named 'tests'`, 24 collection
   errors), because test modules import shared fixtures as `tests.…` and only `python -m pytest`

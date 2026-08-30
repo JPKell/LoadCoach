@@ -81,7 +81,14 @@ def upgrade() -> None:
         sa.Column("circuit_reason", sa.String(), nullable=True),
         sa.Column("updated_at", weightsdb.UtcDateTime(), nullable=False),
         sa.CheckConstraint(
-            "window IN ('7d', '30d', 'all')", name=op.f("ck_reliability_stats_window")
+            # `window` is a reserved word in PostgreSQL; unquoted, this CREATE TABLE is a syntax
+            # error there and the migration can never have applied (M5C-15). Double quotes are
+            # the standard identifier quoting on PostgreSQL and SQLite alike. Edited in place
+            # rather than by a follow-up migration, deliberately: a migration that fails mid
+            # CREATE TABLE has no successful state for a follow-up to amend, and no released
+            # database carries the old text.
+            "\"window\" IN ('7d', '30d', 'all')",
+            name=op.f("ck_reliability_stats_window"),
         ),
         sa.ForeignKeyConstraint(
             ["model_id"],
