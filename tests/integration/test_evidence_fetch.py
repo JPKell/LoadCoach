@@ -496,3 +496,143 @@ def test_the_document_is_returned_unparsed(
     assert fetched.document == document
     assert json.loads(fetched.document)["schema"] == "benchmark.evidence_bundle"
     assert fetched.content_type == "application/json"
+
+
+def test_a_failed_refresh_then_a_successful_one_leaves_one_source_row(
+    tmp_path: Path, golden_bundle: dict[str, Any], wrap_bundle: Callable[..., str]
+) -> None:
+    """Found by the I4 demonstration, not by a unit test.
+
+    The scheduler's first refresh fired while FreeWeight was still starting, recording a
+    placeholder source keyed by the URL. The first successful import then created a *second* row
+    keyed by the producer's own ``source_id``, and every later lookup by URL raised
+    ``MultipleResultsFound`` — routing included.
+    """
+    document = wrap_bundle(golden_bundle).encode()
+    reachable = False
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        if not reachable:
+            raise httpx.ConnectError("connection refused")
+        return _json_response(document)
+
+    database = _database(tmp_path)
+    try:
+        settings = EvidenceSettings(freeweight_url="http://127.0.0.1:8765")
+        with FreeWeightClient(LOOPBACK, transport=_transport(handler)) as client:
+            assert refresh_from_freeweight(database, settings, now=NOW, client=client) is None
+            with database.read() as session:
+                assert session.query(EvidenceSource).count() == 1
+            reachable = True
+            outcome = refresh_from_freeweight(
+                database, settings, now=NOW + timedelta(minutes=1), client=client
+            )
+        assert outcome is not None
+        with database.read() as session:
+            rows = session.query(EvidenceSource).all()
+        assert len(rows) == 1, "the placeholder is adopted, not duplicated"
+        assert rows[0].source_key == "freeweight-bench-01"
+        assert rows[0].last_status == "ok"
+        assert rows[0].error_text is None
+        (source,) = list_sources(database, configured_url=settings.freeweight_url)
+        assert source.rows == 3
+        assert last_generated_at(database, url=settings.freeweight_url) is not None
+    finally:
+        database.close()
+
+
+def test_a_url_lookup_is_deterministic_when_two_rows_share_a_url(tmp_path: Path) -> None:
+    """``evidence_sources.url`` is not unique and cannot be; the lookup must still be stable."""
+    from loadcoach.services.evidence import source_for_url
+
+    database = _database(tmp_path)
+    try:
+        with database.write() as session:
+            session.add(
+                EvidenceSource(
+                    source_key="placeholder",
+                    kind="freeweight_api",
+                    url="http://127.0.0.1:8765",
+                    record_count=0,
+                    created_at=NOW,
+                    last_status="unreachable",
+                )
+            )
+            session.add(
+                EvidenceSource(
+                    source_key="freeweight-bench-01",
+                    kind="freeweight_api",
+                    url="http://127.0.0.1:8765",
+                    record_count=3,
+                    created_at=NOW,
+                    last_import_at=NOW,
+                    last_status="ok",
+                )
+            )
+        with database.read() as session:
+            chosen = source_for_url(session, "http://127.0.0.1:8765")
+            assert chosen is not None
+            assert chosen.source_key == "freeweight-bench-01", (
+                "the row that has actually imported wins"
+            )
+            assert source_for_url(session, "http://elsewhere") is None
+    finally:
+        database.close()
+
+
+def test_an_unreachable_source_with_nothing_imported_does_not_claim_retention(
+    tmp_path: Path,
+) -> None:
+    from loadcoach.services.evidence import evidence_overview
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    database = _database(tmp_path)
+    try:
+        settings = EvidenceSettings(freeweight_url="http://127.0.0.1:8765")
+        with FreeWeightClient(LOOPBACK, transport=_transport(handler)) as client:
+            refresh_from_freeweight(database, settings, now=NOW, client=client)
+        overview = evidence_overview(database, configured_url=settings.freeweight_url)
+        assert overview.status == "unreachable"
+        assert "nothing has been imported" in overview.note
+        assert "0 of 0" not in overview.note
+    finally:
+        database.close()
+
+
+def test_a_successful_import_clears_the_source_unreachable_badge(
+    tmp_path: Path, golden_bundle: dict[str, Any], wrap_bundle: Callable[..., str]
+) -> None:
+    """`source_unreachable` is a statement about the source, never about the measurement.
+
+    Seen in the I4 demonstration: rows badged by a refresh that failed at startup were still
+    badged after the source came back and imported successfully, which reads as "these
+    measurements are suspect" when what was suspect was the connection.
+    """
+    document = wrap_bundle(golden_bundle).encode()
+    reachable = True
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        if not reachable:
+            raise httpx.ConnectError("connection refused")
+        return _json_response(document)
+
+    database = _database(tmp_path)
+    try:
+        settings = EvidenceSettings(freeweight_url="http://127.0.0.1:8765")
+        with FreeWeightClient(LOOPBACK, transport=_transport(handler)) as client:
+            refresh_from_freeweight(database, settings, now=NOW, client=client)
+            reachable = False
+            refresh_from_freeweight(database, settings, now=NOW + timedelta(hours=1), client=client)
+            with database.read() as session:
+                assert {row.stale_reason for row in session.query(CapabilityEvidence).all()} == {
+                    "source_unreachable"
+                }
+            reachable = True
+            refresh_from_freeweight(database, settings, now=NOW + timedelta(hours=2), client=client)
+        with database.read() as session:
+            reasons = {row.stale_reason for row in session.query(CapabilityEvidence).all()}
+        assert "source_unreachable" not in reasons
+    finally:
+        database.close()

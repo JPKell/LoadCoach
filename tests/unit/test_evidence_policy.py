@@ -25,6 +25,7 @@ from loadcoach.domain.evidence_policy import (
     collapse_evidence,
     environment_drift,
     evaluate_staleness,
+    freeweight_remedy,
     freshness_factor,
     is_performance_capability,
     is_user_capability,
@@ -468,3 +469,36 @@ def test_known_capability_defers_to_setspecs_vocabulary() -> None:
     assert known_capability("user.house_voice") is True
     assert known_capability("user") is False
     assert known_capability("not_a_capability") is False
+
+
+# --------------------------------------------------------------------------------------------
+# The remedy, which the I4 demonstration proved had to name more than the context
+# --------------------------------------------------------------------------------------------
+
+
+def test_the_remedy_names_the_context_as_a_flag() -> None:
+    remedy = freeweight_remedy({"context_size": 4096})
+    assert (
+        remedy
+        == "freeweight run start --model <this model> --suite <the suite> --context-size 4096"
+    )
+
+
+def test_the_remedy_names_every_other_profile_field_as_configuration() -> None:
+    """`freeweight run start` has one runtime flag; the rest are FreeWeight's `[runtime]` block.
+
+    Found by running I4 for real: a remedy that named only ``--context-size`` sent the operator
+    back to a benchmark that produced the same mismatch, because the two profiles also differed
+    in ``keep_alive`` — which is part of the subject hash like every other field.
+    """
+    remedy = freeweight_remedy({"context_size": 4096, "keep_alive": "5m"})
+    assert "--context-size 4096" in remedy
+    assert "keep_alive = '5m'" in remedy
+    assert "[runtime]" in remedy
+    assert "subject hash" in remedy
+
+
+def test_a_provider_default_profile_asks_for_no_flags_at_all() -> None:
+    assert freeweight_remedy({}) == (
+        "freeweight run start --model <this model> --suite <the suite>"
+    )

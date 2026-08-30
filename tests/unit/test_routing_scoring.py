@@ -275,7 +275,7 @@ def test_resolve_capability_is_a_pure_function_of_its_arguments() -> None:
         "weight": 0.5,
         "signals": (_benchmark("reasoning", 0.7),),
         "runtime_profile_hash": PROFILE_HASH,
-        "served_context": 32768,
+        "profile_fields": {"context_size": 32768},
         "min_confidence": 0.05,
         "band_prior": 0.5,
         "require_evidence": False,

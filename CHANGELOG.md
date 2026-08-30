@@ -69,12 +69,32 @@ packaging and release standards §3.
     makes "import is `admin`-scoped" enforceable. Full auth hardening remains Phase 9's.
   - `capability_evidence.record_json` keeps the payload as it arrived, so `GET /evidence`
     re-emits the producer's document rather than a reconstruction (ADR-0025 §2).
+- Phase 6, unit 6: the contract tests (testing standards §8, HR6) and integration milestone I4.
+  - `tests/contract/test_evidence_import.py` reads every published `benchmark.evidence_bundle`
+    golden from the installed SetSpec, at every published version, and asserts each round-trips
+    through the store unchanged.
+  - `tests/contract/test_schema_rejection.py` pins the rejection: both versions named, and no row
+    and no source touched — asserted column by column, not by counting.
+  - `pytest -m contract` is green in LoadCoach for the first time; MirrorWall's was already
+    closed by its 0.2.0 release.
 
 ### Fixed
 - Four tests read the developer's real GPU through the application's own telemetry collector and
   failed with `insufficient_vram` whenever another process held the card. `tests/conftest.py`
   now pins one deterministic machine for the whole suite, which is what coding standards §5's
   injected telemetry reader is for.
+- Two evidence-source rows could share one URL: a refresh that failed before anything had been
+  imported left a placeholder keyed by the URL, and the first successful import added a second row
+  beside it, after which every lookup by URL — routing included — raised `MultipleResultsFound`.
+  The placeholder is now adopted, and `source_for_url` is deterministic where two rows do share
+  one. Found by running I4 for real.
+- A `source_unreachable` badge survived the source coming back. It is a statement about the
+  source, never about the measurement, so a successful import now retires it and the row falls
+  back to what its own age says.
+- The `evidence_profile_mismatch` remedy named only `--context-size`, which sent an operator back
+  to a benchmark that produced the same mismatch when the profiles also differed in `keep_alive`.
+  It now names every field of the resolved profile — as a flag where FreeWeight has one, and as
+  `[runtime]` configuration where it does not. Also found by running I4.
 - Phase 5, unit 8: the surface (api.md §5, §8; spec §7.2).
   - `POST /jobs` (202; a repeated key returns the original job with `X-Idempotent-Replay`),
     `GET /jobs` (filters by state, class, task and source; opaque cursor pagination),

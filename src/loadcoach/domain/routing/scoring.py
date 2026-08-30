@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 from loadcoach.domain.evidence_policy import (
+    freeweight_remedy,
     is_user_capability,
     machine_admits,
     user_capability_note,
@@ -241,7 +242,7 @@ def resolve_capability(  # noqa: PLR0913 — every argument is one documented sc
     signals: tuple[CapabilitySignal, ...],
     *,
     runtime_profile_hash: str,
-    served_context: int,
+    profile_fields: Mapping[str, object],
     min_confidence: float,
     band_prior: float | None,
     require_evidence: bool,
@@ -273,7 +274,9 @@ def resolve_capability(  # noqa: PLR0913 — every argument is one documented sc
         weight: Its weight in the task profile.
         signals: Every signal known for this model and this capability.
         runtime_profile_hash: The candidate's resolved profile hash.
-        served_context: The context the candidate will be served, for the remedy string.
+        profile_fields: The resolved profile's set fields, for the remedy string. Every one of
+            them is part of the subject hash, so every one of them has to be named — the context
+            alone is not enough (ADR-0023 §2, and the I4 demonstration).
         min_confidence: Signals below this are discarded.
         band_prior: This model's parameter band prior, or ``None`` if it has none.
         require_evidence: When true, only benchmark and production evidence counts — declared
@@ -320,10 +323,7 @@ def resolve_capability(  # noqa: PLR0913 — every argument is one documented sc
                         f"{signal.machine_fingerprint}, not on this one; throughput, memory and "
                         "energy describe the card they were measured on (ADR-0017)"
                     ),
-                    remedy=(
-                        f"freeweight run start --model <this model> --context-size "
-                        f"{served_context}   # on this machine"
-                    ),
+                    remedy=f"{freeweight_remedy(profile_fields)}   # on this machine",
                     measured_machine_fingerprint=signal.machine_fingerprint,
                 )
                 continue
@@ -338,9 +338,7 @@ def resolve_capability(  # noqa: PLR0913 — every argument is one documented sc
                         f"evidence measured under runtime profile "
                         f"{signal.runtime_profile_hash}, executing under {runtime_profile_hash}"
                     ),
-                    remedy=(
-                        f"freeweight run start --model <this model> --context-size {served_context}"
-                    ),
+                    remedy=freeweight_remedy(profile_fields),
                     measured_profile_hash=signal.runtime_profile_hash,
                 )
                 continue
@@ -426,6 +424,20 @@ def score_subject(subject: ExecutionSubject, inputs: ScoringInputs) -> TaskFit:
         candidate's own breakdown says so capability by capability.
     """
     grouped = signals_by_capability(subject.signals)
+    profile = subject.runtime_profile
+    profile_fields = {
+        name: getattr(profile, name)
+        for name in (
+            "context_size",
+            "kv_cache_precision",
+            "gpu_layers",
+            "flash_attention",
+            "threads",
+            "batch_size",
+            "keep_alive",
+        )
+        if getattr(profile, name) is not None
+    }
     priors = inputs.parameter_priors or {}
     band_prior = priors.get(subject.facts.canonical_id)
 
@@ -435,7 +447,7 @@ def score_subject(subject: ExecutionSubject, inputs: ScoringInputs) -> TaskFit:
             weight,
             grouped.get(capability_id, ()),
             runtime_profile_hash=subject.runtime_profile_hash,
-            served_context=subject.served_context.tokens,
+            profile_fields=profile_fields,
             min_confidence=inputs.min_confidence,
             band_prior=band_prior,
             require_evidence=inputs.require_evidence,

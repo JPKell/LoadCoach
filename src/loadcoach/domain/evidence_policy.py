@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, Literal
 
 import setspec
@@ -55,6 +56,7 @@ __all__ = [
     "collapse_evidence",
     "environment_drift",
     "evaluate_staleness",
+    "freeweight_remedy",
     "freshness_factor",
     "is_performance_capability",
     "is_user_capability",
@@ -417,6 +419,50 @@ def environment_drift(
     return None
 
 
+_REMEDY_FLAGS: Final[Mapping[str, str]] = MappingProxyType({"context_size": "--context-size"})
+"""Runtime-profile fields ``freeweight run start`` exposes as flags.
+
+Only one, today. Every other field of a :class:`~baseaicore.RuntimeProfile` is configured in
+FreeWeight's own ``[runtime]`` block, which is why :func:`freeweight_remedy` names them instead of
+pretending a flag exists — a remedy that cannot be typed is worse than none.
+"""
+
+
+def freeweight_remedy(profile_fields: Mapping[str, object]) -> str:
+    """Render the FreeWeight invocation that would produce evidence for this exact subject.
+
+    ADR-0023 §3 requires the explanation to carry "a suggested ``freeweight run start
+    --context-size …``". The I4 demonstration showed why the context alone is not enough: a
+    profile differing only in ``keep_alive`` hashes differently, so an operator who followed a
+    context-only remedy re-ran the benchmark and got the same mismatch back. Every field of the
+    resolved profile is named here, as a flag where one exists and as configuration where it does
+    not.
+
+    Args:
+        profile_fields: The resolved profile's set fields — ``None`` values already dropped.
+
+    Returns:
+        One line a person can act on.
+    """
+    flags = "".join(
+        f" {_REMEDY_FLAGS[name]} {value}"
+        for name, value in sorted(profile_fields.items())
+        if name in _REMEDY_FLAGS
+    )
+    configured = {
+        name: value for name, value in sorted(profile_fields.items()) if name not in _REMEDY_FLAGS
+    }
+    command = f"freeweight run start --model <this model> --suite <the suite>{flags}"
+    if not configured:
+        return command
+    settings = ", ".join(f"{name} = {value!r}" for name, value in configured.items())
+    return (
+        f"{command}   # and set FreeWeight's [runtime] {settings}, "
+        "or clear the same setting here: every field of the runtime profile is part of the "
+        "subject hash (ADR-0023 §2)"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class Staleness:
     """Whether one evidence record should be shown, and used, with a staleness badge.
@@ -670,15 +716,26 @@ class EvidenceOverview:
                 "routing ranks on declared capabilities and priors."
             )
         if self.status == "unreachable":
+            if self.rows == 0:
+                return (
+                    "FreeWeight could not be reached and nothing has been imported from it yet; "
+                    "routing ranks on declared capabilities and priors."
+                )
             return (
                 f"FreeWeight could not be reached, so the last import is retained and marked "
                 f"stale ({self.stale} of {self.rows} records); routing continues on it and on "
                 "its priors."
             )
         if self.status in ("refused", "failed"):
+            detail = self.error_text or "no detail recorded"
+            if self.rows == 0:
+                return (
+                    f"The last refresh was {self.status}: {detail}. Nothing has been imported "
+                    "yet; routing ranks on declared capabilities and priors."
+                )
             return (
-                f"The last refresh was {self.status}: {self.error_text or 'no detail recorded'}. "
-                f"The previous import's {self.rows} records are retained and still in use."
+                f"The last refresh was {self.status}: {detail}. The previous import's "
+                f"{self.rows} records are retained and still in use."
             )
         return (
             f"{self.bound} of {self.rows} imported records are bound to a discovered model "

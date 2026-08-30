@@ -93,6 +93,7 @@ __all__ = [
     "rebind_evidence",
     "rebind_evidence_in",
     "refresh_from_freeweight",
+    "source_for_url",
 ]
 
 BUNDLE_SCHEMA: Final[str] = "benchmark.evidence_bundle"
@@ -309,6 +310,30 @@ def _goal_json(record: CapabilityEvidenceFields) -> dict[str, Any] | None:
     return goal
 
 
+def source_for_url(session: Session, url: str) -> EvidenceSource | None:
+    """Return the source row for ``url``, deterministically.
+
+    ``evidence_sources.url`` is not unique, and cannot be: a failed refresh records a placeholder
+    row before any bundle has named its producer, and two producers could in principle sit behind
+    one reverse proxy. The row that has actually imported wins; among rows that have not, the
+    oldest does, so the answer does not depend on insertion order.
+
+    Args:
+        session: An open session.
+        url: The source URL.
+
+    Returns:
+        The row, or ``None``.
+    """
+    rows = session.query(EvidenceSource).filter_by(url=url).all()
+    if not rows:
+        return None
+    imported = [row for row in rows if row.last_import_at is not None]
+    if imported:
+        return max(imported, key=lambda row: (row.last_import_at, row.id))
+    return min(rows, key=lambda row: row.id)
+
+
 def _upsert_source(
     session: Session,
     *,
@@ -319,8 +344,20 @@ def _upsert_source(
     generated_at: datetime | None,
     now: datetime,
 ) -> EvidenceSource:
-    """Insert or refresh the ``evidence_sources`` row this bundle belongs to."""
+    """Insert or refresh the ``evidence_sources`` row this bundle belongs to.
+
+    A refresh that failed before anything was ever imported left a **placeholder** row keyed by
+    the URL, because at that point nobody knew what the producer calls itself. The first
+    successful import adopts that row rather than adding a second one beside it: two rows for one
+    URL would leave a permanent "unreachable" source next to a working one, which is what the I4
+    demonstration found.
+    """
     existing = session.query(EvidenceSource).filter_by(source_key=source_key).one_or_none()
+    if existing is None and url is not None:
+        placeholder = session.query(EvidenceSource).filter_by(source_key=url, url=url).one_or_none()
+        if placeholder is not None:
+            placeholder.source_key = source_key
+            existing = placeholder
     if existing is None:
         existing = EvidenceSource(
             source_key=source_key,
@@ -603,6 +640,21 @@ def _write(  # noqa: PLR0913 — one transaction with every import input threade
                 unmatched += 1
             else:
                 ambiguous += 1
+
+        # A reachable source clears the badge that said it was not. `source_unreachable` is a
+        # statement about the *source*, never about the measurement, so a successful import
+        # retires it and the row falls back to whatever its own age says (ADR-0017's staleness
+        # surface). Rows this bundle carried are recomputed below anyway.
+        for badged in (
+            session.query(CapabilityEvidence)
+            .filter_by(source_id=source_row_id, stale_reason="source_unreachable")
+            .all()
+        ):
+            refreshed = evaluate_staleness(
+                measured_at=badged.measured_at, now=now, capability_id=badged.capability_id
+            )
+            badged.stale = refreshed.stale
+            badged.stale_reason = refreshed.reason
 
         if complete:
             for key in existing_keys - seen_keys:
@@ -916,7 +968,7 @@ def mark_source_unreachable(database: Database, *, url: str, reason: str, now: d
     """
     badged = 0
     with database.write() as session:
-        source = session.query(EvidenceSource).filter_by(url=url).one_or_none()
+        source = source_for_url(session, url)
         if source is None:
             return 0
         source.last_status = "unreachable"
@@ -949,7 +1001,7 @@ def last_generated_at(database: Database, *, url: str) -> datetime | None:
         which case ADR-0022 §5 requires a **complete** pull.
     """
     with database.read() as session:
-        source = session.query(EvidenceSource).filter_by(url=url).one_or_none()
+        source = source_for_url(session, url)
         return None if source is None else source.generated_at
 
 
@@ -1055,7 +1107,7 @@ def _record_source_failure(
 ) -> None:
     """Record a failed refresh on the source row, creating it if this is the first attempt."""
     with database.write() as session:
-        source = session.query(EvidenceSource).filter_by(url=url).one_or_none()
+        source = source_for_url(session, url)
         if source is None:
             source = EvidenceSource(
                 source_key=url,
@@ -1110,7 +1162,7 @@ def evidence_overview(database: Database, *, configured_url: str = "") -> Eviden
         ]
         source = None
         if configured_url:
-            source = session.query(EvidenceSource).filter_by(url=configured_url).one_or_none()
+            source = source_for_url(session, configured_url)
         if source is None:
             source = (
                 session.query(EvidenceSource).order_by(EvidenceSource.last_import_at.desc()).first()
