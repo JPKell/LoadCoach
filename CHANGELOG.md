@@ -7,6 +7,22 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-08-30
+
+LoadCoach 1.0: the M5 exit — an explainable, durable, secure routing service. Phases 7 through 9
+of the [development plan](docs/apps/loadcoach/development-plan.md): production feedback and
+reliability, the complete operator UI, and hardening for a LAN.
+
+**Prepared, not published.** No tag, no upload. Both extracted packages — `weightsdb 0.2.0` and
+`mirrorwall 0.2.0` — are on PyPI as of 2026-08-30, so `pip install .` resolves from the index in a
+clean virtualenv, `requirements/ci.lock` is hash-pinned against it, and every CI job installs from
+that lock non-editably (see [`requirements/README.md`](requirements/README.md)). The tag is the
+remaining step.
+
+**M5 closeout (2026-08-30).** The Fable 5 verification of the prepared release returned
+*not ready* with fourteen findings; everything in this block acts on them (handoff entries
+M5C-1 … M5C-14). CI is green on the real runner from this state.
+
 ### Added
 
 - `[server] trusted_proxies` (CIDR list, config-only): reverse-proxy networks whose
@@ -79,18 +95,6 @@ packaging and release standards §3.
   them bare. The accessibility checklist's server fixture also pins the deterministic telemetry
   snapshot itself — it is built before the autouse pin applies, and its pages used to depend on
   the developer's real GPU (passing on a busy card, failing on a machine with none).
-
-## [1.0.0] — 2026-08-30
-
-LoadCoach 1.0: the M5 exit — an explainable, durable, secure routing service. Phases 7 through 9
-of the [development plan](docs/apps/loadcoach/development-plan.md): production feedback and
-reliability, the complete operator UI, and hardening for a LAN.
-
-**Prepared, not published.** No tag, no upload. Both extracted packages — `weightsdb 0.2.0` and
-`mirrorwall 0.2.0` — are on PyPI as of 2026-08-30, so `pip install .` resolves from the index in a
-clean virtualenv, `requirements/ci.lock` is hash-pinned against it, and every CI job installs from
-that lock non-editably (see [`requirements/README.md`](requirements/README.md)). The tag is the
-remaining step.
 
 ### Added
 - Phase 7, unit 1: the feedback and reliability schema and its pure statistics (data model §2–§4,
