@@ -176,11 +176,14 @@ measuring:
 | Provider-declared capability flags (tools, structured output, vision, thinking) | Gates hard constraints; contributes 0.5 as a neutral prior to the matching capability |
 | Parameter count band (relative to other installed models) | Small prior toward general capability, capped |
 | User-configured manual scores (`[manual_capabilities]` in configuration) | Used directly, marked `source: manual` |
-| Production evidence from executed jobs | Used as soon as the minimum sample count is reached |
+| Production evidence from executed jobs | **Never a capability score** (§11, [ADR-0037](../../adr/0037-production-evidence-never-raises-capability-scores.md)). Acts only through the `reliability_factor` (§6, bounded 0.5–1.0) once the minimum sample count is reached: it can lower a model that fails in production, never raise one that succeeds |
 
 Every such score is marked with its source and a fixed low confidence (default 0.3), so a single real
 benchmark result outweighs any prior. Routing without FreeWeight is therefore *reasonable*, clearly
-labelled, and self-improving as production evidence accumulates.
+labelled, and **guarded rather than self-improving**: production evidence disciplines a failing
+model through the reliability factor, the breaker and regression detection, while upward adaptation
+from production success is deliberately deferred to post-1.0 exploration routing (spec §21,
+ADR-0037). Scores improve when measurement arrives — a FreeWeight import, or a manual score.
 
 ## 6. Step 4 — Adjustment factors
 
