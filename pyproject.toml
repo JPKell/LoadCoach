@@ -96,6 +96,12 @@ explicit_package_bases = true
 
 [tool.pytest.ini_options]
 addopts = "-m 'not live and not performance'"
+# Twenty-four modules import shared fixtures as `tests.…`. Under the default `prepend` import mode
+# pytest puts the *test file's* directory on sys.path, not the repository root, so `import tests`
+# resolves only when the runner happens to insert the cwd — `python -m pytest` does, the bare
+# `pytest` console script does not, and CI runs the bare one. Stating the root here makes both
+# invocations agree.
+pythonpath = ["."]
 markers = [
     "live: requires a real provider/GPU, never in default CI",
     "performance: performance budget assertions, excluded by default",

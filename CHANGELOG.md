@@ -7,6 +7,15 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Fixed
+
+- The bare `pytest` console script — the invocation CI, the README and CONTRIBUTING use — could
+  not collect the suite at all (`ModuleNotFoundError: No module named 'tests'`, 24 collection
+  errors), because test modules import shared fixtures as `tests.…` and only `python -m pytest`
+  put the repository root on `sys.path`. `[tool.pytest.ini_options]` now sets
+  `pythonpath = ["."]`, so both invocations agree; every CI run before this fix failed at its
+  pytest step for this reason.
+
 ## [1.0.0] — 2026-08-30
 
 LoadCoach 1.0: the M5 exit — an explainable, durable, secure routing service. Phases 7 through 9
