@@ -8,6 +8,15 @@ packaging and release standards §3.
 ## [Unreleased]
 
 ### Added
+- Phase 6, unit 1: the evidence schema and its pure rules (data model §2–§4, ADR-0022, ADR-0023,
+  ADR-0017, ADR-0032 §6).
+  - Migration `0005` adds `capability_evidence` and `evidence_sources` and nothing else, with the
+    three indexes data model §4 names and a uniqueness key carrying `policy_version` so two
+    confidence policies coexist during a policy change.
+  - `loadcoach.domain.evidence_policy`: identity binding (ADR-0022 §4's four rules, in both
+    directions), freshness from `measured_at` alone, staleness with its four reasons, environment
+    drift, the machine and runtime-profile hard separations, the `user.*` opt-in gate, and a
+    selection rule that never averages two records.
 - Phase 5, unit 8: the surface (api.md §5, §8; spec §7.2).
   - `POST /jobs` (202; a repeated key returns the original job with `X-Idempotent-Replay`),
     `GET /jobs` (filters by state, class, task and source; opaque cursor pagination),

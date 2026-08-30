@@ -12,8 +12,9 @@ and the parity check (database standards §5.2) fails forever on a schema that i
 ``models``, ``model_capabilities``, ``runtime_profiles`` and ``task_profiles`` come from Phase 1's
 migration ``0001``; ``routing_decisions`` and ``routing_candidates`` from Phase 3's ``0002``;
 ``jobs``, ``job_attempts``, ``job_events`` and ``validations`` from Phase 4's ``0003``; and
-``residency`` from Phase 5's ``0004``. ``settings`` and ``api_tokens`` mirror FreeWeight's own
-tables (data model §2).
+``residency`` from Phase 5's ``0004``; and ``capability_evidence`` and ``evidence_sources``
+from Phase 6's ``0005``. ``settings`` and ``api_tokens`` mirror FreeWeight's own tables
+(data model §2).
 """
 
 from __future__ import annotations
@@ -36,6 +37,8 @@ from weightsdb import PortableJSON, UtcDateTime, measurement_columns, ulid_prima
 __all__ = [
     "ApiToken",
     "Base",
+    "CapabilityEvidence",
+    "EvidenceSource",
     "Model",
     "Job",
     "JobAttempt",
@@ -157,6 +160,117 @@ class ModelCapability(Base):
     confidence: Mapped[float] = mapped_column(nullable=False)
     source: Mapped[str] = mapped_column(String, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+
+
+class EvidenceSource(Base):
+    """Where an evidence import came from (data model §2, ``evidence_sources``).
+
+    One row per source, not per import: ``last_import_at``, ``last_status`` and ``record_count``
+    describe the most recent attempt against that source, which is what ``GET /evidence/sources``
+    and the ``evidence`` health component report. ``error_text`` holds the last failure's message
+    and is cleared by a success, so "it is broken now" and "it broke once" stay distinguishable.
+
+    ``source_key`` is the natural key an import upserts on: FreeWeight's own ``source_id`` for a
+    bundle, so that re-importing the same producer updates one row rather than accumulating one
+    per file.
+    """
+
+    __tablename__ = "evidence_sources"
+    __table_args__ = (
+        UniqueConstraint("source_key"),
+        CheckConstraint("kind IN ('freeweight_api', 'file', 'manual')", name="kind"),
+    )
+
+    id: Mapped[str] = ulid_primary_key()
+    source_key: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    url: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_import_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    schema_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    record_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_text: Mapped[str | None] = mapped_column(String, nullable=True)
+    generated_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+
+
+class CapabilityEvidence(Base):
+    """One imported ``capability.evidence`` record (data model §2, ADR-0022 §1).
+
+    Never edited by LoadCoach: a recomputation is a re-import, and the field set is the producer's
+    (ADR-0022's normative table). Two properties of this table are load-bearing rather than
+    incidental:
+
+    * ``model_id`` is **nullable**, and ``match_state`` records why. Import never fails because a
+      model has not been discovered, and binding is re-evaluated on every discovery pass
+      (ADR-0022 §4). The identity triple and ``canonical_id`` are stored denormalized precisely so
+      that an unbound row still knows what it describes.
+    * ``policy_version`` is part of the uniqueness key, so two confidence policies coexist during
+      a policy change and a re-import is a row-wise upsert rather than a collision (ADR-0022 §3).
+
+    ``measured_at`` drives freshness and ``computed_at`` never does; both are stored because
+    ``computed_at`` is what the producer's ``?since=`` filter compares against (ADR-0022 §5).
+    """
+
+    __tablename__ = "capability_evidence"
+    __table_args__ = (
+        # Named explicitly: the convention's ``uq_%(table_name)s_%(column_0_N_name)s`` would
+        # produce a 96-character identifier, and PostgreSQL truncates at 63 — which would make
+        # the model's name and the database's name disagree for ever, and ``check_parity`` fail
+        # on a schema that is in fact correct.
+        UniqueConstraint(
+            "source_id",
+            "canonical_id",
+            "runtime_profile_hash",
+            "machine_fingerprint",
+            "capability_id",
+            "policy_version",
+            name="uq_capability_evidence_subject",
+        ),
+        CheckConstraint(
+            "match_state IN ('bound', 'unmatched', 'ambiguous_name_only')",
+            name="match_state",
+        ),
+        Index("ix_capability_evidence_canonical_id_capability_id", "canonical_id", "capability_id"),
+        Index("ix_capability_evidence_model_id_capability_id", "model_id", "capability_id"),
+        Index("ix_capability_evidence_match_state", "match_state"),
+    )
+
+    id: Mapped[str] = ulid_primary_key()
+    model_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("models.id", ondelete="SET NULL"), nullable=True
+    )
+    provider_kind: Mapped[str] = mapped_column(String, nullable=False)
+    provider_model_name: Mapped[str] = mapped_column(String, nullable=False)
+    artifact_digest: Mapped[str | None] = mapped_column(String, nullable=True)
+    canonical_id: Mapped[str] = mapped_column(String, nullable=False)
+    match_state: Mapped[str] = mapped_column(String, nullable=False)
+    runtime_profile_hash: Mapped[str] = mapped_column(String, nullable=False)
+    machine_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    capability_id: Mapped[str] = mapped_column(String, nullable=False)
+    score: Mapped[float] = mapped_column(nullable=False)
+    confidence: Mapped[float] = mapped_column(nullable=False)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    excluded_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    dispersion, dispersion_unavailable_reason = measurement_columns("dispersion")
+    benchmark_versions_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    dataset_hashes_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    prompt_subset_hashes_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    contributing_metrics_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    source_run_ids_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    identity_confidence: Mapped[str] = mapped_column(String, nullable=False)
+    environment_snapshot_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    goal_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    measured_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+    imported_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+    source_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("evidence_sources.id", ondelete="CASCADE"), nullable=False
+    )
+    policy_version: Mapped[str] = mapped_column(String, nullable=False)
+    vocabulary_version: Mapped[str] = mapped_column(String, nullable=False)
+    stale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    stale_reason: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class RuntimeProfile(Base):

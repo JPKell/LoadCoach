@@ -222,3 +222,210 @@ def test_migration_0004_adds_residency_and_fixes_the_claim_index_direction() -> 
             assert any("ix_jobs_state_effective_priority_created_at" in step for step in plan)
             assert not any("TEMP B-TREE" in step for step in plan), plan
             assert not any(step.startswith("SCAN") for step in plan), plan
+
+
+def _seed_evidence(engine: object) -> None:
+    """Fill ``capability_evidence`` with a realistic shape and ANALYZE it.
+
+    Twenty models, ten capabilities, one profile: ``match_state`` is a near-constant column and
+    ``(model_id, capability_id)`` is highly selective, which is the distribution data model §4's
+    requirement is written for. Without statistics SQLite cannot know that.
+    """
+    with engine.begin() as connection:  # type: ignore[attr-defined]  # Engine, kept untyped here
+        connection.execute(
+            text(
+                "INSERT INTO evidence_sources (id, source_key, kind, record_count, created_at) "
+                "VALUES ('S0000000000000000000000001', 'fw', 'freeweight_api', 0, "
+                "'2026-08-29 00:00:00')"
+            )
+        )
+        for model_index in range(20):
+            model_id = f"M{model_index:025d}"
+            connection.execute(
+                text(
+                    "INSERT INTO models (id, provider_kind, provider_model_name, canonical_id, "
+                    "identity_confidence, first_seen_at, last_seen_at, available) VALUES "
+                    "(:id, 'ollama', :name, :canonical, 'digest', '2026-08-01 00:00:00', "
+                    "'2026-08-01 00:00:00', 1)"
+                ),
+                {
+                    "id": model_id,
+                    "name": f"model-{model_index}",
+                    "canonical": f"ollama/model-{model_index}@sha256:{model_index:012d}",
+                },
+            )
+            for capability in (
+                "reasoning",
+                "coding",
+                "code_review",
+                "auditing",
+                "debugging",
+                "instruction_following",
+                "structured_output",
+                "tool_use",
+                "long_context",
+                "speed",
+            ):
+                connection.execute(
+                    text(
+                        "INSERT INTO capability_evidence (id, model_id, provider_kind, "
+                        "provider_model_name, canonical_id, match_state, runtime_profile_hash, "
+                        "machine_fingerprint, capability_id, score, confidence, sample_count, "
+                        "excluded_count, identity_confidence, measured_at, computed_at, "
+                        "imported_at, source_id, policy_version, vocabulary_version, stale) "
+                        "VALUES (:id, :model_id, 'ollama', :name, :canonical, 'bound', '8f2c', "
+                        "'here', :capability, 0.7, 0.6, 40, 0, 'digest', "
+                        "'2026-08-01 00:00:00', '2026-08-01 00:00:00', '2026-08-29 00:00:00', "
+                        "'S0000000000000000000000001', '1.0.0', '1.1', 0)"
+                    ),
+                    {
+                        "id": f"E{model_index:012d}{capability[:12]:_>12}"[:26],
+                        "model_id": model_id,
+                        "name": f"model-{model_index}",
+                        "canonical": f"ollama/model-{model_index}@sha256:{model_index:012d}",
+                        "capability": capability,
+                    },
+                )
+        connection.execute(text("ANALYZE"))
+
+
+def test_migration_0005_adds_the_two_evidence_tables_and_nothing_else() -> None:
+    """P6's migration: ``capability_evidence`` and ``evidence_sources`` (data model §2).
+
+    "And nothing else" is the assertion that matters — re-declaring a column an earlier migration
+    created is drift, and ``check_parity`` is what reports it. The evidence lookup's query plan is
+    asserted rather than assumed, the same way the claim query's was in ``0004``: data model §4
+    requires it to use ``(model_id, capability_id)`` and to filter on ``match_state = 'bound'``.
+    """
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(backup=False)
+        assert runner.check_parity(Base.metadata).matches
+
+        with engine.connect() as connection:
+            names = {
+                row[0]
+                for row in connection.execute(
+                    text("SELECT name FROM sqlite_master WHERE type = 'table'")
+                )
+            }
+            assert {"capability_evidence", "evidence_sources"} <= names
+
+            columns = {
+                row[1]
+                for row in connection.execute(
+                    text("PRAGMA table_info(capability_evidence)")
+                ).fetchall()
+            }
+            assert columns == {
+                "id",
+                "model_id",
+                "provider_kind",
+                "provider_model_name",
+                "artifact_digest",
+                "canonical_id",
+                "match_state",
+                "runtime_profile_hash",
+                "machine_fingerprint",
+                "capability_id",
+                "score",
+                "confidence",
+                "sample_count",
+                "excluded_count",
+                "dispersion",
+                "dispersion_unavailable_reason",
+                "benchmark_versions_json",
+                "dataset_hashes_json",
+                "prompt_subset_hashes_json",
+                "contributing_metrics_json",
+                "source_run_ids_json",
+                "identity_confidence",
+                "environment_snapshot_json",
+                "goal_json",
+                "measured_at",
+                "computed_at",
+                "imported_at",
+                "source_id",
+                "policy_version",
+                "vocabulary_version",
+                "stale",
+                "stale_reason",
+            }
+            source_columns = {
+                row[1]
+                for row in connection.execute(
+                    text("PRAGMA table_info(evidence_sources)")
+                ).fetchall()
+            }
+            assert source_columns == {
+                "id",
+                "source_key",
+                "kind",
+                "url",
+                "last_import_at",
+                "last_status",
+                "schema_version",
+                "record_count",
+                "error_text",
+                "generated_at",
+                "created_at",
+            }
+
+        # The planner needs statistics to choose between the three indexes: on an empty table it
+        # prefers whichever it meets first, which says nothing about how the query behaves in an
+        # installation with evidence in it. Populate a realistic shape, ANALYZE, then assert.
+        _seed_evidence(engine)
+        with engine.connect() as connection:
+            plan = [
+                row[3]
+                for row in connection.execute(
+                    text(
+                        "EXPLAIN QUERY PLAN SELECT score FROM capability_evidence "
+                        "WHERE model_id = 'M0000000000000000000000005' "
+                        "AND capability_id = 'reasoning' AND match_state = 'bound'"
+                    )
+                ).fetchall()
+            ]
+            assert any("ix_capability_evidence_model_id_capability_id" in step for step in plan), (
+                plan
+            )
+            assert not any(step.startswith("SCAN") for step in plan), plan
+
+            unbound_plan = [
+                row[3]
+                for row in connection.execute(
+                    text(
+                        "EXPLAIN QUERY PLAN SELECT score FROM capability_evidence "
+                        "WHERE canonical_id = 'ollama/x@sha256:1' AND capability_id = 'reasoning'"
+                    )
+                ).fetchall()
+            ]
+            assert any(
+                "ix_capability_evidence_canonical_id_capability_id" in step for step in unbound_plan
+            ), unbound_plan
+            assert not any(step.startswith("SCAN") for step in unbound_plan), unbound_plan
+
+
+def test_migration_0005_touches_no_column_an_earlier_revision_created() -> None:
+    """Drift check: the schema at ``0004`` and the schema at ``0005`` differ by two tables only."""
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(revision="0004", backup=False)
+        with engine.connect() as connection:
+            before = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT name, sql FROM sqlite_master WHERE type = 'table'")
+                )
+            }
+        runner.upgrade(backup=False)
+        with engine.connect() as connection:
+            after = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT name, sql FROM sqlite_master WHERE type = 'table'")
+                )
+            }
+    assert set(after) - set(before) == {"capability_evidence", "evidence_sources"}
+    for name, sql in before.items():
+        assert after[name] == sql, name
