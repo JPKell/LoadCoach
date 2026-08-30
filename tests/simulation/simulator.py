@@ -26,6 +26,7 @@ recovery, cancellation — every line of code the properties in queue §12 are a
 from __future__ import annotations
 
 import heapq
+import random
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -52,6 +53,7 @@ from loadcoach.config import (
     ProviderSettings,
     QueueSettings,
     ResidencySettings,
+    RuntimeSettings,
     Settings,
     StorageSettings,
     TelemetrySettings,
@@ -506,6 +508,7 @@ class SimulatedProvider:
         self._default_spec = default_spec or GenerationSpec()
         self._lock = threading.Lock()
         self._resident: dict[str, datetime] = {}
+        self.model_failures: dict[str, FakeFailure] = {}
         self.loads = 0
         self.unloads = 0
         self.calls: list[tuple[datetime, str, str]] = []
@@ -574,6 +577,16 @@ class SimulatedProvider:
         label = self.label_of(request)
         spec = self._spec_for(label)
         name = request.identity.provider_model_name
+        # A per-model failure (a model that is down) overrides the label's script: the same job
+        # then fails on this model and succeeds on its fallback, which is what a breaker sees.
+        forced = self.model_failures.get(name)
+        if forced is not None:
+            spec = GenerationSpec(
+                duration_seconds=spec.duration_seconds,
+                chunks=spec.chunks,
+                text=spec.text,
+                failure=forced,
+            )
         self.calls.append((self._driver.clock.now(), name, label))
         self._ensure_loaded(name)
         per_chunk_ms = (spec.duration_seconds * 1000.0) / max(spec.chunks, 1)
@@ -700,6 +713,8 @@ class Simulation:
         execution: ExecutionSettings | None = None,
         residency: ResidencySettings | None = None,
         telemetry: TelemetrySettings | None = None,
+        runtime: RuntimeSettings | None = None,
+        capabilities: ProviderCapabilities = SIMULATION_CAPABILITIES,
         specs: Mapping[str, Sequence[GenerationSpec]] | None = None,
         default_spec: GenerationSpec | None = None,
         placement: Mapping[str, int] | None = None,
@@ -715,6 +730,8 @@ class Simulation:
             execution: Execution settings; default is the shipped defaults.
             residency: Residency settings; default is the shipped defaults.
             telemetry: Telemetry settings (the per-device headroom); default is the shipped one.
+            runtime: The default runtime profile (ADR-0023); default is the shipped one.
+            capabilities: What the simulated provider declares.
             specs: Per-label generation scripts.
             default_spec: What an unscripted label does.
             placement: Which device each model lands on when loaded (default: 0). Placement is
@@ -735,9 +752,14 @@ class Simulation:
             execution=execution or ExecutionSettings(),
             residency=residency or ResidencySettings(),
             telemetry=telemetry or TelemetrySettings(),
+            runtime=runtime or RuntimeSettings(),
         )
         self.provider = SimulatedProvider(
-            self.driver, models=self.models, specs=specs, default_spec=default_spec
+            self.driver,
+            models=self.models,
+            specs=specs,
+            default_spec=default_spec,
+            capabilities=capabilities,
         )
         self.provider.on_load = self._on_load
         self.provider.on_unload = self._on_unload
@@ -853,6 +875,7 @@ class Simulation:
             sleep=self.driver.sleep,
             workers=workers,
             owner_prefix="sim",
+            jitter=random.Random(0).random,  # noqa: S311 — reproducible backoff, not security
         )
         self.runtime = runtime
         for worker in runtime.workers:

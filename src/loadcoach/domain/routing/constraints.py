@@ -348,6 +348,9 @@ class ConstraintInputs:
         resident_devices: Canonical ID -> devices the model is resident on. A resident model
             fits on its device whatever the estimate says — its memory is already allocated —
             which is the one exception to "an unknown estimate does not fit" (queue §5).
+        circuit_breaker_details: Canonical ID -> the open breaker's record (state, reason,
+            expiry), merged into the ``recently_failing`` rejection so the explanation shows
+            why the model was skipped and until when (queue §7).
     """
 
     min_context_tokens: int = 0
@@ -361,6 +364,7 @@ class ConstraintInputs:
     vram_headroom_bytes: int = DEFAULT_VRAM_HEADROOM_BYTES
     open_circuit_breakers: frozenset[str] = frozenset()
     resident_devices: Mapping[str, frozenset[int]] = field(default_factory=dict)
+    circuit_breaker_details: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
 
 _CAPABILITY_SUPPORT_ATTRIBUTE: Final[Mapping[str, str]] = {
@@ -530,7 +534,9 @@ def evaluate_constraints(
         )
 
     if facts.canonical_id in inputs.open_circuit_breakers:
-        return (Rejection("recently_failing", {"circuit_breaker": "open"}), fits, None)
+        detail: dict[str, object] = {"circuit_breaker": "open"}
+        detail.update(inputs.circuit_breaker_details.get(facts.canonical_id, {}))
+        return (Rejection("recently_failing", detail), fits, None)
 
     return None, fits, target_gpu_index
 

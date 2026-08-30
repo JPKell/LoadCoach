@@ -26,10 +26,11 @@ exact loop over a fake clock.
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from baseaicore import SuiteError, new_id
@@ -42,7 +43,16 @@ from loadcoach.domain.admission import (
     reserved_bytes_by_device,
     waiting_job_can_proceed,
 )
+from loadcoach.domain.circuit_breaker import CircuitBreakers
 from loadcoach.domain.queue_state import IN_FLIGHT_STATES, JobState, event_type_for
+from loadcoach.domain.retry_policy import (
+    Action,
+    FailureKind,
+    backoff_seconds,
+    classify_failure,
+    next_action,
+    next_candidate_index,
+)
 from loadcoach.domain.routing.constraints import free_vram_by_gpu
 from loadcoach.domain.routing.context_budget import estimate_input_tokens
 from loadcoach.domain.routing.subject import RuntimeOverrides
@@ -65,6 +75,7 @@ from loadcoach.services.queue import (
     TransitionRefused,
     Wakeup,
     ageing_sweep,
+    breaker_samples,
     claim,
     expire_max_wait,
     move,
@@ -92,6 +103,7 @@ if TYPE_CHECKING:
 
     from loadcoach.config import Settings
     from loadcoach.domain.admission import AdmissionVerdict
+    from loadcoach.domain.circuit_breaker import AttemptSample
     from loadcoach.domain.routing.ranking import RankedCandidate
     from loadcoach.domain.routing.subject import ProviderFacts
     from loadcoach.domain.validation import ValidationOutcome
@@ -124,6 +136,7 @@ _FLAGS_INTERVAL_SECONDS: Final = 1.0
 _REEVALUATE_INTERVAL_SECONDS: Final = 5.0
 _EVICT_INTERVAL_SECONDS: Final = 10.0
 _SYNC_INTERVAL_SECONDS: Final = 60.0
+_BREAKER_INTERVAL_SECONDS: Final = 10.0
 
 
 @dataclass
@@ -256,6 +269,11 @@ class QueueRuntime:
         resources_changed: Set by a worker when a job leaves flight and by an unload — the
             scheduler re-evaluates ``waiting_resources`` jobs at once rather than on its cadence.
         resident_model_ids: Which registry models are resident, for the affinity claim.
+        breakers: The circuit breakers (queue §7), refreshed from ``breaker_source``.
+        breaker_source: Attempt samples per model since an instant — ``job_attempts`` in
+            Phase 5, swappable for ``reliability_stats`` in Phase 7.
+        jitter: A uniform draw in ``[0, 1)`` for backoff; injected so the simulator is
+            reproducible.
     """
 
     settings: Settings
@@ -274,6 +292,9 @@ class QueueRuntime:
     residency: ResidencyService | None = None
     resources_changed: threading.Event = field(default_factory=threading.Event)
     resident_model_ids: Callable[[], frozenset[str]] = lambda: frozenset()
+    breakers: CircuitBreakers = field(default_factory=CircuitBreakers)
+    breaker_source: Callable[[datetime], Mapping[str, Sequence[AttemptSample]]] | None = None
+    jitter: Callable[[], float] = random.random
     workers: list[Worker] = field(default_factory=list)
     scheduler: Scheduler | None = None
     _threads: list[threading.Thread] = field(default_factory=list)
@@ -281,6 +302,13 @@ class QueueRuntime:
     def provider_facts(self) -> ProviderFacts:
         """Read the provider's declared capabilities."""
         return provider_facts_for(self.provider)
+
+    def refresh_breakers(self, now: datetime) -> None:
+        """Re-evaluate every breaker from the sample source's last window."""
+        source = self.breaker_source
+        since = now - timedelta(seconds=self.breakers.window_seconds)
+        samples = breaker_samples(self.database, since=since) if source is None else source(since)
+        self.breakers.update(samples, now=now)
 
     def in_use_model_ids(self, *, excluding_job: str | None = None) -> frozenset[str]:
         """Registry models in-flight jobs are executing on — never evicted, never reserved twice."""
@@ -526,8 +554,13 @@ class Worker:
         request = submission.to_generate_request()
         caller_text = "".join(message.content for message in request.transcript())
         now = runtime.clock()
+        runtime.refresh_breakers(now)
+        # A half-open breaker lets exactly one job through as its probe (queue §7): the exclusion
+        # set is read *before* any probe is marked, so this job may route to the model; once it
+        # has, the probe is marked in flight and later jobs exclude the model until the attempt
+        # reports. P7 adds the dedicated low-priority probe job with its own prompt record.
         try:
-            return route(
+            result = route(
                 runtime.database,
                 RouteRequest(
                     task=submission.task,
@@ -541,9 +574,11 @@ class Worker:
                 policy=runtime.policy,
                 snapshot=runtime.admission_snapshot(excluding_job=job.job_id),
                 resident_models=self._resident_canonical_ids(),
+                open_circuit_breakers=runtime.breakers.excluded(),
                 resident_devices=runtime.residency.resident_devices()
                 if runtime.residency
                 else None,
+                circuit_breaker_details=runtime.breakers.details(),
                 now=now,
             )
         except NoEligibleModel as exc:
@@ -555,6 +590,11 @@ class Worker:
             else:
                 self._fail_admission(job, exc)
             return None
+        ranking = result.explanation.ranking
+        for candidate in (ranking.primary, *ranking.fallbacks):
+            if candidate is not None:
+                runtime.breakers.allow_probe(candidate.subject.facts.canonical_id)
+        return result
 
     def _resident_canonical_ids(self) -> frozenset[str]:
         residency = self.runtime.residency
@@ -691,7 +731,7 @@ class Worker:
     # ---------------------------------------------------------------------------- attempts
 
     def _attempts(self, execution: _Execution, entry: InFlightEntry) -> None:
-        """Try each ranked candidate in turn, retrying correctively where the profile permits."""
+        """Apply queue §7's failure table across the ranked candidates until one answers."""
         runtime = self.runtime
         job = execution.job
         ranking = execution.routing.explanation.ranking
@@ -700,6 +740,7 @@ class Worker:
             for candidate in (ranking.primary, *ranking.fallbacks)
             if candidate is not None
         ]
+        served_contexts = [candidate.subject.served_context.tokens for candidate in candidates]
         profile = execution.routing.task_profile
         per_candidate = int(cast("int", profile.execution.get("max_attempts", 1)))
         request = job.submission.to_generate_request()
@@ -707,17 +748,23 @@ class Worker:
         attempt_number = job.attempt
         state = JobState.ADMITTED
         records: list[AttemptRecord] = []
+        index: int | None = 0
+        first = True
 
-        for index, candidate in enumerate(candidates):
+        while index is not None:
+            candidate = candidates[index]
             turns = transcript
             correction: Any = None
-            if index > 0:
+            attempts_here = 0
+            if not first:
                 state = self._readmit(execution, state, candidate, reason="fallback")
-            for _ in range(per_candidate):
+            first = False
+            while True:
                 if attempt_number >= job.max_attempts:
                     self._fail(execution, state, records, "ATTEMPTS_EXHAUSTED")
                     return
                 attempt_number += 1
+                attempts_here += 1
                 residency = self._ensure_resident(job, candidate)
                 state = self._start_executing(execution, state, attempt_number, residency)
                 on_chunk = self._on_chunk(job) if job.submission.stream else None
@@ -742,23 +789,47 @@ class Worker:
                     self._cancel_from(job, JobState.EXECUTING, records=tuple(records))
                     return
                 if outcome.failure is not None:
+                    kind = classify_failure(outcome.failure)
                     state = self._record_failed_attempt(execution, outcome.record)
-                    break  # this candidate is not working; fall back
-                assert outcome.validation is not None  # noqa: S101 — the provider answered
-                state = self._validate_attempt(execution, outcome.record)
-                if outcome.passed:
-                    self._complete(execution, tuple(records), outcome, candidate)
-                    return
-                if attempt_number >= job.max_attempts:
-                    self._fail(execution, state, records, "ATTEMPTS_EXHAUSTED")
-                    return
-                turns, correction = corrective_turns(
-                    transcript,
-                    previous_text=outcome.text,
-                    outcome=outcome.validation,
-                    schema=execution.schema,
+                else:
+                    assert outcome.validation is not None  # noqa: S101 — the provider answered
+                    state = self._validate_attempt(execution, outcome.record)
+                    if outcome.passed:
+                        self._complete(execution, tuple(records), outcome, candidate)
+                        return
+                    kind = FailureKind.VALIDATION
+                decision = next_action(
+                    kind, attempts_on_candidate=attempts_here, per_candidate_limit=per_candidate
                 )
-                state = self._readmit(execution, state, candidate, reason="corrective_retry")
+                if decision.action is Action.STOP:
+                    self._cancel_from(job, state, records=tuple(records))
+                    return
+                if decision.action is Action.RETRY_SAME:
+                    if attempt_number >= job.max_attempts:
+                        self._fail(execution, state, records, "ATTEMPTS_EXHAUSTED")
+                        return
+                    if kind is FailureKind.VALIDATION:
+                        assert outcome.validation is not None  # noqa: S101
+                        turns, correction = corrective_turns(
+                            transcript,
+                            previous_text=outcome.text,
+                            outcome=outcome.validation,
+                            schema=execution.schema,
+                        )
+                    state = self._readmit(
+                        execution,
+                        state,
+                        candidate,
+                        reason=decision.reason,
+                        retry_number=attempts_here,
+                    )
+                    continue
+                index = next_candidate_index(
+                    served_contexts,
+                    current=index,
+                    larger_context_only=decision.larger_context_only,
+                )
+                break
         self._fail(execution, state, records, "ALL_CANDIDATES_FAILED")
 
     def _ensure_resident(
@@ -885,9 +956,20 @@ class Worker:
         return JobState.VALIDATING
 
     def _readmit(
-        self, execution: _Execution, state: JobState, candidate: RankedCandidate, *, reason: str
+        self,
+        execution: _Execution,
+        state: JobState,
+        candidate: RankedCandidate,
+        *,
+        reason: str,
+        retry_number: int = 0,
     ) -> JobState:
-        """``validating|executing -> retrying -> admitted`` for the next attempt, with backoff."""
+        """``validating|executing -> retrying -> admitted`` for the next attempt, with backoff.
+
+        ``retry_number`` is 1 for the first retry on the same candidate, 2 for the second …, and
+        0 for a fallback, which starts on a fresh model without waiting (queue §7: backoff is
+        for retrying the same model).
+        """
         runtime = self.runtime
         job = execution.job
         if state is not JobState.RETRYING:
@@ -910,9 +992,14 @@ class Worker:
                     data={"reason": reason},
                 )
             runtime.in_flight.update(job.job_id, self.owner, state=JobState.RETRYING.value)
-        backoff = runtime.settings.execution.attempt_backoff_seconds
-        if backoff > 0:
-            runtime.sleep(backoff)
+        if retry_number > 0:
+            backoff = backoff_seconds(
+                runtime.settings.execution.attempt_backoff_seconds,
+                retry_number,
+                jitter=runtime.jitter(),
+            )
+            if backoff > 0:
+                runtime.sleep(backoff)
         now = runtime.clock()
         with runtime.sink.write(runtime.database) as (session, events):
             transition(
@@ -1189,6 +1276,7 @@ class Scheduler:
             "reevaluate": None,
             "evict": None,
             "sync": None,
+            "breakers": None,
         }
         self.renewals = 0
         self.sweeps = 0
@@ -1241,6 +1329,8 @@ class Scheduler:
             self.evict_idle(now)
         if self._due("sync", now, _SYNC_INTERVAL_SECONDS) and self.runtime.residency is not None:
             self.runtime.residency.sync(now)
+        if self._due("breakers", now, _BREAKER_INTERVAL_SECONDS):
+            self.runtime.refresh_breakers(now)
         if self._due("flags", now, _FLAGS_INTERVAL_SECONDS):
             self.refresh_flags()
 
@@ -1362,6 +1452,7 @@ def build_runtime(
     workers: int | None = None,
     owner_prefix: str | None = None,
     schemas_dir: Path = DEFAULT_SCHEMAS_DIR,
+    jitter: Callable[[], float] | None = None,
 ) -> QueueRuntime:
     """Wire the runtime: registry, ``max_concurrent_jobs`` workers and the scheduler.
 
@@ -1377,6 +1468,7 @@ def build_runtime(
         workers: How many workers; ``None`` is ``execution.max_concurrent_jobs``.
         owner_prefix: The lease owner prefix; ``None`` generates a per-process ULID.
         schemas_dir: Where task profile schemas resolve.
+        jitter: The backoff jitter draw; ``None`` is ``random.random``.
 
     Returns:
         The runtime, not yet started.
@@ -1402,6 +1494,7 @@ def build_runtime(
         ),
         schemas_dir=schemas_dir,
         owner_prefix=owner_prefix if owner_prefix is not None else new_id(),
+        jitter=jitter if jitter is not None else random.random,
     )
     residency = ResidencyService(
         database, provider, settings=settings.residency, clock=runtime.clock

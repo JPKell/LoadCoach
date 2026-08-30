@@ -8,6 +8,29 @@ packaging and release standards §3.
 ## [Unreleased]
 
 ### Added
+- Phase 5, unit 6: retries, fallback and the circuit breaker (`domain/retry_policy.py`,
+  `domain/circuit_breaker.py`; queue §7).
+  - `domain/retry_policy.py` is queue §7's failure table as a pure decision: a timeout retries
+    the same model up to the profile's per-candidate limit with exponential, jittered backoff and
+    then falls back; a connection error falls back at once; a protocol error retries once; a
+    validation failure retries correctively up to the profile's limit; a context overrun never
+    retries the same model and falls back only to a candidate serving a larger context;
+    cancellation is terminal; exhausting every candidate fails with `ALL_CANDIDATES_FAILED` and
+    every attempt in the event. The worker applies the table across the ranked candidates, with
+    the job's total attempt bound on top and the jitter draw injected.
+  - `domain/circuit_breaker.py`: a per-model `closed → open → half_open` state machine over a
+    window of attempt outcomes — opens at half the window's attempts failing over at least five,
+    excludes for a five-minute cool-down with the reason and expiry, then lets exactly one job
+    through as the probe; a successful probe closes it (and the failures that opened it stop
+    counting), a failed one re-opens it with a fresh cool-down. Phase 5 feeds it `job_attempts`
+    outcomes (`breaker_samples`); the source is a callable P7 swaps for `reliability_stats`.
+    `ConstraintInputs.open_circuit_breakers` is now populated, and the `recently_failing`
+    rejection carries the breaker's state, reason and expiry into the routing explanation.
+  - Proven by simulation: timeout retry-with-backoff then fallback; connection error falling back
+    at once and a protocol error retrying once; context overrun falling back to the wider
+    candidate on a provider that serves each model's own maximum; every candidate exhausted with
+    every attempt recorded; and the breaker opening after five failures, excluding the model with
+    its reason visible in the skipped job's explanation, and re-probing after the cool-down.
 - Phase 5, unit 5: admission and residency (`domain/admission.py`, `services/residency.py`;
   queue §5–§6, ADR-0027, ADR-0036 §3).
   - Admission is built around P3's estimator, not instead of it. Routing evaluates a

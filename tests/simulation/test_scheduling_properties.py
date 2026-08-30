@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from modelrack.testing import FakeFailure, FakeFailureMode
@@ -654,3 +655,203 @@ def test_the_starvation_bound_holds_under_a_running_clock_with_continuous_intera
     started_without, state_without = _starvation_scenario(tmp_path / "no-sweep", sweep=False)
     assert started_without is None
     assert state_without is JobState.QUEUED
+
+
+# --- retries, fallback and the circuit breaker (queue §7) --------------------------------------
+
+
+def _two_models(path: Path, **execution: Any) -> Simulation:
+    """alpha ranks first by its parameter band prior, so a resident beta never displaces it.
+
+    Without that, the first fallback would make beta resident and routing's residency tie-break
+    would rightly prefer it for every later job — and alpha's failures would never accumulate.
+    """
+    return Simulation(
+        path,
+        models=(
+            sim_model("alpha:8b", load_seconds=0.0, parameter_count=70_000_000_000),
+            sim_model("beta:8b", load_seconds=0.0),
+        ),
+        execution=ExecutionSettings(attempt_backoff_seconds=2.0, max_attempts=6, **execution),
+    )
+
+
+def test_a_timeout_retries_the_same_model_with_backoff_then_falls_back(tmp_path: Path) -> None:
+    sim = _two_models(tmp_path)
+    try:
+        sim.provider.model_failures["alpha:8b"] = FakeFailure(
+            FakeFailureMode.TIMEOUT, after_chunks=0
+        )
+        sim.provider.script("job", GenerationSpec(duration_seconds=1.0, chunks=1, text="ok"))
+        sim.start_queue()
+        job_id = sim.submit("job").job_id  # general.chat: two attempts per candidate
+        sim.run_for(60)
+        record = sim.job(job_id)
+        assert record.state is JobState.COMPLETED and record.response_text == "ok"
+        assert [o for _, o in sim.attempts(job_id)] == ["timeout", "timeout", "completed"]
+        assert [name for _, name, _ in sim.provider.calls] == ["alpha:8b", "alpha:8b", "beta:8b"]
+        types = [t for _, t in sim.events(job_id)]
+        assert types.count("job.retrying") == 2 and types.count("job.admitted") == 3
+        # A timeout scripted before the first chunk costs no simulated time, so the gap between
+        # the two alpha calls is the backoff alone (2 s x jitter in [0.5, 1.5)); the fallback to
+        # beta waits for nothing (queue §7: backoff is for retrying the same model).
+        first, second, third = (t for t, _, _ in sim.provider.calls)
+        assert 1.0 <= (second - first).total_seconds() <= 3.0
+        assert third == second
+    finally:
+        sim.close()
+
+
+def test_a_connection_error_falls_back_at_once_and_a_protocol_error_retries_once(
+    tmp_path: Path,
+) -> None:
+    sim = _two_models(tmp_path)
+    try:
+        sim.provider.script("job", GenerationSpec(duration_seconds=1.0, chunks=1, text="ok"))
+        sim.start_queue()
+        sim.provider.model_failures["alpha:8b"] = FakeFailure(FakeFailureMode.UNAVAILABLE)
+        dead = sim.submit("job").job_id
+        sim.run_for(30)
+        assert sim.job(dead).state is JobState.COMPLETED
+        assert [name for _, name, _ in sim.provider.calls] == ["alpha:8b", "beta:8b"]
+        sim.provider.calls.clear()
+        sim.provider.model_failures["alpha:8b"] = FakeFailure(
+            FakeFailureMode.TRUNCATED_STREAM, after_chunks=0
+        )
+        garbled = sim.submit("job").job_id
+        sim.run_for(30)
+        assert sim.job(garbled).state is JobState.COMPLETED
+        assert [name for _, name, _ in sim.provider.calls] == ["alpha:8b", "alpha:8b", "beta:8b"]
+        assert [o for _, o in sim.attempts(garbled)] == [
+            "provider_error",
+            "provider_error",
+            "completed",
+        ]
+    finally:
+        sim.close()
+
+
+def test_a_context_limit_falls_back_only_to_a_larger_context_candidate(tmp_path: Path) -> None:
+    """Queue §7: no retry on the same model; the fallback must serve a larger context.
+
+    On a provider that cannot be asked for a context, each model serves its own advertised
+    maximum (ADR-0023 §4, ``assumed``) — narrow 8192, wide 32768 — which is the one situation in
+    which candidates differ in served context at all. narrow ranks first by its parameter band
+    prior and fails on context; wide is the fallback that qualifies.
+    """
+    from dataclasses import replace as dc_replace
+
+    from tests.simulation.simulator import SIMULATION_CAPABILITIES
+
+    sim = Simulation(
+        tmp_path,
+        models=(
+            sim_model("narrow:8b", load_seconds=0.0, parameter_count=70_000_000_000),
+            sim_model("wide:8b", load_seconds=0.0, max_context=32768),
+        ),
+        execution=ExecutionSettings(attempt_backoff_seconds=0.0, max_attempts=6),
+        capabilities=dc_replace(SIMULATION_CAPABILITIES, context_configurable=False),
+    )
+    try:
+        sim.provider.script("job", GenerationSpec(duration_seconds=1.0, chunks=1, text="ok"))
+        sim.start_queue()
+        sim.provider.model_failures["narrow:8b"] = FakeFailure(
+            FakeFailureMode.CONTEXT_LIMIT_EXCEEDED
+        )
+        job_id = sim.submit("job").job_id
+        sim.run_for(30)
+        record = sim.job(job_id)
+        assert record.state is JobState.COMPLETED, record.error_text
+        assert [name for _, name, _ in sim.provider.calls] == ["narrow:8b", "wide:8b"]
+        assert [o for _, o in sim.attempts(job_id)] == ["context_exceeded", "completed"]
+        assert record.served_context == 32768 and record.served_context_source == "assumed"
+    finally:
+        sim.close()
+
+
+def test_all_candidates_exhausted_fails_with_every_attempt_recorded(tmp_path: Path) -> None:
+    sim = _two_models(tmp_path)
+    try:
+        sim.start_queue()
+        sim.provider.model_failures["alpha:8b"] = FakeFailure(FakeFailureMode.UNAVAILABLE)
+        sim.provider.model_failures["beta:8b"] = FakeFailure(FakeFailureMode.UNAVAILABLE)
+        job_id = sim.submit("job").job_id
+        sim.run_for(30)
+        record = sim.job(job_id)
+        assert record.state is JobState.FAILED
+        assert record.state_reason == record.error_code == "ALL_CANDIDATES_FAILED"
+        assert [o for _, o in sim.attempts(job_id)] == ["provider_error", "provider_error"]
+        from sqlalchemy import select
+
+        from loadcoach.infrastructure.db.models import JobEvent
+
+        with sim.database.read() as session:
+            data = session.execute(
+                select(JobEvent.data_json).where(
+                    JobEvent.job_id == job_id, JobEvent.event_type == "job.failed"
+                )
+            ).scalar_one()
+        assert isinstance(data, dict)
+        assert [a["model"] for a in data["attempts"]] == [
+            sim.canonical_id("alpha:8b"),
+            sim.canonical_id("beta:8b"),
+        ]
+        assert all(a["error_code"] == "ProviderUnavailable" for a in data["attempts"])
+    finally:
+        sim.close()
+
+
+def test_the_circuit_breaker_opens_excludes_reprobes_and_shows_in_explanations(
+    tmp_path: Path,
+) -> None:
+    """Queue §7: opens at the failure threshold, excludes with reason and expiry, re-probes."""
+    from loadcoach.domain.circuit_breaker import BreakerState
+
+    sim = _two_models(tmp_path)
+    try:
+        sim.provider.script("job", GenerationSpec(duration_seconds=1.0, chunks=1, text="ok"))
+        runtime = sim.start_queue()
+        alpha = sim.canonical_id("alpha:8b")
+        sim.provider.model_failures["alpha:8b"] = FakeFailure(FakeFailureMode.UNAVAILABLE)
+        first_five = []
+        for _ in range(5):
+            first_five.append(sim.submit("job").job_id)
+            sim.run_for(10)
+        assert all(sim.job(j).state is JobState.COMPLETED for j in first_five)
+        assert [name for _, name, _ in sim.provider.calls].count("alpha:8b") == 5
+        verdict = next(v for v in runtime.breakers.verdicts() if v.canonical_id == alpha)
+        assert verdict.state is BreakerState.OPEN and verdict.failure_rate == 1.0
+        assert verdict.expires_at is not None
+
+        sim.provider.calls.clear()
+        skipped = sim.submit("job").job_id
+        sim.run_for(10)
+        assert sim.job(skipped).state is JobState.COMPLETED
+        assert [name for _, name, _ in sim.provider.calls] == ["beta:8b"]  # alpha never tried
+        from sqlalchemy import select
+
+        from loadcoach.infrastructure.db.models import RoutingDecision
+
+        with sim.database.read() as session:
+            explanation = session.execute(
+                select(RoutingDecision.explanation_json).where(RoutingDecision.job_id == skipped)
+            ).scalar_one()
+        assert isinstance(explanation, dict)
+        rejected = {item["canonical_id"]: item for item in explanation["rejected"]}
+        assert rejected[alpha]["reason"] == "recently_failing"
+        detail = rejected[alpha]["detail"]
+        assert detail["state"] == "open" and "excluded until" in detail["reason"]
+        assert detail["expires_at"] is not None and detail["failure_rate"] == 1.0
+
+        # After the cool-down the next job is the probe; alpha has recovered, so it closes.
+        del sim.provider.model_failures["alpha:8b"]
+        sim.provider.calls.clear()
+        sim.run_for(300)
+        probe = sim.submit("job").job_id
+        sim.run_for(10)
+        assert sim.job(probe).state is JobState.COMPLETED
+        assert [name for _, name, _ in sim.provider.calls] == ["alpha:8b"]
+        verdict = next(v for v in runtime.breakers.verdicts() if v.canonical_id == alpha)
+        assert verdict.state is BreakerState.CLOSED
+    finally:
+        sim.close()

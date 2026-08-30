@@ -408,6 +408,7 @@ def route(
     resident_models: frozenset[str] = frozenset(),
     open_circuit_breakers: frozenset[str] = frozenset(),
     resident_devices: Mapping[str, frozenset[int]] | None = None,
+    circuit_breaker_details: Mapping[str, Mapping[str, object]] | None = None,
     now: datetime,
     persist: bool = True,
 ) -> RoutingResult:
@@ -425,6 +426,7 @@ def route(
         open_circuit_breakers: Canonical IDs the breaker currently excludes.
         resident_devices: Canonical ID -> devices the model is resident on; a resident model
             fits on its device whatever the estimate says (queue §5, admission).
+        circuit_breaker_details: The open breakers' records, for the rejection detail.
         now: The instant the request arrived. Injected, so a decision is reproducible.
         persist: Whether to write the decision. ``False`` is for replaying a stored decision's
             inputs to prove it reproduces (acceptance criterion 3).
@@ -515,6 +517,7 @@ def route(
                 vram_headroom_bytes=policy.vram_headroom_bytes,
                 open_circuit_breakers=open_circuit_breakers,
                 resident_devices=resident_devices or {},
+                circuit_breaker_details=circuit_breaker_details or {},
             ),
         )
         if rejection is not None:

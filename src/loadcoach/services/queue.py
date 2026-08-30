@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from loadcoach.config import ExecutionSettings, QueueSettings
+    from loadcoach.domain.circuit_breaker import AttemptSample
     from loadcoach.services.database import Database
     from loadcoach.services.job_events import JobEventSink
 
@@ -87,6 +88,7 @@ __all__ = [
     "queue_snapshot",
     "reap_expired_leases",
     "renew_leases",
+    "breaker_samples",
     "resolve_model_id",
     "transition",
     "waiting_deferrals",
@@ -1164,6 +1166,33 @@ def waiting_deferrals(database: Database) -> tuple[tuple[str, dict[str, Any] | N
             ).scalar_one_or_none()
             found.append((job_id, data if isinstance(data, dict) else None))
         return tuple(found)
+
+
+def breaker_samples(database: Database, *, since: datetime) -> dict[str, list[AttemptSample]]:
+    """Attempt outcomes per model since ``since`` — the circuit breaker's Phase 5 input.
+
+    Completed attempts and validation failures count as successes: the provider answered.
+    Provider errors, timeouts, protocol errors and context overruns count as failures. A
+    cancelled attempt says nothing about the model and is skipped.
+    """
+    from loadcoach.domain.circuit_breaker import AttemptSample
+    from loadcoach.infrastructure.db.models import JobAttempt, Model
+
+    successes = {"completed", "validation_failed"}
+    with database.read() as session:
+        rows = session.execute(
+            select(Model.canonical_id, JobAttempt.completed_at, JobAttempt.outcome)
+            .join(Model, Model.id == JobAttempt.model_id)
+            .where(JobAttempt.completed_at > since, JobAttempt.outcome != "cancelled")
+        ).all()
+    samples: dict[str, list[AttemptSample]] = {}
+    for canonical_id, completed_at, outcome in rows:
+        if completed_at is None:
+            continue
+        samples.setdefault(canonical_id, []).append(
+            AttemptSample(at=completed_at, succeeded=outcome in successes)
+        )
+    return samples
 
 
 def resolve_model_id(database: Database, canonical_id: str) -> str | None:
