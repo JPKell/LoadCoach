@@ -6,7 +6,7 @@ Packaging and Release Standards §4 and Security Standards §11.
 | File | Contents | Used by |
 |---|---|---|
 | `release.in` / `release.lock` | The build and publish chain (`build`, `hatchling`, `twine`) | `release.yml`, and CI's `build` job |
-| `ci.lock` | Runtime dependencies plus the `dev` extra | **Not yet present — see below** |
+| `ci.lock` | Runtime dependencies plus the `dev` and `postgres` extras | Every CI job that installs this package |
 
 ## What these are not
 
@@ -17,45 +17,33 @@ without them every CI run re-resolves, and a new `ruff` or `mypy` release can ch
 with no commit to explain it — and `pip-audit` would be auditing today's resolution rather than
 what the build actually used.
 
-## `ci.lock` is blocked, and so is every CI job that installs this package
+## `ci.lock`
 
-`pyproject.toml` declares `weightsdb>=0.2,<0.3` and `mirrorwall>=0.2,<0.3` as **runtime**
-dependencies. Neither package is published:
-
-```console
-$ pip index versions weightsdb
-ERROR: No matching distribution found for weightsdb
-$ pip index versions mirrorwall
-ERROR: No matching distribution found for mirrorwall
-$ pip install .            # in a fresh, non-root virtualenv
-ERROR: Could not find a version that satisfies the requirement mirrorwall<0.3,>=0.2 (from loadcoach)
-```
-
-`pip-compile` fails for the same reason (`No matching distribution found for weightsdb<0.3,>=0.2`),
-so `ci.lock` cannot be generated, and it must not be faked: a lock whose hashes name artifacts no
-index serves would install nowhere.
-
-Locally this repository works because both packages are **editable installs** pointing at
-`../py/WeightsDB` and `../py/MirrorWall`. That is exactly the arrangement a lockfile exists to
-stop a project from mistaking for a working release.
-
-**What unblocks it:** publishing `weightsdb 0.2.0` and `mirrorwall 0.2.0`, which is the step
-handoff entries WDB3 and LCX23 hold open as a human decision. Once both are on PyPI:
-
-```bash
-pip install pip-tools
-pip-compile --strip-extras --extra dev --generate-hashes \
-    --output-file requirements/ci.lock pyproject.toml
-```
-
-and then, in `.github/workflows/ci.yml`, replace every `pip install -e ".[dev]"` with
+`requirements/ci.lock` pins the runtime dependencies plus the `dev` and `postgres` extras, with
+hashes, resolved against PyPI once `weightsdb 0.2.0` and `mirrorwall 0.2.0` were both published
+(2026-08-30 — the M4 review had recorded them unpublished and this file cannot be faked: a lock
+whose hashes name artifacts no index serves installs nowhere). Every CI job that installs this
+package now runs
 
 ```yaml
       - run: pip install --require-hashes -r requirements/ci.lock
       - run: pip install . --no-deps
 ```
 
-except in the 3.14 early-warning job, which resolves from ranges on purpose.
+except the 3.14 early-warning job, which resolves from ranges on purpose. The one trap is the
+second line: without `--no-deps`, `pip install .` re-resolves the ranges and the lock stops
+meaning anything.
+
+Regenerate after any change to `pyproject.toml`'s dependencies or extras:
+
+```bash
+pip install "pip-tools==7.6.1"
+pip-compile --strip-extras --extra dev --extra postgres --generate-hashes \
+    --output-file requirements/ci.lock pyproject.toml
+```
+
+Locally the repository still runs against editable installs of the sibling packages; the lock is
+what makes a green CI build mean something.
 
 ## Coverage measures the installed package, not the checkout
 

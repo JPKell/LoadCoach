@@ -13,10 +13,11 @@ LoadCoach 1.0: the M5 exit — an explainable, durable, secure routing service. 
 of the [development plan](docs/apps/loadcoach/development-plan.md): production feedback and
 reliability, the complete operator UI, and hardening for a LAN.
 
-**Prepared, not published.** No tag, no upload. `weightsdb 0.2.0` is tagged but its release run
-was still waiting on approval when this version was stamped; until it is on PyPI this package
-cannot be installed from an index — see [`requirements/README.md`](requirements/README.md).
-`mirrorwall 0.2.0` is published.
+**Prepared, not published.** No tag, no upload. Both extracted packages — `weightsdb 0.2.0` and
+`mirrorwall 0.2.0` — are on PyPI as of 2026-08-30, so `pip install .` resolves from the index in a
+clean virtualenv, `requirements/ci.lock` is hash-pinned against it, and every CI job installs from
+that lock non-editably (see [`requirements/README.md`](requirements/README.md)). The tag is the
+remaining step.
 
 ### Added
 - Phase 7, unit 1: the feedback and reliability schema and its pure statistics (data model §2–§4,

@@ -13,18 +13,17 @@ queue, models, reliability, system, settings); and the hardening a LAN bind need
 at the route and in the service, per-token rate limits, per-source queue caps, CSRF, Host
 validation, body limits, content retention.
 
-**Not installable from an index yet:** `weightsdb 0.2.0`, one of this package's runtime
-dependencies, is tagged but its PyPI release was still awaiting approval when 1.0.0 was stamped
-(`mirrorwall 0.2.0` is published). Until it lands, `pip install loadcoach` cannot resolve and CI's
-install jobs stay red; see [`requirements/README.md`](requirements/README.md). Locally the
-repository runs against editable installs of the sibling packages.
+**Installable once tagged.** Every runtime dependency is on PyPI (`weightsdb 0.2.0` and
+`mirrorwall 0.2.0` landed on 2026-08-30); `pip install .` in a clean virtualenv resolves entirely
+from the index, `requirements/ci.lock` is hash-pinned against it, and every CI job installs from
+that lock. `pip install loadcoach` itself waits on the `v1.0.0` tag — a human decision.
 
 Part of the **Local AI Suite**.
 
 ## Install
 
 ```bash
-pip install loadcoach          # once weightsdb 0.2.0 is on PyPI
+pip install loadcoach          # once v1.0.0 is tagged and released
 loadcoach serve                # web UI + API on http://127.0.0.1:8766, zero configuration
 loadcoach doctor               # every documented failure mode, ✓ / ! / ✗, with what to do
 ```

@@ -7,7 +7,7 @@ FreeWeight. Each of those absences is a documented degraded state, never a failu
 ## Install and start
 
 ```bash
-pip install loadcoach          # once weightsdb 0.2.0 is on PyPI — see README.md's status line
+pip install loadcoach          # once v1.0.0 is tagged; every dependency is on PyPI already
 loadcoach serve                # web UI and API on http://127.0.0.1:8766
 ```
 
