@@ -80,7 +80,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install -e ".[dev,postgres]"
-      - run: pytest -m integration
+      - run: pytest -m "not live and not performance" tests/integration
         env:
           WEIGHTSDB_REQUIRE_POSTGRES: "1"
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres

@@ -183,3 +183,51 @@ def test_route_explain_exits_four_and_lists_every_rejection() -> None:
     assert result.exit_code == 4
     assert "NO_ELIGIBLE_MODEL" in result.output
     assert "context_limit_exceeded" in result.output
+
+
+def test_tasks_list_shows_shipped_profiles_on_a_fresh_install_without_serve() -> None:
+    """Regression for the LC14 gap: ``tasks list``/``tasks show`` must not depend on ``serve``.
+
+    Task profile import lives in ``bootstrap()``, which only ``loadcoach serve`` calls. The
+    standalone ``tasks`` commands open a database handle directly, so before this was fixed a
+    fresh install that ran ``db upgrade`` and then ``tasks list`` saw an empty list — for data
+    that ships in the repository. Nothing in this test starts the server.
+    """
+    import json
+
+    assert runner.invoke(app, ["db", "upgrade"]).exit_code == 0
+
+    listed = runner.invoke(app, ["tasks", "list", "--json"])
+    assert listed.exit_code == 0
+    profiles = json.loads(listed.stdout)
+    assert len(profiles) == 15
+    assert "general.chat" in {profile["profile_id"] for profile in profiles}
+
+    shown = runner.invoke(app, ["tasks", "show", "general.chat"])
+    assert shown.exit_code == 0
+    assert json.loads(shown.stdout)["profile_id"] == "general.chat"
+
+
+def test_tasks_list_import_is_idempotent_across_repeated_invocations() -> None:
+    """The import ``tasks list`` performs is an upsert, so reading twice must not duplicate."""
+    import json
+
+    runner.invoke(app, ["db", "upgrade"])
+    first = json.loads(runner.invoke(app, ["tasks", "list", "--json"]).stdout)
+    second = json.loads(runner.invoke(app, ["tasks", "list", "--json"]).stdout)
+    assert first == second
+    assert len(second) == 15
+
+
+def test_models_list_is_empty_on_a_fresh_install_and_that_is_honest() -> None:
+    """The deliberate asymmetry with ``tasks list``: an empty registry is a true statement.
+
+    No provider has been asked yet, so there is nothing to report — unlike the shipped task
+    profiles, which exist in the repository whether or not anything has run.
+    """
+    import json
+
+    assert runner.invoke(app, ["db", "upgrade"]).exit_code == 0
+    listed = runner.invoke(app, ["models", "list", "--json"])
+    assert listed.exit_code == 0
+    assert json.loads(listed.stdout) == []
