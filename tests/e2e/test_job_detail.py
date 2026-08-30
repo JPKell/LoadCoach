@@ -75,6 +75,14 @@ def test_the_job_page_answers_why_before_any_table_and_lists_feedback(client: Te
     assert "low_evidence" in page and "declared flags and priors" in page
     decision_id = client.get(f"/api/v1/jobs/{job_id}").json()["routing"]["decision_id"]
     assert f'href="/routing/{decision_id}"' in page
+    # F6 (M5C-6): the explanation links are real anchors, never HTML escaped into visible text —
+    # the old kv_list row rendered `&lt;a href=…&gt;` and was the page's only navigation to the
+    # full explanation when the narrative was absent.
+    assert "&lt;a href=" not in page
+    assert f'href="/api/v1/jobs/{job_id}/explanation"' in page
+    # The 375 px stopgap (M5C-6/M5C-11): long unbroken values in the definition list wrap
+    # instead of scrolling the page; a browser check remains in the manual §13 list.
+    assert "overflow-wrap: anywhere" in page
     assert "ideapress" in page and "used verbatim" in page and "0.90" in page
 
 

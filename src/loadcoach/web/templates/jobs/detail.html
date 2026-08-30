@@ -1,6 +1,12 @@
 {% extends "mirrorwall/base.html" %}
 {% from "mirrorwall/components.html" import empty_state, kv_list, table %}
 {% block title %}Job {{ job.job_id }} — LoadCoach{% endblock %}
+{% block head %}
+{# Stopgap until MirrorWall 0.2.1 (M5C-6): .kv-list dd clips nothing but wraps nowhere, so a
+   long unbroken value — a canonical_id, a fingerprint — scrolls the whole page at 375 px.
+   Structural only, no colour (UI standards §13). Remove when components.css carries it. #}
+<style>.kv-list dd { overflow-wrap: anywhere; }</style>
+{% endblock %}
 {% block content %}
 <h2>Job</h2>
 <p class="muted mono">{{ job.job_id }}</p>
@@ -19,8 +25,16 @@
   {"label": "Provider time", "value": (job.timing.provider_ms ~ " ms") if job.timing.provider_ms is not none else "—"},
   {"label": "Overhead", "value": (job.timing.loadcoach_overhead_ms ~ " ms") if job.timing.loadcoach_overhead_ms is not none else "—"},
   {"label": "Error", "value": (job.error.code ~ ": " ~ (job.error.message or "")) if job.error else "none"},
-  {"label": "Explanation", "value": ((('<a href="/routing/' ~ (job.routing.decision_id | e) ~ '">decision ' ~ (job.routing.decision_id | e) ~ '</a> · ') if job.routing.decision_id else '') ~ ('<a href="/api/v1/jobs/' ~ (job.job_id | e) ~ '/explanation">' ~ (job.routing.explanation_url | e) ~ '</a>')) | safe},
 ]) }}
+
+{# Plain links, never HTML smuggled through the definition list (F6/M5C-6): kv_list escapes its
+   values — the `| e` on the pieces made Jinja's markup_join escape the surrounding markup too,
+   and the outer `| safe` then sealed the escaped text in. MirrorWall 0.2.1 item recorded for a
+   kv_list link facility. #}
+<p>Explanation:
+  {% if job.routing.decision_id %}<a href="/routing/{{ job.routing.decision_id }}">decision {{ job.routing.decision_id }}</a> ·
+  {% endif %}<a href="/api/v1/jobs/{{ job.job_id }}/explanation">the stored document (JSON)</a>
+</p>
 
 {% if narrative %}
 {% include "routing/_narrative.html" %}

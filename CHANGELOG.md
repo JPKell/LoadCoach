@@ -48,6 +48,14 @@ packaging and release standards §3.
   synchronous executor marks and releases the half-open probe exactly as the queue worker does.
   A decision made where no breaker registry exists — the CLI's one-shot process — now carries a
   `breaker_state_unavailable` flag instead of silently assuming no breakers are open.
+- `/jobs/{id}` rendered its explanation links as escaped text (`&lt;a href=…&gt;`) — the only
+  navigation from a job to its full explanation when the narrative is absent, and the unbroken
+  blob that made the page scroll at 375 px. The links are now a plain paragraph of real anchors
+  under the definition list.
+- `/system` (and `/jobs/{id}`) scrolled horizontally at 375 px: a long unbroken value in a
+  definition list — the 64-character machine fingerprint, a canonical ID — widened the page.
+  Both pages carry a stopgap `overflow-wrap` rule until MirrorWall 0.2.1 puts it in
+  `components.css`.
 - Candidate capability tables on `/routing/{decision_id}` now carry a row-count, as UI
   standards §5 requires of every table; before, a decision with two or more candidates rendered
   them bare. The accessibility checklist's server fixture also pins the deterministic telemetry
