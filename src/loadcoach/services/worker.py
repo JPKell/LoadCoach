@@ -771,13 +771,23 @@ class Worker:
             ),
             None,
         )
-        summary = (
-            f"insufficient VRAM: needs {verdict.required_bytes} B + {verdict.headroom_bytes} B "
-            f"headroom; free by device {verdict.free_bytes_by_gpu}"
-            if verdict.required_bytes is not None
-            else f"VRAM estimate unknown ({', '.join(verdict.unknown_reasons) or 'no reason'}) "
-            "and no candidate is resident"
-        )
+        if verdict.probe_candidates and not verdict.candidates:
+            # Purely probe-shaped (F2/M5C-2): the half-open model's single probe is in flight
+            # and will report within an attempt's time; the re-evaluation waits on the breaker.
+            reason = "PROBE_IN_FLIGHT"
+            summary = (
+                "circuit-breaker probe in flight on "
+                f"{', '.join(verdict.probe_candidates)}: waiting for its verdict"
+            )
+        else:
+            reason = "INSUFFICIENT_RESOURCES"
+            summary = (
+                f"insufficient VRAM: needs {verdict.required_bytes} B + {verdict.headroom_bytes} B "
+                f"headroom; free by device {verdict.free_bytes_by_gpu}"
+                if verdict.required_bytes is not None
+                else f"VRAM estimate unknown ({', '.join(verdict.unknown_reasons) or 'no reason'}) "
+                "and no candidate is resident"
+            )
         with runtime.sink.write(runtime.database) as (session, events):
             transition(
                 session,
@@ -786,7 +796,7 @@ class Worker:
                 target=JobState.WAITING_RESOURCES,
                 now=now,
                 owner=self.owner,
-                reason="INSUFFICIENT_RESOURCES",
+                reason=reason,
                 values={"error_text": summary, "selected_model_id": first_model_id},
             )
             if decision_id is not None:
@@ -797,11 +807,47 @@ class Worker:
                 now=now,
                 message=summary,
                 data={
-                    "reason": "INSUFFICIENT_RESOURCES",
+                    "reason": reason,
                     "decision_id": decision_id,
                     **verdict.as_json(),
                 },
             )
+
+    def _requeue_for_probe(
+        self, execution: _Execution, state: JobState, probe_skipped: Sequence[str]
+    ) -> None:
+        """Every remaining candidate is half-open with another probe out: hand the job back.
+
+        ``admitted|validating|retrying -> queued``, releasing the lease. The immediate re-route
+        then lands in :meth:`_defer`'s probe branch (the breaker now excludes the model, and
+        ``classify_rejections`` marks a probe-in-flight exclusion transient), so the job waits
+        in ``waiting_resources`` until the probe reports rather than bouncing (F2/M5C-2).
+        """
+        runtime = self.runtime
+        job = execution.job
+        now = runtime.clock()
+        summary = (
+            "circuit-breaker probe already in flight on "
+            f"{', '.join(probe_skipped)}: requeued rather than run as a second probe"
+        )
+        with runtime.sink.write(runtime.database) as (session, events):
+            transition(
+                session,
+                job.job_id,
+                current=state,
+                target=JobState.QUEUED,
+                now=now,
+                owner=self.owner,
+                reason="PROBE_IN_FLIGHT",
+            )
+            events.append(
+                job.job_id,
+                event_type_for(JobState.QUEUED),
+                now=now,
+                message=summary,
+                data={"reason": "PROBE_IN_FLIGHT", "probe_candidates": list(probe_skipped)},
+            )
+        runtime.wakeup.set()
 
     def _fail_admission(self, job: ClaimedJob, exc: NoEligibleModel) -> None:
         """No candidate at all: ``leased -> failed`` with the rejections (ADR-0036 §3)."""
@@ -908,8 +954,33 @@ class Worker:
         index: int | None = 0
         first = True
 
+        probe_skipped: list[str] = []
         while index is not None:
             candidate = candidates[index]
+            canonical_id = candidate.subject.facts.canonical_id
+            # Queue §7 admits "a single low-priority job" through a half-open breaker, and
+            # routing-time exclusion cannot enforce that alone: two workers can both route
+            # while the breaker is half-open and unmarked, then each arrive here believing the
+            # model is theirs (F2/M5C-2). The gate is at execution: whoever ``allow_probe``
+            # refuses while another probe is out must not run — the candidate is skipped
+            # exactly as a ``recently_failing`` rejection would have skipped it at routing
+            # time, and with no candidate left the job is requeued, where routing defers it
+            # until the probe reports. ``holds_probe`` is per candidate on purpose: a retry on
+            # the model whose probe this worker already holds is still the same probe job.
+            holds_probe = runtime.breakers.allow_probe(canonical_id, now=runtime.clock())
+            if not holds_probe and runtime.breakers.probe_busy(canonical_id):
+                probe_skipped.append(canonical_id)
+                logger.info(
+                    "worker.probe_busy_skip",
+                    extra={"job_id": job.job_id, "canonical_id": canonical_id},
+                )
+                index = next_candidate_index(
+                    served_contexts, current=index, larger_context_only=False
+                )
+                if index is None:
+                    self._requeue_for_probe(execution, state, probe_skipped)
+                    return
+                continue
             turns = transcript
             correction: Any = None
             attempts_here = 0
@@ -927,11 +998,11 @@ class Worker:
                     # Cancelled while the model was loading (state ``admitted``), or the lease
                     # was lost: stop before the provider is ever called. The row is read too,
                     # because a request from another process reaches the row before the token.
+                    if holds_probe:
+                        runtime.breakers.release_probe(canonical_id)
                     self._cancel_from(job, state, records=tuple(records))
                     return
                 state = self._start_executing(execution, state, attempt_number, residency)
-                canonical_id = candidate.subject.facts.canonical_id
-                probing = runtime.breakers.allow_probe(canonical_id, now=runtime.clock())
                 on_chunk = self._on_chunk(job) if job.submission.stream else None
                 outcome = run_attempt(
                     runtime.provider,
@@ -951,7 +1022,7 @@ class Worker:
                 records.append(outcome.record)
                 self._record_use(candidate)
                 if outcome.cancelled or entry.cancel.is_cancelled:
-                    if probing:
+                    if holds_probe:
                         # A cancelled probe says nothing about the model: hand it back so the
                         # next job may probe, rather than excluding the model until never.
                         runtime.breakers.release_probe(canonical_id)
@@ -1622,7 +1693,9 @@ class Scheduler:
 
         Applies exactly admission's rule to each job's recorded deferral — never more
         optimistic, so a job cannot bounce between claim and deferral while nothing changed.
-        A job with no deferral record is re-queued and left to admission.
+        A job with no deferral record is re-queued and left to admission. A job deferred for a
+        probe in flight (F2/M5C-2) wakes when the breaker stops excluding the probed model —
+        the probe reported, or its cool-down elapsed — never on a resource change.
         """
         runtime = self.runtime
         waiting = waiting_deferrals(runtime.database)
@@ -1633,7 +1706,17 @@ class Scheduler:
         resident_devices = runtime.residency.resident_devices() if runtime.residency else {}
         requeued: list[str] = []
         for job_id, record in waiting:
-            if record is None or snapshot is None or not snapshot.gpus:
+            probe_waiting = frozenset(
+                cast("Sequence[str]", (record or {}).get("probe_candidates") or ())
+            )
+            if probe_waiting and not (probe_waiting & runtime.breakers.excluded()):
+                # The probe reported (breaker closed, or its cool-down restarted and elapsed):
+                # the model is admissible again — or this job is now the next probe (queue §7).
+                proceed = True
+            elif probe_waiting and not (record or {}).get("candidates"):
+                # Purely probe-shaped: the breaker decides when to wake it, not the machine.
+                proceed = False
+            elif record is None or snapshot is None or not snapshot.gpus:
                 proceed = (
                     True  # nothing recorded, or no device to be short of: let admission decide
                 )

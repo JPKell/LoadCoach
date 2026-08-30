@@ -15,6 +15,13 @@ packaging and release standards §3.
   put the repository root on `sys.path`. `[tool.pytest.ini_options]` now sets
   `pythonpath = ["."]`, so both invocations agree; every CI run before this fix failed at its
   pytest step for this reason.
+- A half-open circuit breaker admitted more than one probe: two workers could both pass
+  routing's exclusion check before either marked the probe, and both executed on the model —
+  queue §7 promises "a single low-priority job". The worker now gates at execution: a candidate
+  whose probe another job already holds is skipped like a `recently_failing` rejection, falling
+  to the next candidate; with none left the job is requeued and deferred (`PROBE_IN_FLIGHT`,
+  `waiting_resources`) until the probe reports, then woken by the breaker's verdict. An open
+  breaker's rejection still fails admission as before.
 - Candidate capability tables on `/routing/{decision_id}` now carry a row-count, as UI
   standards §5 requires of every table; before, a decision with two or more candidates rendered
   them bare. The accessibility checklist's server fixture also pins the deterministic telemetry

@@ -311,6 +311,23 @@ class CircuitBreakers:
             )
             return True
 
+    def probe_busy(self, canonical_id: str) -> bool:
+        """Whether the model is half-open with a probe already in flight.
+
+        The execution-time counterpart of :meth:`excluded`: routing-time exclusion cannot hold
+        queue §7's "a single low-priority job" alone, because two workers can both route while
+        the breaker is half-open and unmarked. Whoever :meth:`allow_probe` refuses asks this to
+        distinguish "the model is closed — run normally" from "another probe is out — do not
+        run" (F2/M5C-2).
+        """
+        with self._lock:
+            verdict = self._verdicts.get(canonical_id)
+            return (
+                verdict is not None
+                and verdict.state is BreakerState.HALF_OPEN
+                and verdict.probe_in_flight
+            )
+
     def release_probe(self, canonical_id: str) -> bool:
         """Give a probe back without a verdict — the attempt was cancelled before it reported.
 

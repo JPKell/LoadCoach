@@ -16,16 +16,18 @@ from pathlib import Path
 
 import pytest
 from modelrack.testing import FakeGeneration, FakeProvider, FakeScript
+from sqlalchemy import select
 from tests.integration.test_generate import _model
 from tests.integration.test_worker import _wait_terminal
 
 from loadcoach.config import ExecutionSettings, ProviderSettings, Settings, StorageSettings
 from loadcoach.domain.circuit_breaker import AttemptSample, BreakerState, BreakerVerdict
 from loadcoach.domain.queue_state import JobState
+from loadcoach.infrastructure.db.models import JobAttempt
 from loadcoach.services.database import Database, ensure_ready
 from loadcoach.services.job_events import JobEventSink
 from loadcoach.services.models import discover_models
-from loadcoach.services.queue import JobSubmission, cancel_job, enqueue
+from loadcoach.services.queue import JobSubmission, cancel_job, enqueue, get_job
 from loadcoach.services.task_profiles import import_task_profiles, read_task_profiles_file
 from loadcoach.services.worker import QueueRuntime, build_runtime
 
@@ -35,10 +37,20 @@ CANONICAL = f"fake/{_model().name}@sha256:{(_model().digest or '')[:12]}"
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[QueueRuntime]:
     """One worker, a generation that takes real time, and a breaker already half-open."""
+    yield from _build_runtime(tmp_path, workers=1)
+
+
+@pytest.fixture
+def two_workers(tmp_path: Path) -> Iterator[QueueRuntime]:
+    """Two real worker threads against the same half-open model — F2's arena."""
+    yield from _build_runtime(tmp_path, workers=2)
+
+
+def _build_runtime(tmp_path: Path, *, workers: int) -> Iterator[QueueRuntime]:
     settings = Settings(
         storage=StorageSettings(database_url=f"sqlite:///{tmp_path / 'probe.sqlite3'}"),
         provider=ProviderSettings(kind="fake"),
-        execution=ExecutionSettings(max_concurrent_jobs=1),
+        execution=ExecutionSettings(max_concurrent_jobs=workers),
     )
     url = settings.storage.database_url
     assert url is not None
@@ -60,7 +72,7 @@ def runtime(tmp_path: Path) -> Iterator[QueueRuntime]:
         provider=provider,
         sink=JobEventSink(),
         snapshot=lambda: None,
-        workers=1,
+        workers=workers,
     )
     # Five failures ending 360 s ago: opened then, cool-down (300 s) over 60 s ago → half-open.
     now = datetime.now(UTC)
@@ -120,6 +132,56 @@ def test_the_probe_is_marked_when_execution_starts_and_closes_the_breaker_on_suc
     assert closed.state is BreakerState.CLOSED and not closed.probe_in_flight
     assert closed.closed_at is not None and closed.samples == 0
     assert runtime.breakers.excluded() == frozenset()
+
+
+def test_a_half_open_model_admits_exactly_one_probe_across_two_workers(
+    two_workers: QueueRuntime,
+) -> None:
+    """F2 (M5C-2): routing-time exclusion alone cannot hold queue §7's "a single low-priority job".
+
+    Two workers can both route while the breaker is half-open and unmarked, and each arrive at
+    execution believing the model is theirs. The loser of ``allow_probe`` must not run: it falls
+    to the next candidate, or — with none, as here — is requeued and deferred until the probe
+    reports. Watched failing before the fix: both jobs executing on the model at once, attempts
+    overlapping in time, ``probe_in_flight`` true throughout.
+    """
+    runtime = two_workers
+    first = _enqueue(runtime)
+    second = _enqueue(runtime)
+    job_ids = (first, second)
+    peak_executing = 0
+    saw_probe = False
+    terminal = {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        states = [get_job(runtime.database, job_id).state for job_id in job_ids]
+        peak_executing = max(
+            peak_executing, sum(1 for state in states if state is JobState.EXECUTING)
+        )
+        saw_probe = saw_probe or _verdict(runtime).probe_in_flight
+        if all(state in terminal for state in states):
+            break
+        time.sleep(0.005)
+
+    assert saw_probe, "no probe was ever marked"
+    states = [get_job(runtime.database, job_id).state for job_id in job_ids]
+    assert states == [JobState.COMPLETED, JobState.COMPLETED], states
+    assert peak_executing <= 1, f"both jobs executed on the half-open model at once ({states})"
+
+    # The attempt rows are the deterministic record: never two attempts in flight together.
+    with runtime.database.read() as session:
+        rows = sorted(
+            session.execute(
+                select(JobAttempt.started_at, JobAttempt.completed_at, JobAttempt.job_id)
+            ).all(),
+            key=lambda row: row[0],
+        )
+    assert len(rows) >= 2  # one attempt per job, at least
+    assert {row[2] for row in rows} == set(job_ids)
+    for earlier, later in zip(rows, rows[1:], strict=False):
+        assert earlier[1] is not None and earlier[1] <= later[0], (
+            f"attempts overlapped: {earlier} and {later}"
+        )
 
 
 def test_a_probe_cancelled_before_it_reports_is_handed_back(runtime: QueueRuntime) -> None:

@@ -116,6 +116,10 @@ class AdmissionVerdict:
         free_bytes_by_gpu: What each device had free at the time, as the rejection saw it.
         unknown_reasons: Why estimates could not be produced, when they could not.
         candidates: The resource-rejected candidates' canonical IDs.
+        probe_candidates: Candidates rejected only because their half-open breaker's single
+            probe is already in flight (queue §7). Transient by construction — the probe will
+            report within an attempt's time — so their presence defers the job rather than
+            failing it, and the re-evaluation waits on the breaker, not the machine (F2/M5C-2).
     """
 
     defer: bool
@@ -124,6 +128,7 @@ class AdmissionVerdict:
     free_bytes_by_gpu: dict[str, int | None]
     unknown_reasons: tuple[str, ...]
     candidates: tuple[str, ...]
+    probe_candidates: tuple[str, ...] = ()
 
     def as_json(self) -> dict[str, Any]:
         """The deferral record an event and a resumption check read."""
@@ -133,6 +138,7 @@ class AdmissionVerdict:
             "free_bytes_by_gpu": dict(self.free_bytes_by_gpu),
             "unknown_reasons": list(self.unknown_reasons),
             "candidates": list(self.candidates),
+            "probe_candidates": list(self.probe_candidates),
         }
 
 
@@ -144,14 +150,27 @@ def classify_rejections(rejected: Sequence[Mapping[str, Any]]) -> AdmissionVerdi
             ``canonical_id``.
 
     Returns:
-        The verdict. ``defer`` is ``True`` when at least one rejection is resource-shaped.
+        The verdict. ``defer`` is ``True`` when at least one rejection is resource-shaped, or
+        when one is a half-open breaker whose single probe is already in flight — the one
+        breaker exclusion that is transient by construction (an open breaker's rejection stays
+        a failure: its cool-down is a verdict about the model, not about this moment).
     """
     required: int | None = None
     headroom: int | None = None
     free: dict[str, int | None] = {}
     unknown: list[str] = []
     candidates: list[str] = []
+    probe: list[str] = []
     for item in rejected:
+        if item.get("reason") == "recently_failing":
+            detail = item.get("detail") or {}
+            if (
+                isinstance(detail, Mapping)
+                and detail.get("state") == "half_open"
+                and detail.get("probe_in_flight") is True
+            ):
+                probe.append(str(item.get("canonical_id")))
+            continue
         if item.get("reason") not in RESOURCE_REJECTION_REASONS:
             continue
         candidates.append(str(item.get("canonical_id")))
@@ -170,12 +189,13 @@ def classify_rejections(rejected: Sequence[Mapping[str, Any]]) -> AdmissionVerdi
             for index, value in by_gpu.items():
                 free[str(index)] = value if isinstance(value, int) else None
     return AdmissionVerdict(
-        defer=bool(candidates),
+        defer=bool(candidates) or bool(probe),
         required_bytes=required,
         headroom_bytes=headroom,
         free_bytes_by_gpu=free,
         unknown_reasons=tuple(dict.fromkeys(unknown)),
         candidates=tuple(candidates),
+        probe_candidates=tuple(dict.fromkeys(probe)),
     )
 
 
