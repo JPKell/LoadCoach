@@ -72,9 +72,18 @@ computed_at                          -- when the producer aggregated; never driv
 imported_at · source_id FK→evidence_sources
 policy_version · vocabulary_version
 stale BOOLEAN · stale_reason
+record_json                          -- the capability.evidence payload exactly as it arrived
 UNIQUE (source_id, canonical_id, runtime_profile_hash, machine_fingerprint,
         capability_id, policy_version)
 ```
+
+`record_json` holds the producer's document unchanged. The columns above it are the queryable
+projection ADR-0022 §1 makes normative; this is the document itself, kept because
+[ADR-0025 §2](../../adr/0025-envelope-boundaries.md) requires `GET /evidence` to return real
+`capability.evidence` envelopes and a payload rebuilt from the projection is missing fields the
+projection does not carry — `model.observed_at` among them. It is also the strongest form of
+"never edited by LoadCoach": a re-export is the producer's bytes rather than a reconstruction that
+could drift from them.
 
 `policy_version` is part of the key so two confidence policies coexist during a policy change and a
 re-import is a row-wise upsert rather than a collision. `model_id` is nullable and `match_state`

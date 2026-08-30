@@ -180,6 +180,10 @@ performance, memory or energy constraints
 
 ## 12. Configuration
 
+`~/.config/loadcoach/config.toml`, `LOADCOACH_*` environment variables, CLI flags, per
+[Configuration Standards](../../standards/configuration-standards.md) — defaults, then file, then
+environment, then CLI, field by field. Principal sections:
+
 ```toml
 [server]      host = "127.0.0.1"  port = 8766  allow_lan_exposure = false
 [storage]     database_url = "sqlite:///<data>/loadcoach.sqlite3"  auto_migrate = true

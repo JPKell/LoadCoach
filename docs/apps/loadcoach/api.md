@@ -183,12 +183,19 @@ evidence — production and benchmark evidence remain separate sources.
 | Endpoint | Notes |
 |---|---|
 | `POST /evidence/import` | Body: a SetSpec `benchmark.evidence_bundle`, or `{"url": "http://127.0.0.1:8765"}` to pull from FreeWeight. Returns counts imported / updated / **unmatched** / rejected with reasons. The URL form obeys the fetch allowlist in [ADR-0026 §3](../../adr/0026-local-http-hardening.md) — scheme, `evidence.allowed_source_hosts` (loopback only by default), literal-IP, redirect and size checks — and returns `EVIDENCE_SOURCE_REFUSED` when a URL fails them |
-| `GET /evidence` | Imported evidence, filterable by capability, model, `match_state`, minimum confidence, staleness. A **collection** envelope (`items`/`page`) whose items are `capability.evidence` SetSpec envelopes ([ADR-0025 §2](../../adr/0025-envelope-boundaries.md)) |
+| `GET /evidence` | Imported evidence, filterable by capability, model, `match_state`, minimum confidence, staleness. A **collection** envelope (`items`/`page`) whose items are `capability.evidence` SetSpec envelopes ([ADR-0025 §2](../../adr/0025-envelope-boundaries.md)), plus a `summary` object — the same store overview `GET /evidence/sources`, the Benchmarks page, `/health`'s `evidence` component and every routing explanation carry, so the four cannot disagree |
 | `GET /evidence/sources` | Configured and observed sources with last import time, schema version and status |
 | `GET /reliability` | Production evidence per (model, task profile) |
 
 An unsupported schema major is rejected with `SCHEMA_VERSION_UNSUPPORTED` naming both versions;
-existing evidence is untouched. Import is `admin`-scoped.
+existing evidence is untouched — the version is decided *before* the transaction opens, so a
+rejected bundle cannot have written a source row, let alone a record. Import is `admin`-scoped.
+
+`summary.status` is one of `not_configured`, `none`, `ok`, `unreachable`, `refused` or `failed`,
+and `summary.note` says the same thing in a sentence. `not_configured` (`[evidence]
+freeweight_url` is empty) is a **healthy** state and reads differently from `unreachable`: the
+first means nobody asked for evidence, the second means the last import is retained and marked
+stale while routing continues on it.
 
 Import never fails because a model has not been discovered. Evidence for an unknown model, or
 `name_only` evidence against a locally-digested model, is **retained** with a `match_state` and

@@ -89,6 +89,12 @@ cannot yet be installed from one; see [`requirements/README.md`](requirements/RE
     and no source touched — asserted column by column, not by counting.
   - `pytest -m contract` is green in LoadCoach for the first time; MirrorWall's was already
     closed by its 0.2.0 release.
+- Phase 6, unit 7: the pre-milestone documentation consistency review (roadmap §8).
+  - `data-model.md` §2 documents `capability_evidence.record_json`.
+  - `spec.md` §12 names its configuration precedence chain and file path, as FreeWeight's does.
+  - `api.md` §7 documents `GET /evidence`'s `summary` object, its six `status` values, and that
+    the schema version is decided before the transaction opens.
+  - The mirrored copies under `docs/` are refreshed from the suite's source of truth.
 - Phase 6, unit 7: LoadCoach's release plumbing, which had never existed.
   - `requirements/release.in` and `requirements/release.lock` — the hash-pinned build and publish
     chain, byte-identical to the one WeightsDB, ModelRack and SetSpec release from, and clean
