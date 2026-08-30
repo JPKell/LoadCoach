@@ -104,6 +104,12 @@ packaging and release standards §3.
   `413 PAYLOAD_TOO_LARGE` before buffering (`[server] max_body_bytes`); a cross-origin JSON
   write is `403 CSRF_FAILED`; a task profile's `json_schema_ref` cannot resolve outside the
   schemas directory.
+- Phase 9, unit 3 (performance pass): every spec §15 budget is measured by a `performance`
+  test — enqueue, dispatch, execution overhead, cancellation, idle poll CPU and recovery since
+  P4/P5, and now the two routing budgets (twenty candidates with bound evidence, warm and cold)
+  and the added latency per streamed chunk. `tests/simulation/test_scale.py` drives a thousand
+  mixed-class jobs through the real queue on the fake clock: every job completes, interactive
+  work waits least, and the background wait stays inside the starvation bound.
 
 ## [0.9.0b0] — 2026-08-30
 

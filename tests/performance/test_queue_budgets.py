@@ -146,12 +146,14 @@ def test_recovery_of_a_thousand_in_flight_jobs_stays_within_its_budget(tmp_path:
     database = runtime.database
     sink = runtime.sink
     now = datetime.now(UTC)
+    # A thousand jobs from one source: the per-source cap (spec §14) is not what this measures.
+    uncapped = runtime.settings.queue.model_copy(update={"max_active_per_source": 0})
     job_ids = [
         enqueue(
             database,
             JobSubmission(task="general.chat", prompt=f"job {index}", idempotent=index % 5 != 0),
             now=now,
-            queue_settings=runtime.settings.queue,
+            queue_settings=uncapped,
             execution_settings=runtime.settings.execution,
             sink=sink,
         ).job_id
