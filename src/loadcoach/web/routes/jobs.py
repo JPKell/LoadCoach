@@ -194,7 +194,9 @@ async def get_job_stream(
         last_event_id=request.headers.get("last-event-id"),
         generator=GENERATOR,
         heartbeat_seconds=15.0,
-        poll_interval_seconds=0.01,
+        # This stream carries live tokens too, so it gets the same 2 ms poll as
+        # /generate/stream (F12/M5C-12) — see the comment there for the measurement.
+        poll_interval_seconds=0.002,
         terminal_events=_STREAM_TERMINAL,
     )
 

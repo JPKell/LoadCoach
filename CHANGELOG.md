@@ -48,6 +48,11 @@ packaging and release standards §3.
   synchronous executor marks and releases the half-open probe exactly as the queue worker does.
   A decision made where no breaker registry exists — the CLI's one-shot process — now carries a
   `breaker_state_unavailable` flag instead of silently assuming no breakers are open.
+- Streamed tokens were quantized to the SSE loop's 10 ms empty-poll: over a real socket the
+  added latency per token was ~10 ms p95 against spec §15's 5 ms budget. Both token-carrying
+  streams (`POST /generate/stream`, the job event stream) now poll at 2 ms — measured over TCP
+  at 1.29 ms added-latency p95 — and a new performance test measures the gap over a real
+  loopback socket rather than in-process.
 - Spec §17 and api.md §1 promised a `gpu_telemetry` health component no phase ever built.
   Removed, with the decision recorded: a machine without a GPU is not unhealthy (ADR-0016), and
   the readings live on `GET /system/status` and the System page. A test now holds both

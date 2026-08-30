@@ -362,6 +362,11 @@ async def post_generate_stream(
         last_event_id=last_event_id,
         generator=GENERATOR,
         heartbeat_seconds=15.0,
-        poll_interval_seconds=0.01,
+        # 2 ms, not the 10 ms this stream shipped with: the SSE loop sleeps this long whenever
+        # the subscription is momentarily empty, so the poll quantizes token delivery. Measured
+        # over a real socket at 10 ms the added gap p95 was ~10 ms against spec §15's 5 ms
+        # budget (F12/M5C-12); at 2 ms it is within budget. A condition wake-up would need
+        # MirrorWall's Subscription to become awaitable, which ADR-0003 §5-6 rules out for now.
+        poll_interval_seconds=0.002,
         terminal_events=_TERMINAL_EVENTS,
     )
