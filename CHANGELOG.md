@@ -7,6 +7,21 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Added
+- Phase 7, unit 1: the feedback and reliability schema and its pure statistics (data model §2–§4,
+  routing §6 and §11, ADR-0016).
+  - Migration `0006` adds `feedback` and `reliability_stats` and nothing else. `feedback` is unique
+    per `(job_id, source)`; `reliability_stats` is unique per `(model_id, task_profile_id, window)`,
+    which is also the lookup index data model §4 requires, and carries a sample count beside every
+    statistic (ADR-0016 rule 6).
+  - `loadcoach.domain.reliability`: windows (`7d`, `30d`, `all`) with one boundary rule, counts by
+    outcome using the circuit breaker's own success rule, bounded rates, nearest-rank latency
+    percentiles, throughput, caller acceptance with its own weight, the `reliability_factor`
+    (`0.5–1.0`, exactly `1.0` and saying why below `PRODUCTION_MINIMUM_SAMPLES = 20`), regression
+    detection against a model's own baseline (an absolute drop **and** a two-proportion z-score),
+    and a fold-based ledger whose statistics are required to equal a from-scratch computation on
+    every field — a property test, not an example.
+
 ## [0.9.0b0] — 2026-08-30
 
 The M4 beta. Phases 1 through 6 of the

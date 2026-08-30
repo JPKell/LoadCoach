@@ -419,7 +419,7 @@ def test_migration_0005_touches_no_column_an_earlier_revision_created() -> None:
                     text("SELECT name, sql FROM sqlite_master WHERE type = 'table'")
                 )
             }
-        runner.upgrade(backup=False)
+        runner.upgrade(revision="0005", backup=False)
         with engine.connect() as connection:
             after = {
                 row[0]: row[1]
@@ -428,5 +428,155 @@ def test_migration_0005_touches_no_column_an_earlier_revision_created() -> None:
                 )
             }
     assert set(after) - set(before) == {"capability_evidence", "evidence_sources"}
+    for name, sql in before.items():
+        assert after[name] == sql, name
+
+
+def test_migration_0006_adds_feedback_and_reliability_stats_and_nothing_else() -> None:
+    """P7's migration: ``feedback`` and ``reliability_stats`` (data model §2).
+
+    The reliability lookup's query plan is asserted the same way the evidence lookup's was in
+    ``0005``: data model §4 requires it to use ``(model_id, task_profile_id, window)``, which is
+    the uniqueness key — a point lookup, never a scan.
+    """
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(backup=False)
+        assert runner.check_parity(Base.metadata).matches
+
+        with engine.connect() as connection:
+            names = {
+                row[0]
+                for row in connection.execute(
+                    text("SELECT name FROM sqlite_master WHERE type = 'table'")
+                )
+            }
+            assert {"feedback", "reliability_stats"} <= names
+            feedback_columns = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(feedback)")).fetchall()
+            }
+            assert feedback_columns == {
+                "id",
+                "job_id",
+                "source",
+                "accepted",
+                "quality_score",
+                "edited",
+                "validation_passed",
+                "validation_detail_json",
+                "notes",
+                "created_at",
+                "updated_at",
+            }
+            stats_columns = {
+                row[1]
+                for row in connection.execute(
+                    text("PRAGMA table_info(reliability_stats)")
+                ).fetchall()
+            }
+            assert stats_columns == {
+                "id",
+                "model_id",
+                "task_profile_id",
+                "window",
+                "attempts",
+                "successes",
+                "validation_passes",
+                "errors",
+                "timeouts",
+                "cancellations",
+                "latency_count",
+                "p50_latency_ms",
+                "p95_latency_ms",
+                "output_token_count",
+                "mean_output_tokens",
+                "tokens_per_second_count",
+                "mean_tokens_per_second",
+                "feedback_count",
+                "acceptance_rate",
+                "quality_count",
+                "mean_quality",
+                "circuit_state",
+                "circuit_opened_at",
+                "circuit_reason",
+                "updated_at",
+            }
+
+        with engine.begin() as connection:
+            for model_index in range(20):
+                model_id = f"M{model_index:025d}"
+                connection.execute(
+                    text(
+                        "INSERT INTO models (id, provider_kind, provider_model_name, canonical_id, "
+                        "identity_confidence, first_seen_at, last_seen_at, available) VALUES "
+                        "(:id, 'ollama', :name, :canonical, 'digest', '2026-08-01 00:00:00', "
+                        "'2026-08-01 00:00:00', 1)"
+                    ),
+                    {
+                        "id": model_id,
+                        "name": f"model-{model_index}",
+                        "canonical": f"ollama/model-{model_index}@sha256:{model_index:012d}",
+                    },
+                )
+                for profile in ("general.chat", "code.review", "data.extract"):
+                    for window in ("7d", "30d", "all"):
+                        connection.execute(
+                            text(
+                                "INSERT INTO reliability_stats (id, model_id, task_profile_id, "
+                                "window, attempts, successes, validation_passes, errors, "
+                                "timeouts, cancellations, latency_count, output_token_count, "
+                                "tokens_per_second_count, feedback_count, quality_count, "
+                                "circuit_state, updated_at) VALUES (:id, :model_id, :profile, "
+                                ":window, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'closed', "
+                                "'2026-08-30 00:00:00')"
+                            ),
+                            {
+                                "id": f"R{model_index:03d}{profile[:10]:<10}{window:>12}".replace(
+                                    " ", "0"
+                                )[:26].ljust(26, "0"),
+                                "model_id": model_id,
+                                "profile": profile,
+                                "window": window,
+                            },
+                        )
+            connection.execute(text("ANALYZE"))
+        with engine.connect() as connection:
+            plan = [
+                row[3]
+                for row in connection.execute(
+                    text(
+                        "EXPLAIN QUERY PLAN SELECT attempts FROM reliability_stats "
+                        "WHERE model_id = 'M0000000000000000000000005' "
+                        "AND task_profile_id = 'code.review' AND window = '7d'"
+                    )
+                ).fetchall()
+            ]
+            assert any("model_id=? AND task_profile_id=? AND window=?" in step for step in plan), (
+                plan
+            )
+            assert not any(step.startswith("SCAN") for step in plan), plan
+
+
+def test_migration_0006_touches_no_column_an_earlier_revision_created() -> None:
+    """Drift check: the schema at ``0005`` and the schema at ``0006`` differ by two tables only."""
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(revision="0005", backup=False)
+        with engine.connect() as connection:
+            before = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT name, sql FROM sqlite_master WHERE type = 'table'")
+                )
+            }
+        runner.upgrade(backup=False)
+        with engine.connect() as connection:
+            after = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT name, sql FROM sqlite_master WHERE type = 'table'")
+                )
+            }
+    assert set(after) - set(before) == {"feedback", "reliability_stats"}
     for name, sql in before.items():
         assert after[name] == sql, name

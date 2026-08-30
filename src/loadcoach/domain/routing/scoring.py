@@ -25,6 +25,7 @@ from loadcoach.domain.evidence_policy import (
     machine_admits,
     user_capability_note,
 )
+from loadcoach.domain.reliability import PRODUCTION_MINIMUM_SAMPLES
 from loadcoach.domain.routing.subject import signals_by_capability
 
 if TYPE_CHECKING:
@@ -68,10 +69,9 @@ capability, capped"). Twenty percentage points of spread across the whole instal
 deliberately narrow — the band says "this is one of the larger models here", which is weak
 evidence about any particular capability and is scored as such."""
 
-PRODUCTION_MINIMUM_SAMPLES: Final = 20
-"""How many completed attempts a production signal needs before it is used at all (routing §5.1:
-"used as soon as the minimum sample count is reached"). Below it the signal is absent, not
-weakly present — a rate over three attempts is noise wearing a number's clothes."""
+# ``PRODUCTION_MINIMUM_SAMPLES`` lives with the statistics it bounds (``domain.reliability``)
+# since Phase 7 and is re-exported here unchanged: the gate on a production *signal* below and
+# the gate on the reliability *factor* are one number, on purpose (LCX4).
 
 _MEASURED_SOURCES: Final[frozenset[str]] = frozenset({"benchmark", "production", "manual"})
 """Sources that count as *evidence* for the ``low_evidence`` flag. Declared flags and the

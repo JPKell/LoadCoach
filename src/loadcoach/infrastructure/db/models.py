@@ -12,9 +12,9 @@ and the parity check (database standards §5.2) fails forever on a schema that i
 ``models``, ``model_capabilities``, ``runtime_profiles`` and ``task_profiles`` come from Phase 1's
 migration ``0001``; ``routing_decisions`` and ``routing_candidates`` from Phase 3's ``0002``;
 ``jobs``, ``job_attempts``, ``job_events`` and ``validations`` from Phase 4's ``0003``; and
-``residency`` from Phase 5's ``0004``; and ``capability_evidence`` and ``evidence_sources``
-from Phase 6's ``0005``. ``settings`` and ``api_tokens`` mirror FreeWeight's own tables
-(data model §2).
+``residency`` from Phase 5's ``0004``; ``capability_evidence`` and ``evidence_sources``
+from Phase 6's ``0005``; and ``feedback`` and ``reliability_stats`` from Phase 7's ``0006``.
+``settings`` and ``api_tokens`` mirror FreeWeight's own tables (data model §2).
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -39,11 +40,13 @@ __all__ = [
     "Base",
     "CapabilityEvidence",
     "EvidenceSource",
+    "Feedback",
     "Model",
     "Job",
     "JobAttempt",
     "JobEvent",
     "ModelCapability",
+    "ReliabilityStat",
     "Residency",
     "RoutingCandidate",
     "RoutingDecision",
@@ -637,3 +640,86 @@ class Residency(Base):
     resident: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     unloaded_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
     unload_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class Feedback(Base):
+    """One caller's verdict on one job (data model's ``feedback``; api.md §6).
+
+    Unique per ``(job_id, source)``: a second call from the same source **updates** this row, and
+    two sources that disagree about one job are both kept — feedback is a statement by a caller,
+    not a fact about the job, and two callers may honestly differ. ``source`` comes from the
+    authenticated token's name, never from the body when a token is present, which is what stops
+    one caller overwriting another's verdict.
+
+    ``validation_detail_json`` is not in data model §2's column list. api.md §6's body carries
+    ``validation.detail`` — the caller's own account of what its check found — and a feedback
+    record that dropped the reason would keep the verdict and lose the one part a person could
+    act on.
+    """
+
+    __tablename__ = "feedback"
+    __table_args__ = (UniqueConstraint("job_id", "source"),)
+
+    id: Mapped[str] = ulid_primary_key()
+    job_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    source: Mapped[str] = mapped_column(String, nullable=False)
+    accepted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    edited: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    validation_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    validation_detail_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    notes: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+
+
+class ReliabilityStat(Base):
+    """Rolling production evidence for one ``(model, task_profile, window)`` (data model §2).
+
+    Recomputed, never edited by hand: every column is a function of ``job_attempts`` and
+    ``feedback`` over the window, and :func:`loadcoach.domain.reliability.compute_stats` is the
+    only thing that produces the values. The uniqueness key is also data model §4's required
+    lookup index — the reliability read routing makes is a point lookup on it.
+
+    The five ``*_count`` columns are ADR-0016 rule 6: a statistic is reported with the sample
+    count that produced it, and an ``acceptance_rate`` over two verdicts must read differently
+    from one over two hundred. ``circuit_state``, ``circuit_opened_at`` and ``circuit_reason``
+    persist the breaker's verdict for the model (queue §7) so a one-shot ``loadcoach`` command
+    and the Reliability page can show it without the serving process.
+    """
+
+    __tablename__ = "reliability_stats"
+    __table_args__ = (
+        UniqueConstraint("model_id", "task_profile_id", "window"),
+        CheckConstraint("window IN ('7d', '30d', 'all')", name="window"),
+    )
+
+    id: Mapped[str] = ulid_primary_key()
+    model_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("models.id", ondelete="CASCADE"), nullable=False
+    )
+    task_profile_id: Mapped[str] = mapped_column(String, nullable=False)
+    window: Mapped[str] = mapped_column(String, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    successes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    validation_passes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    errors: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    timeouts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cancellations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    latency_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    p50_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    p95_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    mean_output_tokens: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tokens_per_second_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    mean_tokens_per_second: Mapped[float | None] = mapped_column(Float, nullable=True)
+    feedback_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    acceptance_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    quality_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    mean_quality: Mapped[float | None] = mapped_column(Float, nullable=True)
+    circuit_state: Mapped[str] = mapped_column(String, nullable=False, default="closed")
+    circuit_opened_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    circuit_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)

@@ -204,21 +204,37 @@ UNIQUE (job_id, sequence)
 ```text
 id ULID PK · job_id FK ON DELETE CASCADE · source TEXT NOT NULL
 accepted BOOLEAN · quality_score NUMERIC NULL · edited BOOLEAN
-validation_passed BOOLEAN NULL · notes TEXT · created_at · updated_at
+validation_passed BOOLEAN NULL · validation_detail_json NULL · notes TEXT · created_at · updated_at
 UNIQUE (job_id, source)
 ```
+
+`validation_detail_json` holds the caller's own `validation.detail` from the request body
+([API §6](api.md)): the reason a caller's check failed is the one part of feedback a person can act
+on. `source` is set from the authenticated token's name, never from the body when a token is
+present, which is what keeps one caller from overwriting another's verdict.
 
 ### `reliability_stats`
 Rolling production evidence, recomputed incrementally.
 
 ```text
-id ULID PK · model_id FK · task_profile_id FK · window TEXT      -- 7d | 30d | all
+id ULID PK · model_id FK · task_profile_id · window TEXT         -- 7d | 30d | all
 attempts · successes · validation_passes · errors · timeouts · cancellations
-acceptance_rate NUMERIC NULL · mean_quality NUMERIC NULL
-p50_latency_ms · p95_latency_ms · mean_output_tokens · mean_tokens_per_second
+latency_count · p50_latency_ms NULL · p95_latency_ms NULL
+output_token_count · mean_output_tokens NULL · tokens_per_second_count · mean_tokens_per_second NULL
+feedback_count · acceptance_rate NUMERIC NULL · quality_count · mean_quality NUMERIC NULL
 circuit_state TEXT · circuit_opened_at NULL · circuit_reason · updated_at
 UNIQUE (model_id, task_profile_id, window)
 ```
+
+Every statistic is stored beside the sample count that produced it (`*_count`) and is `NULL` below
+a documented minimum — absent with a reason, never a plausible number over three attempts
+([ADR-0016](../../adr/0016-unavailable-is-not-zero.md) rule 6). The minimums, the classification of
+`job_attempts.outcome` into successes, errors and timeouts (a validation failure is an *answer*, as
+the circuit breaker already counts it), the reliability factor's formula and the regression
+threshold are `loadcoach.domain.reliability`'s named constants. `attempts` includes cancellations;
+every rate's denominator excludes them, because a cancelled attempt says nothing about the model.
+`task_profile_id` is the profile's string id, as on `jobs`, so statistics outlive a profile being
+retired from configuration.
 
 ### `residency`
 ```text
