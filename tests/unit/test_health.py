@@ -37,7 +37,7 @@ def test_report_shape_has_status_version_checked_at_components() -> None:
     assert report.checked_at == "2026-08-26T12:00:00.000Z"
     assert isinstance(report.components, tuple)
     names = {c.name for c in report.components}
-    assert names == {"database", "provider"}
+    assert names == {"database", "provider", "queue"}
 
 
 def test_overall_status_is_ok_when_all_components_ok(tmp_path: Path) -> None:

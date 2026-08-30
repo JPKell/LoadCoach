@@ -86,6 +86,7 @@ __all__ = [
     "enqueue",
     "expire_max_wait",
     "get_job",
+    "job_document",
     "list_jobs",
     "move",
     "queue_snapshot",
@@ -337,6 +338,7 @@ class ClaimedJob:
     cancel_requested: bool
     created_at: datetime
     queued_at: datetime
+    scheduled_for: datetime
     lease_expires_at: datetime
     source: str
     submission: JobSubmission
@@ -559,25 +561,14 @@ def _existing_by_key(
     database: Database, submission: JobSubmission, *, now: datetime
 ) -> EnqueueOutcome | None:
     """Return the unexpired job holding this caller's key, releasing an expired one."""
-    with database.write() as session:
-        row = session.execute(
-            select(Job.id, Job.state, Job.idempotency_expires_at).where(
-                Job.source == submission.source,
-                Job.idempotency_key == submission.idempotency_key,
-            )
-        ).first()
-        if row is None:
-            return None
-        job_id, state, expires_at = row
-        if expires_at is not None and expires_at <= now:
-            # Released, not deleted: the job and its history stay; only the key is freed.
-            session.execute(
-                update(Job)
-                .where(Job.id == job_id)
-                .values(idempotency_key=None, idempotency_expires_at=None)
-            )
-            return None
-        return EnqueueOutcome(job_id=job_id, state=JobState(state), created=False)
+    from loadcoach.services.execution import existing_job_for_key
+
+    found = existing_job_for_key(
+        database, source=submission.source, key=submission.idempotency_key or "", now=now
+    )
+    if found is None:
+        return None
+    return EnqueueOutcome(job_id=found[0], state=JobState(found[1]), created=False)
 
 
 def _active_count(database: Database) -> int:
@@ -719,6 +710,7 @@ def _claimed(job: Job, *, by_affinity: bool) -> ClaimedJob:
         cancel_requested=job.cancel_requested,
         created_at=job.created_at,
         queued_at=job.queued_at,
+        scheduled_for=job.scheduled_for or job.queued_at,
         lease_expires_at=job.lease_expires_at,
         source=job.source,
         submission=submission,
@@ -1236,6 +1228,130 @@ def get_job(database: Database, job_id: str) -> JobRecord:
         if job is None:
             raise JobNotFound(f"No job {job_id!r}.", details={"job_id": job_id})
         return _record(job)
+
+
+def job_document(database: Database, job_id: str) -> dict[str, Any]:
+    """The full job as the API returns it (api.md §5): state, attempts, routing summary, usage,
+    timings, validation, degradations — a superset of ``POST /generate``'s response shape, so a
+    repeated idempotency key can return the original job in a form the caller already reads.
+
+    Raises:
+        JobNotFound: No such job.
+    """
+    from baseaicore.timeutil import to_rfc3339
+
+    from loadcoach.infrastructure.db.models import JobAttempt, Model, RoutingDecision
+
+    record = get_job(database, job_id)
+    with database.read() as session:
+        attempts = session.execute(
+            select(JobAttempt, Model.canonical_id)
+            .outerjoin(Model, Model.id == JobAttempt.model_id)
+            .where(JobAttempt.job_id == job_id)
+            .order_by(JobAttempt.attempt)
+        ).all()
+        decision = session.execute(
+            select(RoutingDecision.id, RoutingDecision.selected_score, RoutingDecision.flags_json)
+            .where(RoutingDecision.job_id == job_id)
+            .order_by(RoutingDecision.requested_at.desc())
+            .limit(1)
+        ).first()
+        canonical = (
+            session.execute(
+                select(Model.canonical_id).where(Model.id == record.selected_model_id)
+            ).scalar_one_or_none()
+            if record.selected_model_id is not None
+            else None
+        )
+
+    def stamp(value: datetime | None) -> str | None:
+        return None if value is None else to_rfc3339(value)
+
+    return {
+        "job_id": record.job_id,
+        "status": record.state.value,
+        "state": record.state.value,
+        "state_reason": record.state_reason,
+        "class": record.job_class.value,
+        "priority": {"base": record.base_priority, "effective": record.effective_priority},
+        "source": record.source,
+        "task": {"id": record.task_profile_id, "version": record.task_profile_version},
+        "idempotent": record.idempotent,
+        "idempotency_key": record.idempotency_key,
+        "cancel_requested": record.cancel_requested,
+        "max_wait_seconds": record.max_wait_seconds,
+        "lease": {"owner": record.lease_owner, "expires_at": stamp(record.lease_expires_at)},
+        "timestamps": {
+            "created_at": stamp(record.created_at),
+            "queued_at": stamp(record.queued_at),
+            "scheduled_for": stamp(record.scheduled_for),
+            "started_at": stamp(record.started_at),
+            "completed_at": stamp(record.completed_at),
+        },
+        "output": {
+            "text": record.response_text,
+            "structured": record.structured_output,
+            "tool_calls": record.tool_calls or [],
+        },
+        "reasoning": {
+            "available": record.reasoning_available,
+            "summary": record.reasoning_summary,
+            "source": "provider" if record.reasoning_available else None,
+        },
+        "model": {
+            "canonical_id": canonical,
+            "model_ref": record.selected_model_id,
+            "runtime_profile_hash": record.runtime_profile_hash,
+            "served_context": record.served_context,
+            "served_context_source": record.served_context_source,
+            "target_gpu_index": record.target_gpu_index,
+        },
+        "routing": {
+            "decision_id": None if decision is None else decision[0],
+            "final_score": None if decision is None else decision[1],
+            "flags": [] if decision is None else list(cast("list[str]", decision[2] or [])),
+            "explanation_url": f"/api/v1/jobs/{record.job_id}/explanation",
+        },
+        "usage": {
+            "input_tokens": record.input_tokens,
+            "output_tokens": record.output_tokens,
+            "thinking_tokens": record.thinking_tokens
+            if record.thinking_tokens is not None
+            else "unsupported",
+        },
+        "timing": {
+            "total_ms": record.total_ms,
+            "provider_ms": record.provider_ms,
+            "loadcoach_overhead_ms": record.loadcoach_overhead_ms,
+            "ttft_ms": record.ttft_ms,
+            "queue_wait_ms": record.queue_wait_ms,
+        },
+        "validation": {"passed": record.validation_passed, "attempts": len(attempts)},
+        "attempts": [
+            {
+                "attempt": row.attempt,
+                "model": canonical_id,
+                "runtime_profile_hash": row.runtime_profile_hash,
+                "rank": row.rank,
+                "outcome": row.outcome,
+                "provider_ms": row.provider_ms,
+                "ttft_ms": row.ttft_ms,
+                "error_code": row.error_code,
+                "started_at": stamp(row.started_at),
+                "completed_at": stamp(row.completed_at),
+                "prompt_id": row.prompt_id,
+                "prompt_version": row.prompt_version,
+                "prompt_sha256": row.prompt_sha256,
+            }
+            for row, canonical_id in attempts
+        ],
+        "attempt": record.attempt,
+        "max_attempts": record.max_attempts,
+        "degradations": list(record.degradations),
+        "error": None
+        if record.error_code is None
+        else {"code": record.error_code, "message": record.error_text},
+    }
 
 
 def list_jobs(

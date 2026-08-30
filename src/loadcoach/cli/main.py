@@ -14,7 +14,9 @@ import typer
 
 from loadcoach.cli.commands import config as config_commands
 from loadcoach.cli.commands import db as db_commands
+from loadcoach.cli.commands import job as job_commands
 from loadcoach.cli.commands import models as models_commands
+from loadcoach.cli.commands import queue as queue_commands
 from loadcoach.cli.commands import route as route_commands
 from loadcoach.cli.commands import system as system_commands
 from loadcoach.cli.commands import tasks as tasks_commands
@@ -64,3 +66,5 @@ app.add_typer(tasks_commands.app, name="tasks", help="Task profile inspection an
 app.add_typer(
     route_commands.app, name="route", help="Explain a routing decision without executing it."
 )
+app.add_typer(job_commands.app, name="job", help="Submit, inspect, cancel and wait for jobs.")
+app.add_typer(queue_commands.app, name="queue", help="Queue status and operator controls.")

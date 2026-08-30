@@ -1,0 +1,30 @@
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import badge, empty_state, table %}
+{% block title %}Jobs — LoadCoach{% endblock %}
+{% block content %}
+<h2>Jobs</h2>
+{% if not jobs %}
+{{ empty_state("No job has been submitted yet. POST /api/v1/jobs, or run
+`loadcoach job submit --task general.chat --prompt 'hello'`, creates one.") }}
+{% else %}
+{% set columns = [
+  {"label": "Job"}, {"label": "State"}, {"label": "Class"}, {"label": "Task"},
+  {"label": "Priority", "numeric": true}, {"label": "Attempts", "numeric": true},
+  {"label": "Created"}
+] %}
+{% set rows = [] %}
+{% for job in jobs %}
+{% set _ = rows.append([
+  ('<a class="mono" href="/jobs/' ~ job.job_id ~ '">' ~ job.job_id ~ "</a>") | safe,
+  job.state.value ~ (" (" ~ job.state_reason ~ ")" if job.state_reason else ""),
+  job.job_class.value,
+  job.task_profile_id ~ " " ~ job.task_profile_version,
+  job.effective_priority,
+  job.attempt ~ "/" ~ job.max_attempts,
+  job.created_at | timestamp
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Newest first. Every transition is persisted with a reason.",
+         table_id="jobs", sortable=true, complete=true, row_count=jobs | length) }}
+{% endif %}
+{% endblock %}

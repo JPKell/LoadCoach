@@ -29,8 +29,9 @@ import hashlib
 import json
 import logging
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from baseaicore import ModelIdentity, ProviderKind, SuiteError, is_supported, new_id
@@ -71,7 +72,8 @@ from loadcoach.services.routing import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from contextlib import AbstractContextManager
     from pathlib import Path
 
     from modelrack.provider import Provider
@@ -81,6 +83,7 @@ if TYPE_CHECKING:
     from loadcoach.domain.routing.ranking import RankedCandidate
     from loadcoach.domain.routing.subject import ModelFacts, ProviderFacts
     from loadcoach.services.database import Database
+    from loadcoach.services.job_events import EventWriter, JobEventSink
 
 __all__ = [
     "AllCandidatesFailed",
@@ -90,13 +93,16 @@ __all__ = [
     "ExecutionOutcome",
     "GenerateRequest",
     "ProviderFailed",
+    "ReservedJob",
     "StreamChunk",
     "corrective_turns",
     "execute",
     "identity_of",
     "link_decision",
     "load_task_schema",
+    "existing_job_for_key",
     "provider_facts_for",
+    "reserve_sync_job",
     "run_attempt",
     "sampling_for",
     "stream_execute",
@@ -813,6 +819,10 @@ class ExecutionContext:
         snapshot: The telemetry routing's resource constraints read.
         timeout_seconds: The per-call provider timeout.
         now: The clock. Injected, so a job's timestamps are reproducible in a test.
+        sink: The job event sink. When given, the execution's frames — ``routing``, then
+            ``result`` or ``error`` — are persisted as job events and published after commit,
+            which is what lets a reconnecting client replay them from the table (LCX19). Without
+            one, the events are written in P4's shape at the end and nothing is published.
     """
 
     provider: Provider
@@ -822,6 +832,127 @@ class ExecutionContext:
     snapshot: TelemetrySnapshot | None = None
     timeout_seconds: float | None = None
     now: Callable[[], datetime] = field(default=lambda: datetime.now(tz=UTC))
+    sink: JobEventSink | None = None
+
+
+def existing_job_for_key(
+    database: Database, *, source: str, key: str, now: datetime
+) -> tuple[str, str] | None:
+    """Return ``(job_id, state)`` for an unexpired ``(source, key)``, releasing an expired one.
+
+    The durable half of api.md §4's idempotency: keys are scoped per caller, reserved for
+    ``queue.idempotency_ttl_hours`` and then released, so a key reused later starts new work.
+    """
+    from sqlalchemy import select, update
+
+    with database.write() as session:
+        row = session.execute(
+            select(Job.id, Job.state, Job.idempotency_expires_at).where(
+                Job.source == source, Job.idempotency_key == key
+            )
+        ).first()
+        if row is None:
+            return None
+        job_id, state, expires_at = row
+        if expires_at is not None and expires_at <= now:
+            session.execute(
+                update(Job)
+                .where(Job.id == job_id)
+                .values(idempotency_key=None, idempotency_expires_at=None)
+            )
+            return None
+        return str(job_id), str(state)
+
+
+@dataclass(frozen=True, slots=True)
+class ReservedJob:
+    """The row a synchronous execution runs against, or the earlier one its key names."""
+
+    job_id: str
+    created: bool
+    state: str
+
+
+def reserve_sync_job(
+    database: Database,
+    request: GenerateRequest,
+    *,
+    now: datetime,
+    ttl_hours: float,
+) -> ReservedJob:
+    """Reserve the job row for a synchronous execution before it starts (LCX19).
+
+    The row exists from the first instant so a concurrent submission with the same key attaches
+    to this execution rather than starting a second one — the unique index on
+    ``(source, idempotency_key)`` decides the race. The row is ``executing`` with
+    ``state_reason = "synchronous"``: a synchronous request never queues.
+
+    Raises:
+        TaskProfileNotFound: No such enabled task profile.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    from loadcoach.services.routing import load_task_profile
+
+    profile = load_task_profile(database, request.task)
+    if request.idempotency_key is not None:
+        existing = existing_job_for_key(
+            database, source=request.source, key=request.idempotency_key, now=now
+        )
+        if existing is not None:
+            return ReservedJob(job_id=existing[0], created=False, state=existing[1])
+    job_id = new_id()
+    transcript = request.transcript()
+    try:
+        with database.write() as session:
+            session.add(
+                Job(
+                    id=job_id,
+                    task_profile_id=profile.profile_id,
+                    task_profile_version=profile.version,
+                    job_class="interactive",
+                    base_priority=800,
+                    effective_priority=800,
+                    source=request.source,
+                    state="executing",
+                    state_reason="synchronous",
+                    idempotency_key=request.idempotency_key,
+                    idempotent=request.idempotency_key is not None,
+                    idempotency_expires_at=None
+                    if request.idempotency_key is None
+                    else now + timedelta(hours=ttl_hours),
+                    request_json={
+                        "task": request.task,
+                        "messages": [
+                            {
+                                "role": m.role.value,
+                                "content": m.content,
+                                "tool_call_id": m.tool_call_id,
+                            }
+                            for m in transcript
+                        ],
+                        "response_format": request.response_format,
+                        "sampling": dict(request.sampling),
+                        "stream": request.stream,
+                    },
+                    prompt_hash=_sha256(
+                        "\n".join(f"{m.role.value}:{m.content}" for m in transcript)
+                    ),
+                    attempt=0,
+                    max_attempts=1,
+                    created_at=now,
+                    started_at=now,
+                    degradations_json=[],
+                )
+            )
+    except IntegrityError:
+        existing = existing_job_for_key(
+            database, source=request.source, key=request.idempotency_key or "", now=now
+        )
+        if existing is None:  # pragma: no cover — the row that won cannot have vanished
+            raise
+        return ReservedJob(job_id=existing[0], created=False, state=existing[1])
+    return ReservedJob(job_id=job_id, created=True, state="executing")
 
 
 def _persist(
@@ -834,77 +965,142 @@ def _persist(
     records: Sequence[AttemptRecord],
     error: SuiteError | None,
     now: datetime,
+    sink: JobEventSink | None = None,
+    existing: bool = False,
 ) -> None:
     """Write the job, every attempt, its validations and its events, in one transaction.
 
     Every execution gets a job row, synchronous or not, so every execution has an explanation and
     a history — the alternative is two classes of execution, only one of which can be debugged.
+    With ``existing`` the row was reserved up front and is updated; with a ``sink`` the terminal
+    frame (``result`` or ``error``) is persisted as an event and published after commit.
     """
     selected = outcome.selected if outcome is not None else None
-    with database.write() as session:
-        session.add(
-            Job(
-                id=job_id,
-                task_profile_id=routing.task_profile.profile_id,
-                task_profile_version=routing.task_profile.version,
-                job_class="normal",
-                source=request.source,
-                state="completed" if outcome is not None else "failed",
-                state_reason=None if error is None else error.code,
-                idempotency_key=request.idempotency_key,
-                idempotent=request.idempotency_key is not None,
-                request_json={
-                    "task": request.task,
-                    "response_format": request.response_format,
-                    "sampling": dict(request.sampling),
-                    "stream": request.stream,
-                },
-                prompt_hash=_sha256(
-                    "\n".join(f"{m.role.value}:{m.content}" for m in request.transcript())
-                ),
-                response_hash=_sha256(outcome.text) if outcome is not None else None,
-                response_text=outcome.text if outcome is not None else None,
-                structured_output_json=outcome.structured if outcome is not None else None,
-                tool_calls_json=list(outcome.tool_calls) if outcome is not None else None,
-                reasoning_available=outcome is not None and outcome.thinking is not None,
-                reasoning_summary=outcome.thinking if outcome is not None else None,
-                reasoning_source="provider"
-                if outcome is not None and outcome.thinking is not None
-                else None,
-                selected_model_id=None if selected is None else selected.subject.facts.model_id,
-                runtime_profile_hash=(
-                    None if selected is None else selected.subject.runtime_profile_hash
-                ),
-                served_context=(
-                    None if selected is None else selected.subject.served_context.tokens
-                ),
-                served_context_source=(
-                    None if selected is None else selected.subject.served_context.source
-                ),
-                target_gpu_index=None if selected is None else selected.target_gpu_index,
-                attempt=0,
-                max_attempts=max(len(records), 1),
-                created_at=now,
-                started_at=now,
-                completed_at=now,
-                provider_ms=outcome.provider_ms if outcome is not None else None,
-                loadcoach_overhead_ms=outcome.overhead_ms if outcome is not None else None,
-                total_ms=outcome.total_ms if outcome is not None else None,
-                ttft_ms=outcome.ttft_ms if outcome is not None else None,
-                input_tokens=outcome.input_tokens if outcome is not None else None,
-                output_tokens=outcome.output_tokens if outcome is not None else None,
-                thinking_tokens=outcome.thinking_tokens if outcome is not None else None,
-                validation_passed=outcome.validation.passed if outcome is not None else None,
-                degradations_json=list(outcome.degradations) if outcome is not None else [],
-                error_code=None if error is None else error.code,
-                error_text=None if error is None else error.message,
+    scope: AbstractContextManager[tuple[Session, EventWriter | None]] = (
+        sink.write(database) if sink is not None else _plain_write(database)
+    )
+    with scope as (session, events):
+        if existing:
+            job = session.get_one(Job, job_id)
+            job.task_profile_id = routing.task_profile.profile_id
+            job.task_profile_version = routing.task_profile.version
+            job.state = "completed" if outcome is not None else "failed"
+            job.state_reason = "synchronous" if error is None else error.code
+            job.response_hash = _sha256(outcome.text) if outcome is not None else None
+            job.response_text = outcome.text if outcome is not None else None
+            job.structured_output_json = outcome.structured if outcome is not None else None
+            job.tool_calls_json = list(outcome.tool_calls) if outcome is not None else None
+            job.reasoning_available = outcome is not None and outcome.thinking is not None
+            job.reasoning_summary = outcome.thinking if outcome is not None else None
+            job.reasoning_source = (
+                "provider" if outcome is not None and outcome.thinking is not None else None
             )
-        )
+            job.selected_model_id = None if selected is None else selected.subject.facts.model_id
+            job.runtime_profile_hash = (
+                None if selected is None else selected.subject.runtime_profile_hash
+            )
+            job.served_context = (
+                None if selected is None else selected.subject.served_context.tokens
+            )
+            job.served_context_source = (
+                None if selected is None else selected.subject.served_context.source
+            )
+            job.target_gpu_index = None if selected is None else selected.target_gpu_index
+            job.max_attempts = max(len(records), 1)
+            job.completed_at = now
+            job.provider_ms = outcome.provider_ms if outcome is not None else None
+            job.loadcoach_overhead_ms = outcome.overhead_ms if outcome is not None else None
+            job.total_ms = outcome.total_ms if outcome is not None else None
+            job.ttft_ms = outcome.ttft_ms if outcome is not None else None
+            job.input_tokens = outcome.input_tokens if outcome is not None else None
+            job.output_tokens = outcome.output_tokens if outcome is not None else None
+            job.thinking_tokens = outcome.thinking_tokens if outcome is not None else None
+            job.validation_passed = outcome.validation.passed if outcome is not None else None
+            job.degradations_json = list(outcome.degradations) if outcome is not None else []
+            job.error_code = None if error is None else error.code
+            job.error_text = None if error is None else error.message
+        else:
+            session.add(
+                Job(
+                    id=job_id,
+                    task_profile_id=routing.task_profile.profile_id,
+                    task_profile_version=routing.task_profile.version,
+                    job_class="normal",
+                    source=request.source,
+                    state="completed" if outcome is not None else "failed",
+                    state_reason=None if error is None else error.code,
+                    idempotency_key=request.idempotency_key,
+                    idempotent=request.idempotency_key is not None,
+                    request_json={
+                        "task": request.task,
+                        "response_format": request.response_format,
+                        "sampling": dict(request.sampling),
+                        "stream": request.stream,
+                    },
+                    prompt_hash=_sha256(
+                        "\n".join(f"{m.role.value}:{m.content}" for m in request.transcript())
+                    ),
+                    response_hash=_sha256(outcome.text) if outcome is not None else None,
+                    response_text=outcome.text if outcome is not None else None,
+                    structured_output_json=outcome.structured if outcome is not None else None,
+                    tool_calls_json=list(outcome.tool_calls) if outcome is not None else None,
+                    reasoning_available=outcome is not None and outcome.thinking is not None,
+                    reasoning_summary=outcome.thinking if outcome is not None else None,
+                    reasoning_source="provider"
+                    if outcome is not None and outcome.thinking is not None
+                    else None,
+                    selected_model_id=None if selected is None else selected.subject.facts.model_id,
+                    runtime_profile_hash=(
+                        None if selected is None else selected.subject.runtime_profile_hash
+                    ),
+                    served_context=(
+                        None if selected is None else selected.subject.served_context.tokens
+                    ),
+                    served_context_source=(
+                        None if selected is None else selected.subject.served_context.source
+                    ),
+                    target_gpu_index=None if selected is None else selected.target_gpu_index,
+                    attempt=0,
+                    max_attempts=max(len(records), 1),
+                    created_at=now,
+                    started_at=now,
+                    completed_at=now,
+                    provider_ms=outcome.provider_ms if outcome is not None else None,
+                    loadcoach_overhead_ms=outcome.overhead_ms if outcome is not None else None,
+                    total_ms=outcome.total_ms if outcome is not None else None,
+                    ttft_ms=outcome.ttft_ms if outcome is not None else None,
+                    input_tokens=outcome.input_tokens if outcome is not None else None,
+                    output_tokens=outcome.output_tokens if outcome is not None else None,
+                    thinking_tokens=outcome.thinking_tokens if outcome is not None else None,
+                    validation_passed=outcome.validation.passed if outcome is not None else None,
+                    degradations_json=list(outcome.degradations) if outcome is not None else [],
+                    error_code=None if error is None else error.code,
+                    error_text=None if error is None else error.message,
+                )
+            )
         session.flush()
         link_decision(session, routing.explanation.decision_id, job_id)
         for record in records:
             write_attempt(session, job_id, record, now=now)
-        _write_events(session, job_id, records, outcome=outcome, now=now)
+        if events is None:
+            _write_events(session, job_id, records, outcome=outcome, now=now)
+        elif outcome is not None:
+            events.append(job_id, "result", now=now, data=outcome.as_json())
+        else:
+            assert error is not None  # noqa: S101 — one of the two is always set
+            events.append(
+                job_id,
+                "error",
+                now=now,
+                data={"code": error.code, "message": error.message, **error.details},
+            )
+
+
+@contextmanager
+def _plain_write(database: Database) -> Iterator[tuple[Session, EventWriter | None]]:
+    """A write scope with no event writer — the no-sink path keeps P4's event shape."""
+    with database.write() as session:
+        yield session, None
 
 
 def link_decision(session: Session, decision_id: str, job_id: str) -> None:
@@ -1056,6 +1252,7 @@ def execute(
     *,
     cancel: CancellationToken | None = None,
     on_chunk: Callable[[StreamChunk], None] | None = None,
+    job_id: str | None = None,
 ) -> ExecutionOutcome:
     """Route, execute, validate and record one generation.
 
@@ -1068,6 +1265,8 @@ def execute(
         on_chunk: Called with each token, tool call and stage as it happens. The streaming
             endpoint supplies one; ``POST /generate`` does not, and the two paths are otherwise
             identical.
+        job_id: The row :func:`reserve_sync_job` created, or ``None`` to create the row at the
+            end (the direct, no-reservation path a test drives).
 
     Returns:
         The :class:`ExecutionOutcome`.
@@ -1081,27 +1280,39 @@ def execute(
     """
     started = time.perf_counter()
     now = context.now()
-    job_id = new_id()
+    existing = job_id is not None
+    job_id = job_id if job_id is not None else new_id()
 
     caller_text = "".join(message.content for message in request.transcript())
-    routing = route(
-        database,
-        RouteRequest(
-            task=request.task,
-            estimated_input_tokens=estimate_input_tokens(caller_text),
-            max_output_tokens=cast("int | None", request.sampling.get("max_output_tokens")),
-            overrides=request.overrides or RuntimeOverrides(),
-        ),
-        provider=context.provider_facts,
-        policy=context.policy,
-        snapshot=context.snapshot,
-        now=now,
-    )
+    try:
+        routing = route(
+            database,
+            RouteRequest(
+                task=request.task,
+                estimated_input_tokens=estimate_input_tokens(caller_text),
+                max_output_tokens=cast("int | None", request.sampling.get("max_output_tokens")),
+                overrides=request.overrides or RuntimeOverrides(),
+            ),
+            provider=context.provider_facts,
+            policy=context.policy,
+            snapshot=context.snapshot,
+            now=now,
+        )
+    except SuiteError as exc:
+        if existing:
+            _fail_reserved(database, job_id, exc, now=now, sink=context.sink)
+        raise
     profile = routing.task_profile
     schema = load_task_schema(
         cast("str | None", profile.execution.get("json_schema_ref")),
         schemas_dir=context.schemas_dir,
     )
+    if context.sink is not None and existing:
+        # Persisted and published: a client that reconnects gets it from the table, and a live
+        # subscriber that attached before routing finished gets it from the broker.
+        with context.sink.write(database) as (session, events):
+            link_decision(session, routing.explanation.decision_id, job_id)
+            events.append(job_id, "routing", now=now, data=routing.explanation.payload)
     if on_chunk is not None:
         on_chunk(StreamChunk("routing", routing.explanation.payload))
 
@@ -1143,6 +1354,8 @@ def execute(
             records=records,
             error=failure,
             now=now,
+            sink=context.sink,
+            existing=existing,
         )
         raise failure
 
@@ -1178,10 +1391,43 @@ def execute(
         records=records,
         error=None,
         now=now,
+        sink=context.sink,
+        existing=existing,
     )
     if on_chunk is not None:
         on_chunk(StreamChunk("result", outcome.as_json()))
     return outcome
+
+
+def _fail_reserved(
+    database: Database,
+    job_id: str,
+    error: SuiteError,
+    *,
+    now: datetime,
+    sink: JobEventSink | None,
+) -> None:
+    """A reserved row whose execution failed before any attempt: mark it, persist the error."""
+    scope: AbstractContextManager[tuple[Session, EventWriter | None]] = (
+        sink.write(database) if sink is not None else _plain_write(database)
+    )
+    with scope as (session, events):
+        job = session.get_one(Job, job_id)
+        job.state = "failed"
+        job.state_reason = error.code
+        job.error_code = error.code
+        job.error_text = error.message
+        job.completed_at = now
+        decision_id = error.details.get("decision_id")
+        if isinstance(decision_id, str):
+            link_decision(session, decision_id, job_id)
+        if events is not None:
+            events.append(
+                job_id,
+                "error",
+                now=now,
+                data={"code": error.code, "message": error.message, **error.details},
+            )
 
 
 def stream_execute(

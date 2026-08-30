@@ -1,0 +1,58 @@
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import empty_state, kv_list, table %}
+{% block title %}Job {{ job.job_id }} — LoadCoach{% endblock %}
+{% block content %}
+<h2>Job</h2>
+<p class="muted mono">{{ job.job_id }}</p>
+
+{{ kv_list([
+  {"label": "State", "value": job.state ~ (" (" ~ job.state_reason ~ ")" if job.state_reason else "")},
+  {"label": "Class", "value": job["class"] ~ ", priority " ~ job.priority.base ~ " → " ~ job.priority.effective},
+  {"label": "Task profile", "value": job.task.id ~ " " ~ job.task.version},
+  {"label": "Source", "value": job.source},
+  {"label": "Idempotent", "value": job.idempotent},
+  {"label": "Model", "value": job.model.canonical_id or "not yet routed"},
+  {"label": "Served context", "value": (job.model.served_context ~ " tokens (" ~ job.model.served_context_source ~ ")") if job.model.served_context else "—"},
+  {"label": "Target GPU", "value": job.model.target_gpu_index if job.model.target_gpu_index is not none else "—"},
+  {"label": "Attempts", "value": job.attempt ~ " of at most " ~ job.max_attempts},
+  {"label": "Queue wait", "value": (job.timing.queue_wait_ms ~ " ms") if job.timing.queue_wait_ms is not none else "—"},
+  {"label": "Provider time", "value": (job.timing.provider_ms ~ " ms") if job.timing.provider_ms is not none else "—"},
+  {"label": "Overhead", "value": (job.timing.loadcoach_overhead_ms ~ " ms") if job.timing.loadcoach_overhead_ms is not none else "—"},
+  {"label": "Error", "value": (job.error.code ~ ": " ~ (job.error.message or "")) if job.error else "none"},
+  {"label": "Explanation", "value": ('<a href="/api/v1/jobs/' ~ job.job_id ~ '/explanation">' ~ job.routing.explanation_url ~ '</a>') | safe},
+]) }}
+
+{% if job.output.text %}
+<h3>Output</h3>
+<pre>{{ job.output.text }}</pre>
+{% endif %}
+
+<h3>Attempts</h3>
+{% if job.attempts %}
+{% set columns = [
+  {"label": "#", "numeric": true}, {"label": "Model"}, {"label": "Rank", "numeric": true},
+  {"label": "Outcome"}, {"label": "Provider ms", "numeric": true}, {"label": "Error"}, {"label": "Prompt record"}
+] %}
+{% set rows = [] %}
+{% for attempt in job.attempts %}
+{% set _ = rows.append([
+  attempt.attempt, attempt.model or "—", attempt.rank if attempt.rank is not none else "—",
+  attempt.outcome, attempt.provider_ms if attempt.provider_ms is not none else "—",
+  attempt.error_code or "", (attempt.prompt_id ~ " " ~ attempt.prompt_version) if attempt.prompt_id else ""
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="One row per attempt; a corrective retry is a new row.",
+         table_id="attempts", complete=true, row_count=job.attempts | length) }}
+{% else %}
+{{ empty_state("No attempt has been made yet.") }}
+{% endif %}
+
+<h3>Events</h3>
+{% set columns = [{"label": "#", "numeric": true}, {"label": "When"}, {"label": "Event"}, {"label": "Message"}] %}
+{% set rows = [] %}
+{% for event in events %}
+{% set _ = rows.append([event.sequence, event.timestamp | timestamp, event.type, event.message or ""]) %}
+{% endfor %}
+{{ table(columns, rows, caption="The persisted event stream a reconnecting client replays from.",
+         table_id="events", complete=true, row_count=events | length) }}
+{% endblock %}

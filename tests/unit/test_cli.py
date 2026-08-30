@@ -231,3 +231,64 @@ def test_models_list_is_empty_on_a_fresh_install_and_that_is_honest() -> None:
     listed = runner.invoke(app, ["models", "list", "--json"])
     assert listed.exit_code == 0
     assert json.loads(listed.stdout) == []
+
+
+def test_job_submit_show_list_cancel_and_queue_controls_without_a_server() -> None:
+    """The job and queue commands work against the database alone (mode: local)."""
+    import json
+
+    assert runner.invoke(app, ["db", "upgrade"]).exit_code == 0
+    submitted = runner.invoke(
+        app, ["job", "submit", "--task", "general.chat", "--prompt", "hello", "--json"]
+    )
+    assert submitted.exit_code == 0, submitted.output
+    document = json.loads(submitted.stdout)
+    job_id = document["job_id"]
+    assert document["state"] == "queued" and document["source"] == "cli"
+
+    shown = runner.invoke(app, ["job", "show", job_id])
+    assert shown.exit_code == 0 and job_id in shown.stdout and "queued" in shown.stdout
+
+    listed = runner.invoke(app, ["job", "list", "--json"])
+    assert listed.exit_code == 0
+    assert [item["job_id"] for item in json.loads(listed.stdout)] == [job_id]
+
+    status = runner.invoke(app, ["queue", "status", "--json"])
+    assert status.exit_code == 0
+    report = json.loads(status.stdout)
+    assert report["depth_by_state"] == {"queued": 1}
+    assert report["flags"] == {"paused": False, "draining": False}
+    assert report["executions"] is None  # only the serving process knows
+
+    assert runner.invoke(app, ["queue", "pause"]).exit_code == 0
+    assert json.loads(runner.invoke(app, ["queue", "status", "--json"]).stdout)["flags"]["paused"]
+    assert runner.invoke(app, ["queue", "resume"]).exit_code == 0
+
+    cancelled = runner.invoke(app, ["job", "cancel", job_id, "--json"])
+    assert cancelled.exit_code == 0
+    assert json.loads(cancelled.stdout)["state"] == "cancelled"
+    assert runner.invoke(app, ["job", "cancel", job_id]).exit_code == 1
+    assert runner.invoke(app, ["job", "show", "01NOPE0000000000000000000"]).exit_code == 5
+    waited = runner.invoke(app, ["job", "wait", job_id, "--timeout", "1"])
+    assert waited.exit_code == 1  # terminal, but cancelled rather than completed
+
+
+def test_job_submit_refuses_a_priority_outside_the_band_and_an_unknown_task() -> None:
+    runner.invoke(app, ["db", "upgrade"])
+    bad = runner.invoke(
+        app, ["job", "submit", "--task", "general.chat", "--prompt", "x", "--priority", "950"]
+    )
+    assert bad.exit_code == 2
+    unknown = runner.invoke(app, ["job", "submit", "--task", "no.such", "--prompt", "x"])
+    assert unknown.exit_code == 5
+    neither = runner.invoke(app, ["job", "submit", "--task", "general.chat"])
+    assert neither.exit_code == 2
+
+
+def test_models_residency_is_empty_on_a_fresh_install() -> None:
+    import json
+
+    runner.invoke(app, ["db", "upgrade"])
+    result = runner.invoke(app, ["models", "residency", "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == []

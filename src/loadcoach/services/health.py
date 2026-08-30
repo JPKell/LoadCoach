@@ -7,9 +7,10 @@ coincidence. Not in the Phase 1 file list verbatim, but required by it for the s
 (``.importlinter``'s ``web-cli-independence`` contract), so shared logic they both need lives in
 ``services/``.
 
-Phase 1 reports two components only — ``database`` and ``provider`` — matching what exists to
-report on; ``evidence``, ``queue`` and ``gpu_telemetry`` (spec §17) arrive with the phases that
-build them.
+Phase 1 reported two components — ``database`` and ``provider``; Phase 5 adds ``queue`` (queue
+§11: degraded when the starvation counter is non-zero, depth exceeds a fraction of ``max_depth``,
+or any circuit breaker is open). ``evidence`` and ``gpu_telemetry`` (spec §17) arrive with the
+phases that build them.
 """
 
 from __future__ import annotations
@@ -24,9 +25,15 @@ from loadcoach.__about__ import __version__
 if TYPE_CHECKING:
     from modelrack.provider import Provider
 
+    from loadcoach.config import Settings
     from loadcoach.services.database import Database
+    from loadcoach.services.worker import QueueRuntime
 
-__all__ = ["HealthComponent", "HealthReport", "get_health_report"]
+__all__ = ["QUEUE_DEPTH_DEGRADED_FRACTION", "HealthComponent", "HealthReport", "get_health_report"]
+
+QUEUE_DEPTH_DEGRADED_FRACTION = 0.8
+"""Queue §11 names "a configured fraction of ``max_depth``" and no number; four fifths leaves an
+operator time to act before submissions start being refused with ``QUEUE_FULL``."""
 
 type ComponentStatus = Literal["ok", "degraded", "unavailable", "not_configured"]
 type OverallStatus = Literal["ok", "degraded", "unavailable"]
@@ -134,10 +141,69 @@ def _provider_component(provider: Provider | None) -> HealthComponent:
     return HealthComponent(name="provider", status=status, detail=health.detail)
 
 
+def _queue_component(
+    database: Database | None, settings: Settings | None, runtime: QueueRuntime | None, clock: Clock
+) -> HealthComponent:
+    """Build the ``queue`` component (queue §11's degradation rules).
+
+    The depth and starvation counter come from the database, so a one-shot ``loadcoach health``
+    reports them too; breaker states live in the serving process and count only when its runtime
+    is given.
+    """
+    from loadcoach.config import ConfigurationError, load_settings
+    from loadcoach.services.database import Database
+    from loadcoach.services.queue import queue_snapshot
+
+    if settings is None:
+        try:
+            settings = load_settings().settings
+        except ConfigurationError as exc:
+            return HealthComponent(
+                name="queue", status="degraded", detail=f"configuration: {exc.message}"
+            )
+
+    def evaluate(handle: Database) -> HealthComponent:
+        snapshot = queue_snapshot(
+            handle, now=clock(), default_max_wait_seconds=settings.queue.max_wait_seconds
+        )
+        reasons: list[str] = []
+        if snapshot.starving:
+            reasons.append(f"{snapshot.starving} job(s) starving")
+        if snapshot.active >= settings.queue.max_depth * QUEUE_DEPTH_DEGRADED_FRACTION:
+            reasons.append(f"depth {snapshot.active} of {settings.queue.max_depth}")
+        if runtime is not None:
+            open_breakers = sorted(runtime.breakers.excluded())
+            if open_breakers:
+                reasons.append(f"circuit breaker open: {', '.join(open_breakers)}")
+        if reasons:
+            return HealthComponent(name="queue", status="degraded", detail="; ".join(reasons))
+        return HealthComponent(
+            name="queue", status="ok", detail=f"{snapshot.active} active, none starving"
+        )
+
+    if database is not None:
+        try:
+            return evaluate(database)
+        except Exception as exc:  # noqa: BLE001 — an unmigrated queue is degraded, not a crash
+            return HealthComponent(name="queue", status="degraded", detail=f"unreadable: {exc}")
+    database_url = settings.storage.database_url
+    if database_url is None:  # pragma: no cover — StorageSettings always fills this in
+        return HealthComponent(name="queue", status="degraded", detail="no database_url configured")
+    try:
+        with Database.from_url(
+            database_url, statement_timeout_ms=settings.storage.statement_timeout_ms
+        ) as opened:
+            return evaluate(opened)
+    except Exception as exc:  # noqa: BLE001 — an unreadable queue is a degraded queue, not a crash
+        return HealthComponent(name="queue", status="degraded", detail=f"unreadable: {exc}")
+
+
 def get_health_report(
     *,
     database: Database | None = None,
     provider: Provider | None = None,
+    settings: Settings | None = None,
+    queue_runtime: QueueRuntime | None = None,
     clock: Clock = utc_now,
 ) -> HealthReport:
     """Build the current health report.
@@ -150,6 +216,9 @@ def get_health_report(
     Args:
         database: The caller's database handle, or ``None`` to open one for this check alone.
         provider: The caller's provider handle, or ``None`` to build one for this check alone.
+        settings: The caller's settings, or ``None`` to load them for this check alone.
+        queue_runtime: The serving process's queue runtime, for breaker states; ``None`` from a
+            one-shot CLI check.
         clock: Returns the current instant; injected for deterministic tests.
 
     Returns:
@@ -161,6 +230,7 @@ def get_health_report(
     components: tuple[HealthComponent, ...] = (
         _database_component(database),
         _provider_component(provider),
+        _queue_component(database, settings, queue_runtime, clock),
     )
     worst = max(
         (

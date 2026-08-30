@@ -8,6 +8,31 @@ packaging and release standards §3.
 ## [Unreleased]
 
 ### Added
+- Phase 5, unit 8: the surface (api.md §5, §8; spec §7.2).
+  - `POST /jobs` (202; a repeated key returns the original job with `X-Idempotent-Replay`),
+    `GET /jobs` (filters by state, class, task and source; opaque cursor pagination),
+    `GET /jobs/{id}` (the full document: state, attempts, routing summary, usage, timings,
+    validation, degradations), `GET /jobs/{id}/stream` (replays the persisted events after
+    `Last-Event-ID`, follows the live broker, closes on the terminal event — LCX16),
+    `POST /jobs/{id}/cancel` (202, or 409 `JOB_NOT_CANCELLABLE`), `GET /jobs/{id}/explanation`
+    (a lookup of the routing decision whose `job_id` matches, never a copy — LCX3).
+  - `GET /queue` and `GET /system/status`: depth by state and class, oldest queued age, dispatch
+    latency over the recent claims, active executions with their models, residency with idle
+    times, starvation counter, circuit-breaker states, recent throughput, the control flags and
+    the last recovery; `POST /queue/pause|resume|drain` write the durable flags the scheduler
+    reads every second. Health gains the `queue` component (degraded on starvation, on depth
+    past four fifths of `max_depth`, or on an open breaker).
+  - Jobs, job detail and Queue pages on MirrorWall's shell; `loadcoach job
+    submit|list|show|cancel|wait`, `loadcoach queue status|pause|resume|drain` and
+    `loadcoach models residency` (LC16), all mode local.
+  - Durable idempotency for the synchronous endpoints (LCX19): the job row is reserved before
+    execution, so a repeated `idempotency_key` finds it through the unique index whether the
+    execution is running or long finished, and a key past `queue.idempotency_ttl_hours` is
+    released. `POST /generate` returns the original job; `POST /generate/stream` attaches to its
+    event stream. `routing` and the terminal `result`/`error` frames are persisted as job
+    events and published after commit; token frames are fanned out live and never stored, so a
+    reconnect replays the persisted frames it missed and the result that carries the whole
+    output. The in-memory 64-entry stream registry is gone.
 - Phase 5, unit 7: cancellation and recovery (`services/recovery.py`; queue §8, §10).
   - `cancel_job`: a waiting job is cancelled at once; a job a worker holds moves to `cancelling`
     with `cancel_requested` set and the in-process token cancelled through an `on_request` hook,

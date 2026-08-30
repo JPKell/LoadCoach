@@ -5,11 +5,15 @@ Both endpoints run the same executor, which always calls the provider through
 is called — which is what makes cancellation, the idle timeout and partial-response preservation
 uniform across the two (api.md §5).
 
-The streaming endpoint is built on :func:`mirrorwall.sse_response`, so LoadCoach inherits the
-replay/live handoff, the bounded subscriber queue, the heartbeat and the thread dispatch rather
-than reimplementing them. Every frame carries the SetSpec event envelope except ``token``, which
-is bare — the one documented exception (ADR-0025 §3), and MirrorWall's own frame formatter is what
-enforces it.
+**Idempotency is durable (LCX19).** Before anything executes, the job row is reserved: a repeated
+``idempotency_key`` from the same caller finds that row through the unique index rather than a
+process-local registry, whether the execution is still running or finished long ago — and a key
+older than ``queue.idempotency_ttl_hours`` has been released. ``POST /generate`` with a repeated
+key returns the original job; ``POST /generate/stream`` attaches to its event stream, replaying the
+persisted ``routing`` and terminal ``result``/``error`` frames from ``job_events`` and following
+the live broker for anything still being produced. Token frames are fanned out live and never
+stored (they would dominate the table for no benefit a reconnecting client can use), so a reconnect
+receives the persisted frames it missed and the terminal result, which carries the whole output.
 
 Route handlers contain no business logic: each calls one service function and renders.
 """
@@ -17,31 +21,40 @@ Route handlers contain no business logic: each calls one service function and re
 from __future__ import annotations
 
 import threading
-from typing import TYPE_CHECKING, Any, cast
+import time
+from datetime import UTC, datetime
+from functools import partial
+from typing import TYPE_CHECKING, Any
 
-from baseaicore import new_id
+import anyio
+from baseaicore import SuiteError
 from fastapi import APIRouter, Request
-from mirrorwall import Event, EventBroker, sse_response
+from mirrorwall import sse_response
 from modelrack import CancellationToken, Message, Role
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from setspec import GeneratorInfo
 
 from loadcoach.__about__ import __version__
+from loadcoach.domain.queue_state import TERMINAL_STATES
 from loadcoach.domain.routing.subject import RuntimeOverrides
 from loadcoach.services.execution import (
     ExecutionContext,
     GenerateRequest,
     StreamChunk,
-    stream_execute,
+    execute,
+    provider_facts_for,
+    reserve_sync_job,
 )
+from loadcoach.services.queue import job_document
 from loadcoach.services.task_profiles import DEFAULT_SCHEMAS_DIR
 from loadcoach.web.routes.routing import OverridesBody
-from loadcoach.web.routing_support import current_snapshot, provider_facts_for, routing_policy_for
+from loadcoach.web.routing_support import current_snapshot, routing_policy_for
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from starlette.responses import StreamingResponse
+
+    from loadcoach.services.database import Database
+    from loadcoach.services.job_events import JobEventSink
 
 __all__ = ["GENERATOR", "router"]
 
@@ -56,13 +69,7 @@ _CLIENT_NAME_HEADER = "x-client-name"
 _TERMINAL_EVENTS = frozenset({"result", "error"})
 """api.md §4: the terminal event is always ``result`` or ``error``."""
 
-_MAX_RETAINED_STREAMS = 64
-"""How many finished streams stay attachable for a reconnect before the oldest is dropped.
-
-Bounded on purpose: the replay log of a finished execution is held in memory so a browser that
-reconnects gets its terminal ``result`` frame rather than a second generation, and an unbounded
-cache of those would be a memory leak with a nice name. Durable replay from the persisted
-``job_events`` is ``GET /jobs/{id}/stream``, which arrives with the queue in Phase 5."""
+_POLL_SECONDS = 0.05
 
 
 class MessageBody(BaseModel):
@@ -106,7 +113,7 @@ class GenerateBody(BaseModel):
         return self
 
 
-def _source(request: Request) -> str:
+def source_of(request: Request) -> str:
     """Who is calling, for the idempotency scope and the job record.
 
     The authenticated token's name where there is one; otherwise the ``X-Client-Name`` header on a
@@ -120,49 +127,48 @@ def _source(request: Request) -> str:
     return header[:64] if header else "anonymous"
 
 
-def _to_request(body: GenerateBody, *, source: str, stream: bool) -> GenerateRequest:
+def messages_of(body: GenerateBody) -> tuple[Message, ...] | None:
+    """The caller's transcript as ModelRack messages, or ``None`` for the prompt form."""
+    if body.messages is None:
+        return None
+    return tuple(
+        Message(role=Role(turn.role), content=turn.content, tool_call_id=turn.tool_call_id)
+        for turn in body.messages
+    )
+
+
+def overrides_of(body: OverridesBody | None) -> RuntimeOverrides | None:
+    """Routing §10's overrides from the body, or ``None``."""
     from baseaicore import RuntimeProfile
 
-    overrides = body.overrides
+    if body is None:
+        return None
     profile_override = (
         None
-        if overrides is None or overrides.runtime_profile is None
-        else RuntimeProfile(**overrides.runtime_profile.model_dump(exclude_none=True))
+        if body.runtime_profile is None
+        else RuntimeProfile(**body.runtime_profile.model_dump(exclude_none=True))
     )
-    messages: tuple[Message, ...] | None = None
-    if body.messages is not None:
-        messages = tuple(
-            Message(role=Role(turn.role), content=turn.content, tool_call_id=turn.tool_call_id)
-            for turn in body.messages
-        )
+    return RuntimeOverrides(
+        model=body.model,
+        runtime_profile=profile_override,
+        disallow_fallback=body.disallow_fallback,
+        require_evidence=body.require_evidence,
+    )
+
+
+def _to_request(body: GenerateBody, *, source: str, stream: bool) -> GenerateRequest:
     return GenerateRequest(
         task=body.task,
         system=body.system,
         prompt=body.prompt,
-        messages=messages,
+        messages=messages_of(body),
         response_format=body.response_format,
         sampling=dict(body.sampling),
-        overrides=None
-        if overrides is None
-        else RuntimeOverrides(
-            model=overrides.model,
-            runtime_profile=profile_override,
-            disallow_fallback=overrides.disallow_fallback,
-            require_evidence=overrides.require_evidence,
-        ),
+        overrides=overrides_of(body.overrides),
         source=source,
         idempotency_key=body.idempotency_key,
         stream=stream,
     )
-
-
-def _stream_registry(app: Any) -> dict[str, _ExecutionSource]:
-    """The application's in-flight and recently-finished streams, keyed by caller and key."""
-    registry = getattr(app.state, "generate_streams", None)
-    if registry is None:
-        registry = {}
-        app.state.generate_streams = registry
-    return cast("dict[str, _ExecutionSource]", registry)
 
 
 def _context(request: Request) -> ExecutionContext:
@@ -174,7 +180,20 @@ def _context(request: Request) -> ExecutionContext:
         schemas_dir=DEFAULT_SCHEMAS_DIR,
         snapshot=current_snapshot(app),
         timeout_seconds=app.state.settings.execution.default_timeout_seconds,
+        sink=app.state.event_sink,
     )
+
+
+def _await_terminal(database: Database, job_id: str, *, timeout_seconds: float) -> dict[str, Any]:
+    """The original job's document, waited for if its execution is still running."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        document = job_document(database, job_id)
+        if document["state"] in {state.value for state in TERMINAL_STATES}:
+            return document
+        if time.monotonic() >= deadline:
+            return document
+        time.sleep(_POLL_SECONDS)
 
 
 @router.post("/generate", summary="Route, execute and validate one generation")
@@ -184,165 +203,150 @@ def post_generate(request: Request, body: GenerateBody) -> dict[str, Any]:
     ``def``, not ``async def`` (ADR-0003 §1): this handler touches the database and the provider,
     so Starlette runs it in the worker threadpool rather than on the event loop.
 
+    A repeated ``idempotency_key`` returns the original job (api.md §4) — its document, waited
+    for if it is still running — rather than executing again.
+
     Errors: ``TASK_PROFILE_NOT_FOUND``, ``NO_ELIGIBLE_MODEL`` (with every candidate and its
     rejection reason), ``ALL_CANDIDATES_FAILED`` (with every attempt and its error).
     """
-    from loadcoach.services.execution import execute
-
+    app = request.app
+    generate_request = _to_request(body, source=source_of(request), stream=False)
+    reserved = reserve_sync_job(
+        app.state.database,
+        generate_request,
+        now=datetime.now(UTC),
+        ttl_hours=app.state.settings.queue.idempotency_ttl_hours,
+    )
+    if not reserved.created:
+        return _await_terminal(
+            app.state.database,
+            reserved.job_id,
+            timeout_seconds=app.state.settings.execution.default_timeout_seconds,
+        )
     outcome = execute(
-        request.app.state.database,
-        _to_request(body, source=_source(request), stream=False),
+        app.state.database,
+        generate_request,
         _context(request),
         cancel=CancellationToken(),
+        job_id=reserved.job_id,
     )
     return outcome.as_json()
 
 
-class _ExecutionSource:
-    """A MirrorWall :class:`~mirrorwall.EventSource` over one in-flight execution.
-
-    The executor is synchronous and runs in its own thread; this object is the bridge MirrorWall's
-    ``sse_response`` consumes. ``replay`` returns from the events already produced, so a client
-    that reconnects mid-generation resumes rather than restarting — the frames it missed are held
-    here, in order, by sequence.
-    """
-
-    stream_id: str
-
-    def __init__(self, broker: EventBroker, stream_id: str) -> None:
-        """Create the source for one stream."""
-        self._broker = broker
-        self.stream_id = stream_id
-        self._log: list[Event] = []
-        self._lock = threading.Lock()
-        self._finished = False
-
-    @property
-    def finished(self) -> bool:
-        """Whether the execution has produced its terminal frame."""
-        with self._lock:
-            return self._finished
-
-    def publish(self, chunk: StreamChunk) -> None:
-        """Append an event to the replay log and fan it out. Called from the executor thread."""
-        with self._lock:
-            sequence = len(self._log) + 1
-            event = Event(sequence=sequence, type=chunk.kind, payload=dict(chunk.payload))
-            self._log.append(event)
-            if chunk.kind in _TERMINAL_EVENTS:
-                self._finished = True
-        self._broker.publish(self.stream_id, event)
-
-    def finish(self) -> None:
-        """Guarantee a terminal frame, even if the producer died without emitting one."""
-        with self._lock:
-            if self._finished:
-                return
-        self.publish(
-            StreamChunk(
-                "error",
-                {
-                    "code": "INTERNAL_ERROR",
-                    "message": "The execution ended without producing a result.",
-                },
-            )
-        )
-
-    def replay(self, *, stream_id: str, after_sequence: int, limit: int) -> Sequence[Event]:
-        """Return up to ``limit`` already-produced events after ``after_sequence``."""
-        with self._lock:
-            return [event for event in self._log if event.sequence > after_sequence][:limit]
-
-    def subscribe(self, *, stream_id: str) -> Any:
-        """Open a live subscription to this execution."""
-        return self._broker.subscribe(stream_id=stream_id)
-
-
 def _drive(
-    source: _ExecutionSource,
-    database: Any,
+    sink: JobEventSink,
+    database: Database,
+    job_id: str,
     request: GenerateRequest,
     context: ExecutionContext,
     cancel: CancellationToken,
 ) -> None:
-    """Run the execution to completion in a worker thread, publishing each chunk as it happens."""
+    """Run the execution to completion in a worker thread, fanning out each chunk as it happens.
+
+    ``routing`` and the terminal frame are persisted and published by the executor through the
+    sink; tokens and tool calls are fanned out live from here. Whatever goes wrong, the stream
+    ends with a terminal frame: a persisted ``error`` is the backstop for a producer that died
+    without one.
+    """
+
+    def publish(chunk: StreamChunk) -> None:
+        if chunk.kind == "token":
+            sink.publish_token(job_id, chunk.payload)
+        elif chunk.kind == "tool_call":
+            sink.publish_live(job_id, "tool_call", chunk.payload)
+
     try:
-        stream_execute(database, request, context, on_chunk=source.publish, cancel=cancel)
+        execute(database, request, context, cancel=cancel, on_chunk=publish, job_id=job_id)
+    except SuiteError:
+        pass  # persisted as the terminal ``error`` frame by the executor
     except Exception as exc:  # noqa: BLE001 — the stream's terminal frame is the report
-        source.publish(StreamChunk("error", {"code": "INTERNAL_ERROR", "message": str(exc)}))
+        _backstop(sink, database, job_id, f"The execution failed unexpectedly: {exc}")
     finally:
-        # A stream whose producer died without a terminal frame would poll for ever; this is the
-        # backstop that guarantees one, whatever went wrong above.
-        source.finish()
+        _backstop(sink, database, job_id, "The execution ended without producing a result.")
+
+
+def _backstop(sink: JobEventSink, database: Database, job_id: str, message: str) -> None:
+    """Persist a terminal ``error`` frame if the job has none — never a second one."""
+    from sqlalchemy import select
+
+    from loadcoach.infrastructure.db.models import Job, JobEvent
+
+    with sink.write(database) as (session, events):
+        terminal = session.execute(
+            select(JobEvent.id).where(
+                JobEvent.job_id == job_id, JobEvent.event_type.in_(sorted(_TERMINAL_EVENTS))
+            )
+        ).first()
+        if terminal is not None:
+            return
+        job = session.get(Job, job_id)
+        if job is not None and job.state not in {state.value for state in TERMINAL_STATES}:
+            job.state = "failed"
+            job.state_reason = "INTERNAL_ERROR"
+            job.error_code = "INTERNAL_ERROR"
+            job.error_text = message
+            job.completed_at = datetime.now(UTC)
+        events.append(
+            job_id,
+            "error",
+            now=datetime.now(UTC),
+            data={"code": "INTERNAL_ERROR", "message": message},
+        )
 
 
 @router.post("/generate/stream", summary="Stream one generation as it is produced")
 async def post_generate_stream(request: Request, body: GenerateBody) -> StreamingResponse:
     """Execute ``body`` and stream the routing decision, tokens and terminal result.
 
-    ``async def`` (ADR-0003 §2): this handler only streams. The execution itself runs in a worker
-    thread, and every call MirrorWall's ``sse_response`` makes back into the event source is
-    dispatched with ``anyio.to_thread.run_sync`` by that package — so nothing here can put a
-    blocking call on the event loop.
+    ``async def`` (ADR-0003 §2): this handler only streams. The reservation is one database
+    write dispatched to the threadpool; the execution itself runs in a worker thread; and every
+    call MirrorWall's ``sse_response`` makes back into the event source is dispatched with
+    ``anyio.to_thread.run_sync`` by that package — so nothing here can put a blocking call on
+    the event loop.
 
-    Terminal event is always ``result`` or ``error``, and the stream closes on it. Reconnection
-    with ``Last-Event-ID`` resumes from the events already produced.
+    Terminal event is always ``result`` or ``error``, and the stream closes on it. A repeated
+    ``idempotency_key`` attaches to the job's stream (api.md §4) and ``Last-Event-ID`` is
+    honoured there, against the persisted events; a POST with no key is a new execution with
+    its own sequence space, where a foreign ``Last-Event-ID`` would skip every frame this one
+    produces, so it is ignored.
     """
-    caller = _source(request)
-    key = None if body.idempotency_key is None else f"{caller}:{body.idempotency_key}"
-    streams = _stream_registry(request.app)
-
-    existing = streams.get(key) if key is not None else None
-    if existing is not None:
-        # api.md §4: a repeated idempotency key replays the job's events rather than re-executing.
-        # This is also what makes a reconnect work — the browser resends the same key with its
-        # `Last-Event-ID`, attaches to the stream it was already reading, and receives exactly
-        # what it missed.
-        return sse_response(
-            existing,
-            stream_id=existing.stream_id,
-            last_event_id=request.headers.get("last-event-id"),
-            generator=GENERATOR,
-            heartbeat_seconds=15.0,
-            poll_interval_seconds=0.01,
-            terminal_events=_TERMINAL_EVENTS,
+    app = request.app
+    generate_request = _to_request(body, source=source_of(request), stream=True)
+    reserved = await anyio.to_thread.run_sync(
+        partial(
+            reserve_sync_job,
+            app.state.database,
+            generate_request,
+            now=datetime.now(UTC),
+            ttl_hours=app.state.settings.queue.idempotency_ttl_hours,
         )
-
-    stream_id = f"generate-{new_id()}"
-    source = _ExecutionSource(EventBroker(), stream_id)
-    if key is not None:
-        streams[key] = source
-        while len(streams) > _MAX_RETAINED_STREAMS:
-            streams.pop(next(iter(streams)))
-    cancel = CancellationToken()
-
-    worker = threading.Thread(
-        target=_drive,
-        args=(
-            source,
-            request.app.state.database,
-            _to_request(body, source=caller, stream=True),
-            _context(request),
-            cancel,
-        ),
-        name="loadcoach-generate-stream",
-        daemon=True,
     )
-    worker.start()
-
+    sink: JobEventSink = app.state.event_sink
+    source = sink.source(app.state.database, reserved.job_id)
+    last_event_id: str | None = None
+    if reserved.created:
+        worker = threading.Thread(
+            target=_drive,
+            args=(
+                sink,
+                app.state.database,
+                reserved.job_id,
+                generate_request,
+                _context(request),
+                CancellationToken(),
+            ),
+            name="loadcoach-generate-stream",
+            daemon=True,
+        )
+        worker.start()
+    else:
+        last_event_id = request.headers.get("last-event-id")
     return sse_response(
         source,
-        stream_id=stream_id,
-        # A POST with no idempotency key is a new execution with its own sequence space, so a
-        # `Last-Event-ID` from some other stream would skip every frame this one produces and
-        # leave the connection waiting for ever. It is honoured only where it can mean something:
-        # against a stream this caller is demonstrably reconnecting to.
-        last_event_id=None,
+        stream_id=reserved.job_id,
+        last_event_id=last_event_id,
         generator=GENERATOR,
         heartbeat_seconds=15.0,
         poll_interval_seconds=0.01,
-        # api.md §4: the terminal event is always `result` or `error`. Naming them here is what
-        # closes the connection when the execution is done, rather than polling an event source
-        # that will never speak again.
-        terminal_events=frozenset({"result", "error"}),
+        terminal_events=_TERMINAL_EVENTS,
     )

@@ -24,6 +24,7 @@ in any one of those modules would make the others import it for the wrong reason
 from __future__ import annotations
 
 import threading
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -45,7 +46,25 @@ if TYPE_CHECKING:
 
     from loadcoach.services.database import Database
 
-__all__ = ["TERMINAL_JOB_EVENTS", "TOKEN_EVENT", "EventWriter", "JobEventSink", "JobEventSource"]
+__all__ = [
+    "LIVE_BUFFER_SIZE",
+    "TERMINAL_JOB_EVENTS",
+    "TERMINAL_STREAM_EVENTS",
+    "TOKEN_EVENT",
+    "EventWriter",
+    "JobEventSink",
+    "JobEventSource",
+    "is_job_event",
+]
+
+LIVE_BUFFER_SIZE = 4096
+"""How many unpersisted frames (tokens, tool calls) the sink keeps per **live** job.
+
+A subscriber that attaches after the first tokens were fanned out — the browser's stream response
+starting a few milliseconds after the execution thread — would otherwise miss them for ever,
+since they are never stored. The buffer closes that gap for the job's lifetime and is dropped
+with the terminal event: after completion a reconnect replays the persisted frames only, which
+is api.md §4's promise. Bounded, so a runaway generation costs a fixed amount of memory."""
 
 # ``TOKEN_EVENT`` is re-exported from MirrorWall rather than spelled here: the one bare
 # (un-enveloped) frame is the one MirrorWall's formatter keys on (ADR-0025 §3). api.md §5 lists it
@@ -54,6 +73,21 @@ __all__ = ["TERMINAL_JOB_EVENTS", "TOKEN_EVENT", "EventWriter", "JobEventSink", 
 
 TERMINAL_JOB_EVENTS: frozenset[str] = frozenset({"job.completed", "job.failed", "job.cancelled"})
 """After any of these, a job's stream closes (API standards §8)."""
+
+TERMINAL_STREAM_EVENTS: frozenset[str] = TERMINAL_JOB_EVENTS | {"result", "error"}
+"""Every terminal frame: a queued job's, and a synchronous execution's (api.md §4)."""
+
+
+def is_job_event(event_type: str) -> bool:
+    """Whether ``event_type`` is one of api.md §5's ``job.*`` state events.
+
+    Two frame shapes share the table. A ``job.*`` event's envelope payload is the event object —
+    entity, timestamp, message, data (API standards §8). A synchronous execution's frames —
+    ``routing``, ``result``, ``error``, ``tool_call`` — carry the document itself as the payload,
+    exactly as api.md §4 shows (``payload: {…the full response object…}``), so a client reads
+    ``payload["output"]``, not ``payload["data"]["output"]``.
+    """
+    return event_type.startswith("job.")
 
 
 def _payload(
@@ -121,7 +155,9 @@ class EventWriter:
             type=event_type,
             payload=_payload(
                 event_id=event_id, job_id=job_id, timestamp=now, message=message, data=data
-            ),
+            )
+            if is_job_event(event_type)
+            else dict(data or {}),
         )
         self.staged.append((job_id, event))
         return event
@@ -134,6 +170,7 @@ class JobEventSink:
         """Create a sink over ``broker`` (a fresh one when ``None``)."""
         self.broker = broker if broker is not None else EventBroker()
         self._high: dict[str, int] = {}
+        self._live: dict[str, deque[Event]] = {}
         self._lock = threading.Lock()
 
     @contextmanager
@@ -148,7 +185,7 @@ class JobEventSink:
             yield session, writer
         for job_id, event in writer.staged:
             self.broker.publish(job_id, event)
-            if event.type in TERMINAL_JOB_EVENTS:
+            if event.type in TERMINAL_STREAM_EVENTS:
                 self.forget(job_id)
 
     def next_sequence(self, session: Session, job_id: str) -> int:
@@ -163,17 +200,23 @@ class JobEventSink:
 
     def publish_token(self, job_id: str, payload: Mapping[str, Any]) -> Event:
         """Fan out one token delta without persisting it. Takes the next sequence number."""
+        return self.publish_live(job_id, TOKEN_EVENT, payload)
+
+    def publish_live(self, job_id: str, event_type: str, payload: Mapping[str, Any]) -> Event:
+        """Fan out one unpersisted frame (a token, a tool call), buffered while the job lives."""
         with self._lock:
             sequence = self._high.get(job_id, 0) + 1
             self._high[job_id] = sequence
-        event = Event(sequence=sequence, type=TOKEN_EVENT, payload=dict(payload))
+            event = Event(sequence=sequence, type=event_type, payload=dict(payload))
+            self._live.setdefault(job_id, deque(maxlen=LIVE_BUFFER_SIZE)).append(event)
         self.broker.publish(job_id, event)
         return event
 
     def forget(self, job_id: str) -> None:
-        """Drop the in-memory counter for a finished job so the map stays bounded."""
+        """Drop the in-memory counter and live buffer of a finished job so both stay bounded."""
         with self._lock:
             self._high.pop(job_id, None)
+            self._live.pop(job_id, None)
 
     def replay(
         self, database: Database, job_id: str, *, after_sequence: int, limit: int
@@ -190,7 +233,7 @@ class JobEventSink:
                 .scalars()
                 .all()
             )
-            return [
+            persisted = [
                 Event(
                     sequence=row.sequence,
                     type=row.event_type,
@@ -200,10 +243,24 @@ class JobEventSink:
                         timestamp=row.timestamp,
                         message=row.message,
                         data=row.data_json if isinstance(row.data_json, dict) else None,
-                    ),
+                    )
+                    if is_job_event(row.event_type)
+                    else dict(row.data_json)
+                    if isinstance(row.data_json, dict)
+                    else {},
                 )
                 for row in rows
             ]
+        with self._lock:
+            live = [e for e in self._live.get(job_id, ()) if e.sequence > after_sequence]
+        if not live:
+            return persisted
+        # Merge the live buffer in: a client attaching mid-generation gets the tokens already
+        # fanned out. Persisted rows win a sequence collision, which cannot happen while the
+        # counter is this process's; the sort keeps the batch ascending either way.
+        merged = {event.sequence: event for event in live}
+        merged.update({event.sequence: event for event in persisted})
+        return [merged[sequence] for sequence in sorted(merged)][:limit]
 
     def source(self, database: Database, job_id: str) -> JobEventSource:
         """Build the MirrorWall event source for one job's stream."""

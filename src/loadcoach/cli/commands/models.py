@@ -179,3 +179,36 @@ def refresh_models(
         f"discovered {outcome.total} model(s): {outcome.added} added, {outcome.updated} updated, "
         f"{outcome.unavailable} now unavailable"
     )
+
+
+@app.command("residency")
+def residency(
+    config: Annotated[
+        str | None, typer.Option("--config", help="Path to a config.toml file.")
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print JSON instead of a table.")
+    ] = False,
+) -> None:
+    """Which models are resident, on which device, and for how long (queue §6). Mode: local.
+
+    Example:
+        loadcoach models residency --json
+    """
+    from loadcoach.services.status import residency_rows
+
+    with _open_database(config) as database:
+        rows = residency_rows(database)
+    if json_output:
+        typer.echo(json.dumps(rows))
+        return
+    if not rows:
+        typer.echo("nothing resident (or the provider cannot report residency)")
+        return
+    for row in rows:
+        vram = row["vram_bytes"]
+        typer.echo(
+            f"{row['canonical_id']}  gpu {row['gpu_index']}  "
+            f"{'unknown' if vram is None else f'{vram / 1024**3:.1f} GiB'}  "
+            f"last used {row['last_used_at']}"
+        )

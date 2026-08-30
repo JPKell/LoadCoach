@@ -29,6 +29,7 @@ import logging
 import random
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, cast
@@ -299,6 +300,7 @@ class QueueRuntime:
     breaker_source: Callable[[datetime], Mapping[str, Sequence[AttemptSample]]] | None = None
     jitter: Callable[[], float] = random.random
     last_recovery: RecoverySummary | None = None
+    dispatch_samples_ms: deque[float] = field(default_factory=lambda: deque(maxlen=100))
     workers: list[Worker] = field(default_factory=list)
     scheduler: Scheduler | None = None
     _threads: list[threading.Thread] = field(default_factory=list)
@@ -306,6 +308,18 @@ class QueueRuntime:
     def provider_facts(self) -> ProviderFacts:
         """Read the provider's declared capabilities."""
         return provider_facts_for(self.provider)
+
+    def replace_provider(self, provider: Provider) -> None:
+        """Point the workers and the residency policy at ``provider`` from now on.
+
+        For a test that scripts a provider after the application lifespan built the default one;
+        the residency service is rebuilt because it holds its own handle.
+        """
+        self.provider = provider
+        self.residency = ResidencyService(
+            self.database, provider, settings=self.settings.residency, clock=self.clock
+        )
+        self.resident_model_ids = self.residency.resident_model_ids
 
     def refresh_breakers(self, now: datetime) -> None:
         """Re-evaluate every breaker from the sample source's last window."""
@@ -481,6 +495,10 @@ class Worker:
         )
         if job is not None:
             self._streak = self._streak + 1 if job.by_affinity else 0
+            # Dispatch latency (performance targets §3.3): eligible -> claimed, for the status
+            # page. Bounded window, so it reflects the recent past rather than the process's life.
+            waited = (runtime.clock() - job.scheduled_for).total_seconds() * 1000
+            runtime.dispatch_samples_ms.append(max(waited, 0.0))
         return job
 
     # ---------------------------------------------------------------------------- one job

@@ -29,7 +29,7 @@ def test_server_boots_with_zero_configuration_and_serves_health(client: TestClie
     body = response.json()
     assert body["status"] == "ok"
     names = {component["name"] for component in body["components"]}
-    assert names == {"database", "provider"}
+    assert names == {"database", "provider", "queue"}
 
 
 def test_health_reports_degraded_with_no_provider(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -27,7 +27,10 @@ async def health(request: Request) -> JSONResponse:
     asked.
     """
     report = get_health_report(
-        database=request.app.state.database, provider=request.app.state.provider
+        database=request.app.state.database,
+        provider=request.app.state.provider,
+        settings=request.app.state.settings,
+        queue_runtime=request.app.state.queue_runtime,
     )
     status_code = 200 if report.status in ("ok", "degraded") else 503
     return JSONResponse(status_code=status_code, content=report.model_dump(mode="json"))

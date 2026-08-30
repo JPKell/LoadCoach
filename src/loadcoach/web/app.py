@@ -41,7 +41,9 @@ from loadcoach.services.job_events import JobEventSink
 from loadcoach.services.worker import build_runtime
 from loadcoach.web.rendering import templates
 from loadcoach.web.routes import generate as generate_routes
+from loadcoach.web.routes import jobs as jobs_routes
 from loadcoach.web.routes import models as models_routes
+from loadcoach.web.routes import queue as queue_routes
 from loadcoach.web.routes import routing as routing_routes
 from loadcoach.web.routes import system as system_routes
 from loadcoach.web.routes import task_profiles as task_profiles_routes
@@ -68,6 +70,13 @@ _STATUS_BY_CODE: dict[str, int] = {
     "CONTEXT_LIMIT_EXCEEDED": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "CAPABILITY_UNSUPPORTED": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "INSUFFICIENT_RESOURCES": status.HTTP_503_SERVICE_UNAVAILABLE,
+    "QUEUE_FULL": status.HTTP_429_TOO_MANY_REQUESTS,
+    "JOB_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+    "JOB_NOT_CANCELLABLE": status.HTTP_409_CONFLICT,
+    "TRANSITION_REFUSED": status.HTTP_409_CONFLICT,
+    "ILLEGAL_TRANSITION": status.HTTP_409_CONFLICT,
+    "MAX_WAIT_EXCEEDED": status.HTTP_504_GATEWAY_TIMEOUT,
+    "ATTEMPT_REFUSED": status.HTTP_409_CONFLICT,
     "DATABASE_ERROR": status.HTTP_500_INTERNAL_SERVER_ERROR,
     "DATABASE_UNAVAILABLE": status.HTTP_503_SERVICE_UNAVAILABLE,
     "MIGRATION_REQUIRED": status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -249,8 +258,8 @@ def create_app(settings: Settings) -> FastAPI:
 
     Registers, from outermost to innermost: MirrorWall's request-ID middleware, its Host-header
     validation, the standard error envelope handlers, the ``/api/v1`` routes (system, models,
-    task-profiles, routing), the HTML pages at ``/models``, ``/task-profiles`` and ``/routing``,
-    and MirrorWall's static assets.
+    task-profiles, routing, generation, jobs, queue), the HTML pages at ``/models``,
+    ``/task-profiles``, ``/routing``, ``/jobs`` and ``/queue``, and MirrorWall's static assets.
 
     Still a pure function of its arguments — it opens nothing; the database and provider handles
     are created by the lifespan, which runs only when the application is actually served (or when
@@ -280,9 +289,13 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(task_profiles_routes.router, prefix="/api/v1")
     app.include_router(routing_routes.router, prefix="/api/v1")
     app.include_router(generate_routes.router, prefix="/api/v1")
+    app.include_router(jobs_routes.router, prefix="/api/v1")
+    app.include_router(queue_routes.router, prefix="/api/v1")
     app.include_router(models_routes.ui_router)
     app.include_router(task_profiles_routes.ui_router)
     app.include_router(routing_routes.ui_router)
+    app.include_router(jobs_routes.ui_router)
+    app.include_router(queue_routes.ui_router)
 
     # MirrorWall's own assets, served from the installed package: no CDN, no network request at
     # page load. Passing the environment swaps the plain `asset_url` filter for the hashing one,

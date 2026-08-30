@@ -207,43 +207,51 @@ def test_a_reconnect_with_the_same_idempotency_key_resumes_without_repeating(
     """Acceptance criterion 2: streaming survives a reconnect.
 
     A browser that refreshes mid-stream reconnects with the same idempotency key and the
-    ``Last-Event-ID`` of the last frame it saw. It must attach to the execution already running
-    (api.md §4: a repeated key replays rather than re-executing), and receive exactly the frames
-    it missed — no gap, no duplicate, and no second generation.
+    ``Last-Event-ID`` of the last frame it saw. It must attach to the job already running or
+    finished (api.md §4: a repeated key replays rather than re-executing) and receive the
+    **persisted** frames after that ID — the terminal ``result``, which carries the whole output —
+    with no duplicate and no second generation. Token frames are fanned out live and never stored
+    (LCX19's durable design), so they are not replayed; the result is.
     """
     with _client(tmp_path, monkeypatch, script) as client:
         body = {"task": "general.chat", "prompt": "hello", "idempotency_key": "01JRECONNECT"}
         first = _frames(_stream(client, body))
         assert first, "the first connection produced nothing"
-        # Pretend the browser dropped after the second frame.
-        cut_after = 2
-        seen = [int(identifier) for identifier, _, _ in first if identifier][:cut_after]
-
-        resumed = _frames(_stream(client, body, headers={"Last-Event-ID": str(seen[-1])}))
+        assert first[0][1] == "routing" and first[-1][1] == "result"
+        # Pretend the browser dropped after the routing frame.
+        routing_id = int(first[0][0] or "0")
+        resumed = _frames(_stream(client, body, headers={"Last-Event-ID": str(routing_id)}))
 
     resumed_sequences = [int(identifier) for identifier, _, _ in resumed if identifier]
-    all_sequences = [int(identifier) for identifier, _, _ in first if identifier]
     assert resumed_sequences, "the resumed stream produced nothing"
-    # Gap-free: it continues exactly where the client stopped.
-    assert min(resumed_sequences) == seen[-1] + 1
-    # Duplicate-free, and complete: the two halves reassemble into the original stream.
-    assert seen + resumed_sequences == all_sequences
+    assert min(resumed_sequences) > routing_id  # nothing already seen is repeated
     assert resumed[-1][1] == "result", "the reconnect did not receive the terminal frame"
+    assert [event for _, event, _ in resumed] == ["result"]  # persisted frames only
+    first_result = next(data for _, event, data in first if event == "result" and data)
+    again_result = resumed[-1][2] or ""
+    first_job = setspec.load_envelope(
+        first_result, expect="event.envelope", supported=[SchemaVersion(1, 0)]
+    ).payload["job_id"]
+    again_job = setspec.load_envelope(
+        again_result, expect="event.envelope", supported=[SchemaVersion(1, 0)]
+    ).payload["job_id"]
+    assert first_job == again_job, "the reconnect executed a second time"
 
 
 def test_a_reconnect_after_completion_replays_rather_than_re_executing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script: FakeScript
 ) -> None:
+    """api.md §4: a repeated key replays the completed job's ``result`` event."""
     with _client(tmp_path, monkeypatch, script) as client:
         body = {"task": "general.chat", "prompt": "hello", "idempotency_key": "01JAGAIN"}
         first = _frames(_stream(client, body))
         again = _frames(_stream(client, body))
+        jobs = client.get("/api/v1/jobs").json()["items"]
 
-    assert [event for _, event, _ in first] == [event for _, event, _ in again]
+    assert [event for _, event, _ in first][0] == "routing"
+    assert [event for _, event, _ in again] == ["routing", "result"]  # the persisted frames
     first_result = next(data for _, event, data in first if event == "result" and data)
     again_result = next(data for _, event, data in again if event == "result" and data)
-    assert first_result is not None
-    assert again_result is not None
     first_job = setspec.load_envelope(
         first_result, expect="event.envelope", supported=[SchemaVersion(1, 0)]
     ).payload["job_id"]
@@ -251,6 +259,7 @@ def test_a_reconnect_after_completion_replays_rather_than_re_executing(
         again_result, expect="event.envelope", supported=[SchemaVersion(1, 0)]
     ).payload["job_id"]
     assert first_job == again_job, "the repeated key executed a second time"
+    assert [job["job_id"] for job in jobs] == [first_job]  # one row, one execution
 
 
 def test_a_stale_last_event_id_on_a_new_execution_does_not_hang_the_stream(
