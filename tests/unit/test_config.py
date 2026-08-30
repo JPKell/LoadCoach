@@ -126,3 +126,30 @@ def test_env_csv_split_for_tuple_fields(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.setenv("LOADCOACH_SERVER__HOST", "a.example.com")
     loaded = load_settings(config_path=tmp_path / "missing.toml")
     assert loaded.settings.server.allowed_hosts == ("a.example.com", "b.example.com")
+
+
+def test_queue_lease_margin_exactly_three_times_is_accepted(tmp_path: Path) -> None:
+    """LC8, settled: exactly 3x is safe because the keeper is late by at most one scheduler tick.
+
+    The shipped defaults are 60 / 20; a lease renewed every 20 s to now + 60 s survives two
+    consecutive missed renewals, and is lost only when the scheduler thread has stalled for more
+    than 40 s — the condition a lease exists to detect.
+    """
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("[queue]\nlease_seconds = 30\nlease_renewal_interval_seconds = 10\n")
+    loaded = load_settings(config_path=config_file)
+    assert loaded.settings.queue.lease_seconds == 30
+    assert loaded.settings.queue.lease_renewal_interval_seconds == 10
+
+
+def test_queue_idempotency_ttl_and_watchdog_defaults(tmp_path: Path) -> None:
+    """The two settings the queue's documents assume (data model §2, api.md §4, queue §9)."""
+    loaded = load_settings(config_path=tmp_path / "missing.toml")
+    assert loaded.settings.queue.idempotency_ttl_hours == 24.0
+    assert loaded.settings.queue.cancelling_watchdog_seconds == 30
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("[queue]\nidempotency_ttl_hours = 0\n")
+    from baseaicore import ConfigurationError
+
+    with pytest.raises(ConfigurationError, match="idempotency_ttl_hours"):
+        load_settings(config_path=config_file)

@@ -164,3 +164,61 @@ def test_failed_migration_restores_backup_on_sqlite(tmp_path: Path) -> None:
         with engine.connect() as connection:
             rows = connection.execute(text("SELECT key FROM settings")).fetchall()
         assert [row[0] for row in rows] == ["k"]
+
+
+def test_migration_0004_adds_residency_and_fixes_the_claim_index_direction() -> None:
+    """P5's migration: the ``residency`` table (data model §2) and the claim index's ``DESC``.
+
+    ``0003`` created ``(state, effective_priority, created_at)`` ascending; the data model names
+    ``(state, effective_priority DESC, created_at)``. The direction is what lets the claim's
+    ``ORDER BY effective_priority DESC, created_at ASC`` walk the index — without it SQLite sorts
+    every equal-priority job through a temp B-tree on every claim, and ``EXPLAIN QUERY PLAN``
+    is the witness either way.
+    """
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(backup=False)
+        with engine.connect() as connection:
+            names = {
+                row[0]
+                for row in connection.execute(
+                    text("SELECT name FROM sqlite_master WHERE type = 'table'")
+                )
+            }
+            assert "residency" in names
+            columns = {
+                row[1]
+                for row in connection.execute(text("PRAGMA table_info(residency)")).fetchall()
+            }
+            assert columns == {
+                "id",
+                "model_id",
+                "gpu_index",
+                "loaded_at",
+                "last_used_at",
+                "vram_bytes",
+                "vram_bytes_unavailable_reason",
+                "resident",
+                "unloaded_at",
+                "unload_reason",
+            }
+            index_sql = connection.execute(
+                text(
+                    "SELECT sql FROM sqlite_master "
+                    "WHERE name = 'ix_jobs_state_effective_priority_created_at'"
+                )
+            ).scalar_one()
+            assert "effective_priority DESC" in index_sql
+            plan = [
+                row[3]
+                for row in connection.execute(
+                    text(
+                        "EXPLAIN QUERY PLAN SELECT id FROM jobs WHERE state = 'queued' "
+                        "AND scheduled_for <= '2026-01-01 00:00:00' "
+                        "ORDER BY effective_priority DESC, created_at ASC LIMIT 1"
+                    )
+                ).fetchall()
+            ]
+            assert any("ix_jobs_state_effective_priority_created_at" in step for step in plan)
+            assert not any("TEMP B-TREE" in step for step in plan), plan
+            assert not any(step.startswith("SCAN") for step in plan), plan

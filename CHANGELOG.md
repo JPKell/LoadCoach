@@ -7,6 +7,26 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Added
+- Phase 5, unit 1: the queue's schema and pure domain.
+  - Migration `0004`: the `residency` table (data model §2, ADR-0027), with the
+    `vram_bytes`/`vram_bytes_unavailable_reason` measurement pair; and the claim index recreated as
+    `(state, effective_priority DESC, created_at)` — `0003` had it ascending throughout, which made
+    SQLite sort every equal-priority job through a temp B-tree on each claim.
+  - `domain/queue_state.py`: the job state machine — queue §2's table plus ADR-0036's six recovery
+    and cancellation edges; every unlisted pair is rejected and a test enumerates all 121.
+  - `domain/priority.py`: the four classes and their bands, `base_priority` (the band is not
+    escapable), `effective_priority` (queue §4's formula, capped at band top + overflow) and the
+    starvation threshold (half the job's own `max_wait_seconds`).
+  - `queue.idempotency_ttl_hours` (default 24) and `queue.cancelling_watchdog_seconds` (default
+    30) in `QueueSettings`; both were assumed by the data model, api.md §4 and queue §9 but were
+    missing from the configuration.
+
+### Changed
+- `queue.lease_seconds >= 3 x lease_renewal_interval_seconds` is now the settled boundary (LC8):
+  the keeper is late by at most one scheduler tick, so exactly 3x survives two consecutive missed
+  renewals and is lost only when the scheduler thread has stalled for more than two intervals.
+
 ### Changed
 - Widened the `sweatmeter` pin to `>=0.4,<0.5`. SweatMeter's first published release is `0.4.0`
   (`0.3.0` completed its development plan but never reached the index), and it adds the in-process

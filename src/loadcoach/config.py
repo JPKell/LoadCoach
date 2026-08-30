@@ -296,19 +296,45 @@ class QueueSettings(BaseModel):
     ageing_priority_per_minute: float = Field(default=1.0, ge=0, examples=[1.0])
     overflow_allowance: int = Field(default=100, ge=0, examples=[100])
     max_affinity_streak: int = Field(default=5, ge=1, examples=[5])
+    idempotency_ttl_hours: float = Field(
+        default=24.0,
+        gt=0,
+        description=(
+            "How long a job's idempotency key stays reserved after enqueue. A key reused after "
+            "this starts new work rather than replaying an old result (api.md §4, data model §2)."
+        ),
+        examples=[24.0],
+    )
+    cancelling_watchdog_seconds: int = Field(
+        default=30,
+        ge=1,
+        description=(
+            "How long a job may sit in `cancelling` before the scheduler forces it to `cancelled` "
+            "and records that it did (queue §8, §9)."
+        ),
+        examples=[30],
+    )
 
     @model_validator(mode="after")
     def _check_lease_renewal_margin(self) -> QueueSettings:
-        """Refuse a lease shorter than the renewal cadence it must outlive.
+        """Refuse a lease shorter than three renewal intervals.
 
-        The shipped defaults (``lease_seconds=60``, ``lease_renewal_interval_seconds=20``) sit
-        exactly at the 3x boundary, so the refusal is ``<`` (strictly below), not ``<=`` — a
-        fresh, zero-configuration install must validate cleanly (spec §20 AC1).
+        Exactly 3x — the shipped ``60 / 20`` — is accepted, and is safe given how the keeper is
+        scheduled. The lease keeper runs on the scheduler thread, which is woken every
+        ``poll_interval_ms`` (250 ms) and renews every in-flight lease to ``now + lease_seconds``
+        as soon as ``lease_renewal_interval_seconds`` have elapsed since the last renewal — so a
+        renewal is late by at most one scheduler tick, never by a whole interval. At 3x, a lease
+        renewed at ``t`` still has ``lease_seconds - interval`` (40 s) left when the next renewal
+        is due, and survives **two** consecutive missed renewals; it is lost only when the
+        scheduler thread has stalled for more than ``2 x interval`` (40 s), which is precisely the
+        condition a lease exists to detect (ADR-0029 §4). The "+ slack" the spec comment asks for
+        is therefore already inside the 3x: the slack is one full interval, not a fraction of one.
 
         Raises:
             ValueError: ``lease_seconds`` is below 3x ``lease_renewal_interval_seconds`` — a lease
-                that could expire before it is renewed three times over would let a
-                slow-but-alive worker's job be reclaimed out from under it.
+                that could expire after a single missed renewal would let a slow-but-alive
+                worker's job be reclaimed out from under it, which is the double-execution defect
+                the atomic claim exists to prevent.
         """
         if self.lease_seconds < 3 * self.lease_renewal_interval_seconds:
             raise ValueError(
@@ -374,7 +400,7 @@ class EvidenceSettings(BaseModel):
 
 
 class ResidencySettings(BaseModel):
-    """``[residency]`` — model unload policy (Phase 4)."""
+    """``[residency]`` — model unload policy, per device (Phase 5, queue §6)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -700,6 +726,8 @@ max_wait_seconds = 3600
 ageing_priority_per_minute = 1.0
 overflow_allowance = 100
 max_affinity_streak = 5
+idempotency_ttl_hours = 24.0          # a key is reserved this long, then released
+cancelling_watchdog_seconds = 30      # a job never stays in `cancelling` longer than this
 
 [routing]
 strategy = "weighted_evidence"

@@ -10,8 +10,10 @@ recreated by batch mode gets an auto-generated name that differs from the one th
 and the parity check (database standards §5.2) fails forever on a schema that is actually correct.
 
 ``models``, ``model_capabilities``, ``runtime_profiles`` and ``task_profiles`` come from Phase 1's
-migration ``0001``; ``routing_decisions`` and ``routing_candidates`` from Phase 3's ``0002``.
-``settings`` and ``api_tokens`` mirror FreeWeight's own tables (data model §2).
+migration ``0001``; ``routing_decisions`` and ``routing_candidates`` from Phase 3's ``0002``;
+``jobs``, ``job_attempts``, ``job_events`` and ``validations`` from Phase 4's ``0003``; and
+``residency`` from Phase 5's ``0004``. ``settings`` and ``api_tokens`` mirror FreeWeight's own
+tables (data model §2).
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from weightsdb import PortableJSON, UtcDateTime, ulid_primary_key
+from weightsdb import PortableJSON, UtcDateTime, measurement_columns, ulid_primary_key
 
 __all__ = [
     "ApiToken",
@@ -39,6 +41,7 @@ __all__ = [
     "JobAttempt",
     "JobEvent",
     "ModelCapability",
+    "Residency",
     "RoutingCandidate",
     "RoutingDecision",
     "RuntimeProfile",
@@ -317,21 +320,21 @@ class Job(Base):
     migration ``0002`` because a nullable foreign key to a table that did not exist yet is not a
     column, it is a migration that cannot run.
 
-    Queue columns (``class``, priorities, lease, ``scheduled_for``, ``max_wait_seconds``) are
-    declared now and written only by Phase 5. Declaring them here rather than in a later migration
-    keeps one table definition rather than two, and costs nothing: an unwritten nullable column is
-    free.
+    Queue columns (``class``, priorities, lease, ``scheduled_for``, ``max_wait_seconds``) were
+    declared by Phase 4 and are written by Phase 5. Declaring them there rather than in a later
+    migration kept one table definition rather than two, and cost nothing: an unwritten nullable
+    column is free.
+
+    The claim index is ``(state, effective_priority DESC, created_at)`` — the direction matters.
+    The claim orders by ``effective_priority DESC, created_at ASC`` and an index ascending on both
+    columns can serve only the first term, leaving SQLite to sort the whole equal-priority group
+    through a temp B-tree on every claim (``EXPLAIN QUERY PLAN`` says so). Migration ``0004``
+    recreated the index with the direction the data model always named.
     """
 
     __tablename__ = "jobs"
     __table_args__ = (
         UniqueConstraint("source", "idempotency_key"),
-        Index(
-            "ix_jobs_state_effective_priority_created_at",
-            "state",
-            "effective_priority",
-            "created_at",
-        ),
         Index("ix_jobs_task_profile_id_created_at", "task_profile_id", "created_at"),
         Index("ix_jobs_selected_model_id_created_at", "selected_model_id", "created_at"),
         Index("ix_jobs_lease_expires_at", "lease_expires_at"),
@@ -393,6 +396,17 @@ class Job(Base):
     degradations_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String, nullable=True)
     error_text: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+# Declared after the class so the direction can be expressed on the column itself
+# (``effective_priority.desc()``) rather than as opaque SQL text, which Alembic's parity check
+# cannot compare against the reflected index.
+Index(
+    "ix_jobs_state_effective_priority_created_at",
+    Job.state,
+    Job.effective_priority.desc(),
+    Job.created_at,
+)
 
 
 class JobAttempt(Base):
@@ -467,3 +481,36 @@ class Validation(Base):
     detail_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+
+
+class Residency(Base):
+    """One model's presence on one device (data model's ``residency``; queue §6, ADR-0027).
+
+    A row is one *residency episode*: the model was loaded on ``gpu_index`` at ``loaded_at`` and,
+    if ``resident`` is false, unloaded at ``unloaded_at`` for ``unload_reason``. A model loaded
+    twice has two rows, which is what makes load counts and idle times readable after the fact.
+    ``max_resident_models`` is interpreted per ``gpu_index``.
+
+    ``vram_bytes`` and ``vram_bytes_unavailable_reason`` follow
+    :func:`weightsdb.measurement_columns`: a provider that cannot report device memory leaves the
+    value ``NULL`` and the reason set, so "not measured" and "not measurable here" stay
+    distinguishable (ADR-0016).
+    """
+
+    __tablename__ = "residency"
+    __table_args__ = (
+        UniqueConstraint("model_id", "gpu_index", "loaded_at"),
+        Index("ix_residency_resident_gpu_index", "resident", "gpu_index"),
+    )
+
+    id: Mapped[str] = ulid_primary_key()
+    model_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("models.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    gpu_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    loaded_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+    last_used_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+    vram_bytes, vram_bytes_unavailable_reason = measurement_columns("vram_bytes")
+    resident: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    unloaded_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    unload_reason: Mapped[str | None] = mapped_column(String, nullable=True)
