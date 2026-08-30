@@ -14,6 +14,7 @@ import typer
 
 from loadcoach.cli.commands import config as config_commands
 from loadcoach.cli.commands import db as db_commands
+from loadcoach.cli.commands import evidence as evidence_commands
 from loadcoach.cli.commands import job as job_commands
 from loadcoach.cli.commands import models as models_commands
 from loadcoach.cli.commands import queue as queue_commands
@@ -68,3 +69,6 @@ app.add_typer(
 )
 app.add_typer(job_commands.app, name="job", help="Submit, inspect, cancel and wait for jobs.")
 app.add_typer(queue_commands.app, name="queue", help="Queue status and operator controls.")
+app.add_typer(
+    evidence_commands.app, name="evidence", help="FreeWeight evidence import and inspection."
+)

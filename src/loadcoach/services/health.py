@@ -9,8 +9,9 @@ coincidence. Not in the Phase 1 file list verbatim, but required by it for the s
 
 Phase 1 reported two components — ``database`` and ``provider``; Phase 5 adds ``queue`` (queue
 §11: degraded when the starvation counter is non-zero, depth exceeds a fraction of ``max_depth``,
-or any circuit breaker is open). ``evidence`` and ``gpu_telemetry`` (spec §17) arrive with the
-phases that build them.
+or any circuit breaker is open); Phase 6 adds ``evidence``, whose ``not_configured`` state is
+healthy rather than degraded because LoadCoach is designed to run without FreeWeight (spec §6).
+``gpu_telemetry`` (spec §17) arrives with the phase that builds it.
 """
 
 from __future__ import annotations
@@ -198,6 +199,68 @@ def _queue_component(
         return HealthComponent(name="queue", status="degraded", detail=f"unreadable: {exc}")
 
 
+def _evidence_component(
+    database: Database | None, settings: Settings | None, clock: Clock
+) -> HealthComponent:
+    """Build the ``evidence`` component (spec §17, and P6's degradation contract).
+
+    Four states, and the first two must not be confused:
+
+    * ``not_configured`` — ``[evidence] freeweight_url`` is empty and nothing has been imported.
+      This is a **healthy** state: LoadCoach routes on declared capabilities and priors, and says
+      so. Reporting it as degraded would tell an operator to fix something that is not broken.
+    * ``degraded`` — a source is configured but unreachable, refused or failing, or every
+      imported record is stale. The last import is retained and still in use.
+    * ``degraded`` — configured, reachable, but nothing imported yet.
+    * ``ok`` — evidence is present and at least some of it is fresh and bound.
+    """
+    from loadcoach.config import ConfigurationError, load_settings
+    from loadcoach.services.database import Database
+    from loadcoach.services.evidence import evidence_overview
+
+    if settings is None:
+        try:
+            settings = load_settings().settings
+        except ConfigurationError as exc:
+            return HealthComponent(
+                name="evidence", status="degraded", detail=f"configuration: {exc.message}"
+            )
+    configured = settings.evidence.freeweight_url.strip()
+
+    def evaluate(handle: Database) -> HealthComponent:
+        overview = evidence_overview(handle, configured_url=configured)
+        status: ComponentStatus
+        if overview.status == "not_configured":
+            status = "not_configured"
+        elif overview.status == "ok" and overview.stale < overview.rows:
+            status = "ok"
+        else:
+            status = "degraded"
+        age = ""
+        if overview.newest_measured_at is not None:
+            days = max(0, int((clock() - overview.newest_measured_at).total_seconds() // 86400))
+            age = f" newest measurement {days} d old."
+        return HealthComponent(name="evidence", status=status, detail=f"{overview.note}{age}")
+
+    if database is not None:
+        try:
+            return evaluate(database)
+        except Exception as exc:  # noqa: BLE001 — unreadable evidence is degraded, not a crash
+            return HealthComponent(name="evidence", status="degraded", detail=f"unreadable: {exc}")
+    database_url = settings.storage.database_url
+    if database_url is None:  # pragma: no cover — StorageSettings always fills this in
+        return HealthComponent(
+            name="evidence", status="degraded", detail="no database_url configured"
+        )
+    try:
+        with Database.from_url(
+            database_url, statement_timeout_ms=settings.storage.statement_timeout_ms
+        ) as opened:
+            return evaluate(opened)
+    except Exception as exc:  # noqa: BLE001 — unreadable evidence is degraded, not a crash
+        return HealthComponent(name="evidence", status="degraded", detail=f"unreadable: {exc}")
+
+
 def get_health_report(
     *,
     database: Database | None = None,
@@ -231,6 +294,7 @@ def get_health_report(
         _database_component(database),
         _provider_component(provider),
         _queue_component(database, settings, queue_runtime, clock),
+        _evidence_component(database, settings, clock),
     )
     worst = max(
         (

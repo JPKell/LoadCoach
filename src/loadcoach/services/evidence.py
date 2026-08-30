@@ -68,19 +68,27 @@ if TYPE_CHECKING:
 
 __all__ = [
     "BUNDLE_SCHEMA",
+    "DEFAULT_EVIDENCE_LIMIT",
+    "MAX_EVIDENCE_LIMIT",
     "MAX_PARSE_BYTES",
     "EvidenceImportFailed",
     "EvidenceSchemaVersionUnsupported",
+    "CapabilityCoverage",
+    "EvidencePage",
+    "EvidenceQuery",
+    "EvidenceRow",
     "ImportOutcome",
     "RejectedRecord",
     "RebindOutcome",
     "SourceStatus",
     "bound_signals_for_routing",
+    "capability_coverage",
     "credential_for",
     "evidence_overview",
     "import_bundle",
     "last_generated_at",
     "list_sources",
+    "query_evidence",
     "mark_source_unreachable",
     "rebind_evidence",
     "rebind_evidence_in",
@@ -690,6 +698,7 @@ def _row_values(  # noqa: PLR0913 — one row, every column named
         "vocabulary_version": record.vocabulary_version,
         "stale": staleness.stale,
         "stale_reason": staleness.reason,
+        "record_json": dumped,
     }
 
 
@@ -1253,3 +1262,247 @@ def _calibration_of(value: object) -> CalibrationFacts | None:
         )
     except (KeyError, TypeError, ValueError):
         return None
+
+
+DEFAULT_EVIDENCE_LIMIT: Final[int] = 50
+"""Page size for ``GET /evidence`` when the caller does not say."""
+
+MAX_EVIDENCE_LIMIT: Final[int] = 500
+"""The largest page ``GET /evidence`` will produce, so one request cannot ask for the whole
+table."""
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceQuery:
+    """``GET /evidence``'s filters (api.md §7).
+
+    Attributes:
+        capability: Exact capability ID.
+        model: Canonical ID.
+        match_state: ``bound``, ``unmatched`` or ``ambiguous_name_only``.
+        min_confidence: Records at or above this confidence.
+        stale: ``True`` for stale records only, ``False`` for fresh only, ``None`` for both.
+        limit: Page size.
+        cursor: The previous page's ``next_cursor`` — the last row's ULID.
+    """
+
+    capability: str | None = None
+    model: str | None = None
+    match_state: str | None = None
+    min_confidence: float | None = None
+    stale: bool | None = None
+    limit: int = DEFAULT_EVIDENCE_LIMIT
+    cursor: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceRow:
+    """One stored record, in the shape the page and the API both read.
+
+    Attributes:
+        row_id: The ``capability_evidence`` ULID; also the pagination cursor.
+        canonical_id: The measured model.
+        capability_id: The capability.
+        match_state: Whether it scores.
+        score: The measured ability.
+        confidence: FreeWeight's number, applied never recomputed.
+        sample_count: Samples behind the score.
+        excluded_count: Samples excluded, visibly.
+        runtime_profile_hash: The profile it was measured under.
+        machine_fingerprint: The machine it was measured on.
+        measured_at: What freshness decays from.
+        imported_at: When it arrived here.
+        age_days: Age at the moment of the query.
+        stale: Its staleness badge.
+        stale_reason: Which of the four reasons raised it.
+        policy_version: The confidence policy it was computed under.
+        source_key: Which producer supplied it.
+        goal: The ADR-0032 goal group, on a ``user.*`` record.
+        record: The ``capability.evidence`` payload as it arrived, for the SetSpec envelope.
+    """
+
+    row_id: str
+    canonical_id: str
+    capability_id: str
+    match_state: str
+    score: float
+    confidence: float
+    sample_count: int
+    excluded_count: int
+    runtime_profile_hash: str
+    machine_fingerprint: str
+    measured_at: datetime
+    imported_at: datetime
+    age_days: int
+    stale: bool
+    stale_reason: str | None
+    policy_version: str
+    source_key: str
+    goal: dict[str, Any] | None
+    record: dict[str, Any] | None
+
+    def as_envelope(self, *, generator_version: str) -> str:
+        """Render this row as a ``capability.evidence`` SetSpec envelope (ADR-0025 §2).
+
+        The payload is the producer's own document, re-emitted unchanged; the envelope's
+        ``generator`` names **LoadCoach**, because ADR-0025 §3 makes the generator the
+        application doing the writing and this response is LoadCoach's.
+
+        Args:
+            generator_version: LoadCoach's version.
+
+        Returns:
+            Canonical JSON for one envelope.
+        """
+        from setspec import GeneratorInfo, SchemaVersion, dump_envelope
+
+        return dump_envelope(
+            self.record or {},
+            schema="capability.evidence",
+            version=SchemaVersion(1, 0),
+            generator=GeneratorInfo(name="loadcoach", version=generator_version),
+            generated_at=self.imported_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EvidencePage:
+    """One page of evidence rows, with the cursor for the next."""
+
+    items: tuple[EvidenceRow, ...]
+    limit: int
+    next_cursor: str | None
+    has_more: bool
+    total: int
+
+
+def query_evidence(database: Database, query: EvidenceQuery, *, now: datetime) -> EvidencePage:
+    """Read imported evidence, filtered and paged (api.md §7).
+
+    Args:
+        database: The application's database handle.
+        query: The filters and page window.
+        now: The instant ages are measured from.
+
+    Returns:
+        The :class:`EvidencePage`.
+    """
+    from sqlalchemy import func, select
+
+    limit = max(1, min(query.limit, MAX_EVIDENCE_LIMIT))
+    statement = select(CapabilityEvidence)
+    if query.capability:
+        statement = statement.where(CapabilityEvidence.capability_id == query.capability)
+    if query.model:
+        statement = statement.where(CapabilityEvidence.canonical_id == query.model)
+    if query.match_state:
+        statement = statement.where(CapabilityEvidence.match_state == query.match_state)
+    if query.min_confidence is not None:
+        statement = statement.where(CapabilityEvidence.confidence >= query.min_confidence)
+    if query.stale is not None:
+        statement = statement.where(CapabilityEvidence.stale.is_(query.stale))
+
+    with database.read() as session:
+        total = int(
+            session.execute(select(func.count()).select_from(statement.subquery())).scalar_one()
+        )
+        paged = statement
+        if query.cursor:
+            paged = paged.where(CapabilityEvidence.id > query.cursor)
+        rows = (
+            session.execute(paged.order_by(CapabilityEvidence.id).limit(limit + 1)).scalars().all()
+        )
+        sources = {row.id: row.source_key for row in session.query(EvidenceSource).all()}
+        has_more = len(rows) > limit
+        window = rows[:limit]
+        items = tuple(
+            EvidenceRow(
+                row_id=row.id,
+                canonical_id=row.canonical_id,
+                capability_id=row.capability_id,
+                match_state=row.match_state,
+                score=row.score,
+                confidence=row.confidence,
+                sample_count=row.sample_count,
+                excluded_count=row.excluded_count,
+                runtime_profile_hash=row.runtime_profile_hash,
+                machine_fingerprint=row.machine_fingerprint,
+                measured_at=row.measured_at,
+                imported_at=row.imported_at,
+                age_days=max(0, int((now - row.measured_at).total_seconds() // 86400)),
+                stale=bool(row.stale),
+                stale_reason=row.stale_reason,
+                policy_version=row.policy_version,
+                source_key=sources.get(row.source_id, row.source_id),
+                goal=row.goal_json if isinstance(row.goal_json, dict) else None,
+                record=row.record_json if isinstance(row.record_json, dict) else None,
+            )
+            for row in window
+        )
+    return EvidencePage(
+        items=items,
+        limit=limit,
+        next_cursor=items[-1].row_id if items and has_more else None,
+        has_more=has_more,
+        total=total,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityCoverage:
+    """How well one capability is covered by imported evidence (dev-plan P6's UI requirement).
+
+    Attributes:
+        capability_id: The capability.
+        models: How many distinct models carry evidence for it.
+        bound: How many of those records score.
+        stale: How many carry a staleness badge.
+        best_score: The highest score among **bound** records — the one routing could use.
+        best_confidence: That record's confidence.
+        newest_measured_at: The freshest measurement for this capability.
+        oldest_measured_at: The oldest.
+    """
+
+    capability_id: str
+    models: int
+    bound: int
+    stale: int
+    best_score: float | None
+    best_confidence: float | None
+    newest_measured_at: datetime | None
+    oldest_measured_at: datetime | None
+
+
+def capability_coverage(database: Database) -> tuple[CapabilityCoverage, ...]:
+    """Summarize evidence coverage per capability, for the Benchmarks page.
+
+    Args:
+        database: The application's database handle.
+
+    Returns:
+        One row per capability with evidence, ordered by capability ID. A capability with no
+        evidence has **no row**: an empty coverage table is an honest "nothing measured", and a
+        row of zeroes would read as "measured at zero".
+    """
+    with database.read() as session:
+        rows = session.query(CapabilityEvidence).all()
+    grouped: dict[str, list[CapabilityEvidence]] = {}
+    for row in rows:
+        grouped.setdefault(row.capability_id, []).append(row)
+    coverage: list[CapabilityCoverage] = []
+    for capability_id, group in sorted(grouped.items()):
+        bound = [row for row in group if row.match_state == "bound"]
+        best = max(bound, key=lambda row: row.score, default=None)
+        coverage.append(
+            CapabilityCoverage(
+                capability_id=capability_id,
+                models=len({row.canonical_id for row in group}),
+                bound=len(bound),
+                stale=sum(1 for row in group if row.stale),
+                best_score=None if best is None else best.score,
+                best_confidence=None if best is None else best.confidence,
+                newest_measured_at=max(row.measured_at for row in group),
+                oldest_measured_at=min(row.measured_at for row in group),
+            )
+        )
+    return tuple(coverage)

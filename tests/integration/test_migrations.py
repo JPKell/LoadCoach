@@ -350,6 +350,7 @@ def test_migration_0005_adds_the_two_evidence_tables_and_nothing_else() -> None:
                 "vocabulary_version",
                 "stale",
                 "stale_reason",
+                "record_json",
             }
             source_columns = {
                 row[1]

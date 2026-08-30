@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -37,7 +38,7 @@ def test_report_shape_has_status_version_checked_at_components() -> None:
     assert report.checked_at == "2026-08-26T12:00:00.000Z"
     assert isinstance(report.components, tuple)
     names = {c.name for c in report.components}
-    assert names == {"database", "provider", "queue"}
+    assert names == {"database", "provider", "queue", "evidence"}
 
 
 def test_overall_status_is_ok_when_all_components_ok(tmp_path: Path) -> None:
@@ -103,3 +104,59 @@ def test_database_component_degraded_when_unmigrated(tmp_path: Path) -> None:
 def test_health_component_model_forbids_extra_fields() -> None:
     with pytest.raises(ValidationError):
         HealthComponent(name="x", status="ok", detail="d", unexpected="y")  # type: ignore[call-arg]
+
+
+def test_evidence_is_not_configured_and_that_is_healthy(tmp_path: Path) -> None:
+    """spec §6: LoadCoach is designed to run without FreeWeight, so "none" is not "broken"."""
+    from loadcoach.config import load_settings
+    from loadcoach.services.database import Database, ensure_ready
+
+    database = Database.from_url(f"sqlite:///{tmp_path / 'e.sqlite3'}")
+    try:
+        ensure_ready(database, auto_migrate=True)
+        settings = load_settings(config_path=tmp_path / "missing.toml").settings
+        report = get_health_report(database=database, settings=settings)
+        component = next(c for c in report.components if c.name == "evidence")
+        assert component.status == "not_configured"
+        assert "no evidence source is configured" in component.detail.lower()
+        assert report.status in ("ok", "degraded")
+    finally:
+        database.close()
+
+
+def test_evidence_degrades_when_the_configured_source_is_unreachable(
+    tmp_path: Path, golden_bundle: dict[str, object], wrap_bundle: Callable[..., str]
+) -> None:
+    from datetime import UTC, datetime
+
+    from loadcoach.config import load_settings
+    from loadcoach.services.database import Database, ensure_ready
+    from loadcoach.services.evidence import import_bundle, mark_source_unreachable
+
+    config = tmp_path / "config.toml"
+    config.write_text('[evidence]\nfreeweight_url = "http://127.0.0.1:8765"\n')
+    database = Database.from_url(f"sqlite:///{tmp_path / 'e2.sqlite3'}")
+    try:
+        ensure_ready(database, auto_migrate=True)
+        now = datetime(2026, 8, 29, 12, 0, tzinfo=UTC)
+        import_bundle(
+            database,
+            wrap_bundle(golden_bundle),
+            now=now,
+            source_kind="freeweight_api",
+            url="http://127.0.0.1:8765",
+        )
+        settings = load_settings(config_path=config).settings
+        healthy = get_health_report(database=database, settings=settings, clock=lambda: now)
+        assert next(c for c in healthy.components if c.name == "evidence").status == "ok"
+
+        mark_source_unreachable(
+            database, url="http://127.0.0.1:8765", reason="connection refused", now=now
+        )
+        degraded = get_health_report(database=database, settings=settings, clock=lambda: now)
+        component = next(c for c in degraded.components if c.name == "evidence")
+        assert component.status == "degraded"
+        assert "could not be reached" in component.detail
+        assert degraded.status == "degraded"
+    finally:
+        database.close()

@@ -55,6 +55,26 @@ packaging and release standards §3.
     the evidence source is in.
   - `loadcoach.services.machine`: this machine's fingerprint, from SweatMeter, so LoadCoach and
     FreeWeight agree on it without either knowing about the other (spec §10).
+- Phase 6, unit 5: the surface (api.md §7, spec §7.2, §17).
+  - `POST /api/v1/evidence/import` (a bundle body or `{"url": …}`, `admin`-scoped),
+    `GET /api/v1/evidence` (a collection envelope whose items are real `capability.evidence`
+    SetSpec envelopes, filterable and cursor-paged) and `GET /api/v1/evidence/sources`.
+  - The Benchmarks (evidence) page: coverage per capability, then every record with its source,
+    age, confidence and staleness badge, and the sources table.
+  - `loadcoach evidence import|show|sources|refresh`, all usable on a fresh install with no
+    `serve` ever having run.
+  - The `evidence` health component, whose `not_configured` state is healthy rather than
+    degraded because LoadCoach is designed to run without FreeWeight.
+  - `loadcoach.web.auth`: bearer tokens and api.md §11's cumulative scope rule, the minimum that
+    makes "import is `admin`-scoped" enforceable. Full auth hardening remains Phase 9's.
+  - `capability_evidence.record_json` keeps the payload as it arrived, so `GET /evidence`
+    re-emits the producer's document rather than a reconstruction (ADR-0025 §2).
+
+### Fixed
+- Four tests read the developer's real GPU through the application's own telemetry collector and
+  failed with `insufficient_vram` whenever another process held the card. `tests/conftest.py`
+  now pins one deterministic machine for the whole suite, which is what coding standards §5's
+  injected telemetry reader is for.
 - Phase 5, unit 8: the surface (api.md §5, §8; spec §7.2).
   - `POST /jobs` (202; a repeated key returns the original job with `X-Idempotent-Replay`),
     `GET /jobs` (filters by state, class, task and source; opaque cursor pagination),

@@ -14,6 +14,10 @@ uniqueness key carries ``policy_version`` so two confidence policies coexist dur
 change (ADR-0022 §3), and it is named explicitly because the naming convention would generate an
 identifier PostgreSQL would truncate.
 
+``record_json`` stores the ``capability.evidence`` payload as it arrived, so ``GET /evidence``
+can return real SetSpec envelopes (ADR-0025 §2) rather than a reconstruction missing the fields
+the normative column projection does not carry.
+
 The three indexes are data model §4's, and each answers a query the application actually makes:
 ``(model_id, capability_id)`` is routing's evidence lookup, ``(canonical_id, capability_id)`` is
 the same lookup for evidence that is not bound to a registry row yet, and ``match_state`` is the
@@ -88,6 +92,7 @@ def upgrade() -> None:
         sa.Column("vocabulary_version", sa.String(), nullable=False),
         sa.Column("stale", sa.Boolean(), nullable=False),
         sa.Column("stale_reason", sa.String(), nullable=True),
+        sa.Column("record_json", weightsdb.PortableJSON(), nullable=True),
         sa.CheckConstraint(
             "match_state IN ('bound', 'unmatched', 'ambiguous_name_only')",
             name=op.f("ck_capability_evidence_match_state"),

@@ -1,0 +1,105 @@
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import badge, empty_state, kv_list, table %}
+{% block title %}Benchmarks — LoadCoach{% endblock %}
+{% block content %}
+<h2>Benchmarks (evidence)</h2>
+<p class="muted">{{ overview.note }}</p>
+
+{{ kv_list([
+  {"label": "Evidence source", "value": overview.status},
+  {"label": "Records", "value": overview.rows ~ " total · " ~ overview.bound ~ " bound · "
+     ~ overview.unmatched ~ " unmatched · " ~ overview.ambiguous ~ " ambiguous · "
+     ~ overview.stale ~ " stale"},
+  {"label": "Last import", "value": overview.imported_at or "never"},
+  {"label": "Bundle produced at", "value": overview.generated_at or "—"},
+  {"label": "Bundle schema", "value": overview.bundle_schema_version or "—"},
+  {"label": "Confidence policy", "value": overview.policy_version or "—"},
+  {"label": "Capability vocabulary", "value": overview.vocabulary_version or "—"},
+  {"label": "Measured between", "value": (overview.oldest_measured_at or "—") ~ " and "
+     ~ (overview.newest_measured_at or "—")},
+]) }}
+
+<h3>Coverage per capability</h3>
+{% if not coverage %}
+{{ empty_state("No capability has measured evidence. Import a FreeWeight bundle with
+`loadcoach evidence import --file bundle.json` or `--url http://127.0.0.1:8765`.") }}
+{% else %}
+{% set columns = [
+  {"label": "Capability"}, {"label": "Models", "numeric": true}, {"label": "Scoring", "numeric": true},
+  {"label": "Best score", "numeric": true}, {"label": "Confidence", "numeric": true},
+  {"label": "Newest measurement"}, {"label": "Stale", "numeric": true}
+] %}
+{% set rows = [] %}
+{% for entry in coverage %}
+{% set _ = rows.append([
+  entry.capability_id,
+  entry.models,
+  entry.bound,
+  "%.3f"|format(entry.best_score) if entry.best_score is not none else "not scoring",
+  "%.3f"|format(entry.best_confidence) if entry.best_confidence is not none else "—",
+  entry.newest_measured_at,
+  entry.stale
+]) %}
+{% endfor %}
+{{ table(columns, rows,
+         caption="Coverage counts only what is imported; a capability with no evidence has no row,
+                  because a row of zeroes would read as 'measured at zero'.",
+         table_id="coverage", sortable=true, complete=true, row_count=coverage | length) }}
+{% endif %}
+
+<h3>Records</h3>
+{% if not records %}
+{{ empty_state("Nothing imported yet.") }}
+{% else %}
+{% set columns = [
+  {"label": "Model"}, {"label": "Capability"}, {"label": "Score", "numeric": true},
+  {"label": "Confidence", "numeric": true}, {"label": "Samples", "numeric": true},
+  {"label": "Age (days)", "numeric": true}, {"label": "Runtime profile"}, {"label": "Machine"},
+  {"label": "State"}, {"label": "Source"}
+] %}
+{% set rows = [] %}
+{% for record in records %}
+{% set _ = rows.append([
+  record.canonical_id,
+  record.capability_id ~ (" — judge agreement kappa_w "
+     ~ "%.2f"|format(record.goal.calibration.kappa_w) ~ " over "
+     ~ record.goal.calibration.n_holdout ~ " held-out samples"
+     if record.goal and record.goal.get("calibration") else ""),
+  "%.3f"|format(record.score),
+  "%.3f"|format(record.confidence),
+  record.sample_count ~ (" (+" ~ record.excluded_count ~ " excluded)" if record.excluded_count else ""),
+  record.age_days,
+  record.runtime_profile_hash,
+  record.machine_fingerprint,
+  badge(record.match_state, tone="success" if record.match_state == "bound" else "warning")
+    ~ (" " ~ badge("stale: " ~ record.stale_reason, tone="warning") if record.stale else ""),
+  record.source_key
+]) %}
+{% endfor %}
+{{ table(columns, rows,
+         caption="Confidence comes from FreeWeight and is applied here, never recomputed; age is
+                  measured from `measured_at`, never from the aggregation time.",
+         table_id="evidence", sortable=true, complete=true, row_count=records | length) }}
+{% endif %}
+
+<h3>Sources</h3>
+{% if not sources %}
+{{ empty_state("No evidence source has been imported from.") }}
+{% else %}
+{% set columns = [
+  {"label": "Source"}, {"label": "Kind"}, {"label": "URL"}, {"label": "Last import"},
+  {"label": "Status"}, {"label": "Records", "numeric": true}, {"label": "Stale", "numeric": true},
+  {"label": "Error"}
+] %}
+{% set rows = [] %}
+{% for source in sources %}
+{% set _ = rows.append([
+  source.source_key, source.kind, source.url or "—", source.last_import_at or "never",
+  badge(source.last_status or "unknown",
+        tone="success" if source.last_status == "ok" else "danger"),
+  source.rows, source.stale_rows, source.error_text or "—"
+]) %}
+{% endfor %}
+{{ table(columns, rows, table_id="sources", complete=true, row_count=sources | length) }}
+{% endif %}
+{% endblock %}

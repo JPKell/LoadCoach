@@ -210,6 +210,14 @@ class CapabilityEvidence(Base):
 
     ``measured_at`` drives freshness and ``computed_at`` never does; both are stored because
     ``computed_at`` is what the producer's ``?since=`` filter compares against (ADR-0022 §5).
+
+    ``record_json`` holds the ``capability.evidence`` payload **exactly as it arrived**. The
+    columns beside it are the queryable projection ADR-0022 §1 makes normative; this is the
+    document itself, kept because ADR-0025 §2 requires ``GET /evidence`` to return real
+    ``capability.evidence`` envelopes and a payload rebuilt from the projection would be missing
+    fields the projection does not carry (``model.observed_at`` among them). Keeping the source
+    document is also the strongest form of "never edited by LoadCoach": a re-export is the
+    producer's bytes, not a reconstruction that could drift from them.
     """
 
     __tablename__ = "capability_evidence"
@@ -271,6 +279,7 @@ class CapabilityEvidence(Base):
     vocabulary_version: Mapped[str] = mapped_column(String, nullable=False)
     stale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     stale_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    record_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
 
 
 class RuntimeProfile(Base):

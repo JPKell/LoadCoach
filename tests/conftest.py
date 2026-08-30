@@ -91,3 +91,38 @@ def golden_bundle() -> dict[str, object]:
             return payload
     message = "the installed setspec ships no evidence_bundle golden carrying records"
     raise AssertionError(message)
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every test see the same machine, whatever this machine is doing.
+
+    Coding standards §5 requires telemetry readers to be injected precisely so that a decision is
+    reproducible, and most of the suite honours that by passing a ``TelemetrySnapshot`` straight
+    into :func:`~loadcoach.services.routing.route`. The paths that go through the *application* —
+    ``loadcoach route explain``, ``POST /route``, the queue's e2e controls — build a real
+    :class:`~sweatmeter.TelemetryCollector` instead, and therefore read whatever the developer's
+    or the runner's GPU happens to be doing at that moment.
+
+    That is a genuine flake, not a hypothetical one: with roughly 3.7 GB free on a card another
+    process had filled, four tests that had passed all session began failing with
+    ``insufficient_vram`` — the correct answer to the question they accidentally asked, and the
+    wrong question. This fixture pins the answer: 64 GiB of RAM and one 48 GiB device with 1 GiB
+    in use. A test that needs different resources passes its own snapshot, which is unaffected.
+    """
+    from sweatmeter import GpuSample, TelemetryCollector, TelemetrySnapshot
+
+    def snapshot(_self: TelemetryCollector) -> TelemetrySnapshot:
+        return TelemetrySnapshot(
+            timestamp=datetime(2026, 8, 26, 12, 0, 0, tzinfo=UTC),
+            ram_available_bytes=64 * 1024**3,
+            gpus=(
+                GpuSample(
+                    index=0,
+                    vram_total_bytes=48 * 1024**3,
+                    vram_used_bytes=1 * 1024**3,
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(TelemetryCollector, "snapshot", snapshot)

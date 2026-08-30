@@ -40,6 +40,7 @@ from loadcoach.services.database import Database
 from loadcoach.services.job_events import JobEventSink
 from loadcoach.services.worker import build_runtime
 from loadcoach.web.rendering import templates
+from loadcoach.web.routes import evidence as evidence_routes
 from loadcoach.web.routes import generate as generate_routes
 from loadcoach.web.routes import jobs as jobs_routes
 from loadcoach.web.routes import models as models_routes
@@ -85,6 +86,13 @@ _STATUS_BY_CODE: dict[str, int] = {
     "STORAGE_BUSY": status.HTTP_503_SERVICE_UNAVAILABLE,
     "STORAGE_FULL": status.HTTP_507_INSUFFICIENT_STORAGE,
     "INTERNAL_ERROR": status.HTTP_500_INTERNAL_SERVER_ERROR,
+    # Phase 6. api.md §10 lists no HTTP status for these three; chosen so that a caller can
+    # tell "your bundle is wrong" (422) from "I will not fetch that" (403).
+    "EVIDENCE_IMPORT_FAILED": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "SCHEMA_VERSION_UNSUPPORTED": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "EVIDENCE_SOURCE_REFUSED": status.HTTP_403_FORBIDDEN,
+    "UNAUTHORIZED": status.HTTP_401_UNAUTHORIZED,
+    "FORBIDDEN": status.HTTP_403_FORBIDDEN,
 }
 
 _CODE_BY_HTTP_STATUS: dict[int, str] = {
@@ -259,7 +267,8 @@ def create_app(settings: Settings) -> FastAPI:
     Registers, from outermost to innermost: MirrorWall's request-ID middleware, its Host-header
     validation, the standard error envelope handlers, the ``/api/v1`` routes (system, models,
     task-profiles, routing, generation, jobs, queue), the HTML pages at ``/models``,
-    ``/task-profiles``, ``/routing``, ``/jobs`` and ``/queue``, and MirrorWall's static assets.
+    ``/task-profiles``, ``/routing``, ``/jobs``, ``/queue`` and ``/evidence``, and MirrorWall's
+    static assets.
 
     Still a pure function of its arguments — it opens nothing; the database and provider handles
     are created by the lifespan, which runs only when the application is actually served (or when
@@ -291,11 +300,13 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(generate_routes.router, prefix="/api/v1")
     app.include_router(jobs_routes.router, prefix="/api/v1")
     app.include_router(queue_routes.router, prefix="/api/v1")
+    app.include_router(evidence_routes.router, prefix="/api/v1")
     app.include_router(models_routes.ui_router)
     app.include_router(task_profiles_routes.ui_router)
     app.include_router(routing_routes.ui_router)
     app.include_router(jobs_routes.ui_router)
     app.include_router(queue_routes.ui_router)
+    app.include_router(evidence_routes.ui_router)
 
     # MirrorWall's own assets, served from the installed package: no CDN, no network request at
     # page load. Passing the environment swaps the plain `asset_url` filter for the hashing one,
