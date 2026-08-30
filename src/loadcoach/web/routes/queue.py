@@ -68,14 +68,15 @@ def _set(
     app = request.app
     now = datetime.now(UTC)
     runtime = _runtime(request)
-    if paused is not None:
-        set_queue_flag(app.state.database, "queue.paused", paused, now=now)
-        if runtime is not None:
-            runtime.flags.paused = paused
-    if draining is not None:
-        set_queue_flag(app.state.database, "queue.draining", draining, now=now)
-        if runtime is not None:
-            runtime.flags.draining = draining
+    if runtime is not None:
+        # The runtime's copy and the durable flag are written under one lock, so the
+        # scheduler's refresh cannot overwrite this request with a value read just before it.
+        runtime.flags.update(app.state.database, now=now, paused=paused, draining=draining)
+    else:
+        if paused is not None:
+            set_queue_flag(app.state.database, "queue.paused", paused, now=now)
+        if draining is not None:
+            set_queue_flag(app.state.database, "queue.draining", draining, now=now)
     if runtime is not None and (paused is False or draining is False):
         runtime.wakeup.set()
     flags = queue_flags(app.state.database)

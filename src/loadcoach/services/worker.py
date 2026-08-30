@@ -239,15 +239,51 @@ class InFlightRegistry:
 
 @dataclass
 class QueueFlags:
-    """Operator control state, refreshed by the scheduler (queue §11, api.md §8)."""
+    """Operator control state, refreshed by the scheduler (queue §11, api.md §8).
+
+    ``lock`` serializes the two writers of the in-memory copy: an operator's request (which
+    writes the durable flag and then this copy) and the scheduler's refresh (which reads the
+    durable flag and then writes this copy). Without it a refresh that read the old value just
+    before the request committed could overwrite the request's assignment a moment later, and a
+    worker would claim during a drain for up to a second.
+    """
 
     paused: bool = False
     draining: bool = False
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
     @property
     def claiming(self) -> bool:
         """Whether workers may take new work."""
         return not (self.paused or self.draining)
+
+    def update(
+        self,
+        database: Database,
+        *,
+        now: datetime,
+        paused: bool | None = None,
+        draining: bool | None = None,
+    ) -> None:
+        """Write the given flags durably and to this copy, atomically with any refresh."""
+        from loadcoach.services.queue import set_queue_flag
+
+        with self.lock:
+            if paused is not None:
+                set_queue_flag(database, "queue.paused", paused, now=now)
+                self.paused = paused
+            if draining is not None:
+                set_queue_flag(database, "queue.draining", draining, now=now)
+                self.draining = draining
+
+    def refresh(self, database: Database) -> None:
+        """Re-read the durable flags into this copy, atomically with any operator update."""
+        from loadcoach.services.queue import queue_flags
+
+        with self.lock:
+            flags = queue_flags(database)
+            self.paused = flags["queue.paused"]
+            self.draining = flags["queue.draining"]
 
 
 @dataclass
@@ -1564,21 +1600,7 @@ class Scheduler:
 
     def refresh_flags(self) -> None:
         """Read the operator's pause/drain flags from the settings table."""
-        from sqlalchemy import select
-
-        from loadcoach.infrastructure.db.models import Setting
-
-        with self.runtime.database.read() as session:
-            rows: dict[str, object] = {
-                str(key): value
-                for key, value in session.execute(
-                    select(Setting.key, Setting.value_json).where(
-                        Setting.key.in_(["queue.paused", "queue.draining"])
-                    )
-                ).all()
-            }
-        self.runtime.flags.paused = bool(rows.get("queue.paused", False))
-        self.runtime.flags.draining = bool(rows.get("queue.draining", False))
+        self.runtime.flags.refresh(self.runtime.database)
 
 
 def build_runtime(

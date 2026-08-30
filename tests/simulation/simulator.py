@@ -896,9 +896,10 @@ class Simulation:
         """Pause (or resume) claiming through the durable flag the scheduler reads every second."""
         from loadcoach.services.queue import set_queue_flag
 
-        set_queue_flag(self.database, "queue.paused", paused, now=self.clock.now())
         if self.runtime is not None:
-            self.runtime.flags.paused = paused
+            self.runtime.flags.update(self.database, now=self.clock.now(), paused=paused)
+        else:
+            set_queue_flag(self.database, "queue.paused", paused, now=self.clock.now())
 
     def canonical_id(self, name: str) -> str:
         """The registry's canonical ID for a catalogue name."""
