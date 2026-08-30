@@ -20,9 +20,9 @@ from contextlib import asynccontextmanager
 from typing import Any, Final
 
 from baseaicore import SuiteError, new_id
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, Response, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from mirrorwall import (
     HostValidationMiddleware,
     RequestIdMiddleware,
@@ -38,8 +38,10 @@ from loadcoach.config import LOOPBACK_HOSTS, Settings
 from loadcoach.infrastructure.providers.factory import build_provider
 from loadcoach.services.database import Database
 from loadcoach.services.job_events import JobEventSink
+from loadcoach.services.telemetry_stream import TelemetrySampler
 from loadcoach.services.worker import build_runtime
-from loadcoach.web.rendering import templates
+from loadcoach.web.rendering import render, templates
+from loadcoach.web.routes import dashboard as dashboard_routes
 from loadcoach.web.routes import evidence as evidence_routes
 from loadcoach.web.routes import generate as generate_routes
 from loadcoach.web.routes import jobs as jobs_routes
@@ -131,6 +133,17 @@ def _request_id_of(request: Request) -> str:
     return state_id if isinstance(state_id, str) and state_id else new_id()
 
 
+def _wants_html(request: Request) -> bool:
+    """Whether this is a page request: outside ``/api``, from a client that accepts HTML.
+
+    UI standards §6: every view has an error state that says what failed, why, and what to do,
+    with the error code and the request ID. The API keeps the JSON envelope regardless.
+    """
+    if request.url.path.startswith("/api/"):
+        return False
+    return "text/html" in request.headers.get("accept", "")
+
+
 def _error_response(
     *,
     request_id: str,
@@ -138,7 +151,23 @@ def _error_response(
     message: str,
     status_code: int,
     details: Mapping[str, Any] | None = None,
-) -> JSONResponse:
+    request: Request | None = None,
+) -> Response:
+    if request is not None and _wants_html(request):
+        return HTMLResponse(
+            status_code=status_code,
+            content=render(
+                "error.html",
+                page=None,
+                code=code,
+                message=message,
+                status_code=status_code,
+                request_id=request_id,
+                details=dict(details or {}),
+                path=request.url.path,
+            ),
+            headers={"X-Request-ID": request_id},
+        )
     return JSONResponse(
         status_code=status_code,
         content=error_body(code=code, message=message, request_id=request_id, details=details),
@@ -163,7 +192,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     """Register the handlers that translate every exception type into the standard envelope."""
 
     @app.exception_handler(SuiteError)
-    async def _suite_error_handler(request: Request, exc: SuiteError) -> JSONResponse:
+    async def _suite_error_handler(request: Request, exc: SuiteError) -> Response:
         status_code = _STATUS_BY_CODE.get(exc.code, status.HTTP_500_INTERNAL_SERVER_ERROR)
         if status_code >= status.HTTP_500_INTERNAL_SERVER_ERROR:
             logger.error("request.failed", extra={"code": exc.code}, exc_info=exc)
@@ -175,12 +204,11 @@ def register_exception_handlers(app: FastAPI) -> None:
             message=exc.message,
             status_code=status_code,
             details=exc.details,
+            request=request,
         )
 
     @app.exception_handler(RequestValidationError)
-    async def _validation_error_handler(
-        request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
+    async def _validation_error_handler(request: Request, exc: RequestValidationError) -> Response:
         fields = [
             {
                 "path": ".".join(str(part) for part in error["loc"] if part != "body"),
@@ -194,12 +222,11 @@ def register_exception_handlers(app: FastAPI) -> None:
             message="Request body failed validation.",
             status_code=status.HTTP_400_BAD_REQUEST,
             details={"fields": fields},
+            request=request,
         )
 
     @app.exception_handler(StarletteHTTPException)
-    async def _http_exception_handler(
-        request: Request, exc: StarletteHTTPException
-    ) -> JSONResponse:
+    async def _http_exception_handler(request: Request, exc: StarletteHTTPException) -> Response:
         code = _CODE_BY_HTTP_STATUS.get(exc.status_code, "HTTP_ERROR")
         message = exc.detail if isinstance(exc.detail, str) and exc.detail else "Request failed."
         return _error_response(
@@ -207,16 +234,18 @@ def register_exception_handlers(app: FastAPI) -> None:
             code=code,
             message=message,
             status_code=exc.status_code,
+            request=request,
         )
 
     @app.exception_handler(Exception)
-    async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    async def _unhandled_exception_handler(request: Request, exc: Exception) -> Response:
         logger.error("request.unhandled_error", exc_info=exc)
         return _error_response(
             request_id=_request_id_of(request),
             code="INTERNAL_ERROR",
             message="An unexpected error occurred.",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            request=request,
         )
 
 
@@ -252,11 +281,21 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.queue_runtime = runtime
     runtime.start()
+    # The telemetry bar's producer (UI standards §3): one sampler thread, the configured
+    # interval, reading the same collector routing reads.
+    sampler = TelemetrySampler(
+        lambda: current_snapshot(app),
+        interval_seconds=settings.telemetry.interval_ms / 1000.0,
+    )
+    app.state.telemetry_stream = sampler
+    sampler.start()
     try:
         yield
     finally:
+        sampler.stop()
         runtime.stop()
         database.close()
+        app.state.telemetry_stream = None
         app.state.queue_runtime = None
         app.state.database = None
         app.state.provider = None
@@ -289,6 +328,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.telemetry_collector = None
     app.state.event_sink = None
     app.state.queue_runtime = None
+    app.state.telemetry_stream = None
 
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(HostValidationMiddleware, allowed_hosts=_resolve_allowed_hosts(settings))
@@ -304,6 +344,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(queue_routes.router, prefix="/api/v1")
     app.include_router(evidence_routes.router, prefix="/api/v1")
     app.include_router(reliability_routes.router, prefix="/api/v1")
+    app.include_router(dashboard_routes.ui_router)
     app.include_router(models_routes.ui_router)
     app.include_router(task_profiles_routes.ui_router)
     app.include_router(routing_routes.ui_router)

@@ -1,0 +1,23 @@
+{% extends "mirrorwall/base.html" %}
+{% block title %}{{ code }} — LoadCoach{% endblock %}
+{% block content %}
+<h2>{{ status_code }} · {{ code }}</h2>
+<div class="error-state" role="alert">
+  <p><strong>{{ message }}</strong></p>
+  <p class="muted">Request <span class="mono">{{ request_id }}</span> · <span class="mono">{{ path }}</span></p>
+  {% if details %}
+  <details>
+    <summary>Details</summary>
+    <pre>{{ details | json_pretty }}</pre>
+  </details>
+  {% endif %}
+  <p>
+  {% if status_code == 404 %}Check the identifier in the address; the record may have been pruned or never existed.
+  {% elif status_code == 401 or status_code == 403 %}This page needs a credential with the right scope; see <span class="mono">api.md §11</span>.
+  {% elif status_code >= 500 %}This is a fault in LoadCoach or its database. Retry once; if it persists, run <span class="mono">loadcoach doctor</span> and quote the request ID.
+  {% else %}The request was refused for the reason above; correct it and retry.
+  {% endif %}
+  </p>
+  <p><a href="/">Dashboard</a> · <a href="/jobs">Jobs</a> · <a href="/queue">Queue</a></p>
+</div>
+{% endblock %}

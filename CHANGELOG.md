@@ -55,6 +55,13 @@ packaging and release standards §3.
     a model's recent validated-success rate has regressed against its own history.
   - The breaker's probe is marked when execution starts (not when routing merely ranked the
     model), released if that attempt is cancelled, and presumed lost after one cool-down.
+- Phase 8, unit 1 (dashboard): the Dashboard at `/` — current activity, queue health,
+  degradations (every unhealthy component, open breaker, regression and control flag, with a link
+  each), the ten most recent decisions and jobs, and the model mix over 24 hours; every figure
+  links to the page that owns it. The telemetry bar is now on every page, fed by
+  `GET /api/v1/system/telemetry/stream` (one `telemetry.sampled` frame per `[telemetry]
+  interval_ms`, `"unsupported"` for what this machine cannot read). A page that fails renders an
+  error state — code, request ID, what to do next — instead of the JSON envelope.
 
 ## [0.9.0b0] — 2026-08-30
 

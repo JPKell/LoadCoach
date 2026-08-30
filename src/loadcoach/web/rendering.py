@@ -22,11 +22,14 @@ from loadcoach.__about__ import __version__
 if TYPE_CHECKING:
     from jinja2 import Environment
 
-__all__ = ["NAV_ITEMS", "render", "templates"]
+__all__ = ["NAV_ITEMS", "TELEMETRY_STREAM_URL", "render", "templates"]
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
+TELEMETRY_STREAM_URL = "/api/v1/system/telemetry/stream"
+
 NAV_ITEMS: tuple[dict[str, str], ...] = (
+    {"key": "dashboard", "href": "/", "label": "Dashboard"},
     {"key": "models", "href": "/models", "label": "Models"},
     {"key": "task-profiles", "href": "/task-profiles", "label": "Task profiles"},
     {"key": "routing", "href": "/routing", "label": "Routing"},
@@ -52,6 +55,11 @@ def templates() -> Environment:
             "product_version": __version__,
             "nav_items": NAV_ITEMS,
             "theme_storage_key": "loadcoach-theme",
+            # UI standards §3: the telemetry bar is on every page. The URL is the sampled stream
+            # ``services.telemetry_stream`` publishes; the bar's fields start as em dashes and the
+            # script fills only what was reported.
+            "show_telemetry_bar": True,
+            "telemetry_stream_url": TELEMETRY_STREAM_URL,
         },
     )
 

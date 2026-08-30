@@ -1,0 +1,89 @@
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import badge, card, empty_state, table %}
+{% block title %}Dashboard — LoadCoach{% endblock %}
+{% block content %}
+<h2>Dashboard</h2>
+<p class="muted">What the router is doing now, what it decided recently, and anything degraded.
+Every figure links to the page that owns it.</p>
+
+<h3>Current activity</h3>
+<ul class="card-grid">
+  {{ card("Executing", report.activity.executing, note="jobs a worker holds now") }}
+  {{ card("Queued", report.activity.queued, note="claimed or waiting to be claimed") }}
+  {{ card("Waiting for resources", report.activity.waiting_resources, note="deferred by admission") }}
+  {{ card("Active of max", report.activity.active ~ " / " ~ report.activity.max_depth, note="queue depth") }}
+  {{ card("Completed, 24 h", report.throughput.completed, note="terminal in the last day") }}
+  {{ card("Failed, 24 h", report.throughput.failed, note="terminal in the last day") }}
+</ul>
+<p class="muted">Oldest queued: {{ (report.activity.oldest_queued_age_seconds | round(0) | int ~ " s") if report.activity.oldest_queued_age_seconds is not none else "nothing queued" }}
+· starving: {{ report.activity.starving }} · <a href="/queue">Queue</a> · <a href="/system">System</a></p>
+
+<h3>Degradations</h3>
+{% if report.degradations %}
+{% set columns = [{"label": "What"}, {"label": "Status"}, {"label": "Detail"}, {"label": "Where"}] %}
+{% set rows = [] %}
+{% for item in report.degradations %}
+{% set _ = rows.append([
+  item.name,
+  badge(item.status, tone="danger" if item.status in ("unavailable", "open", "regressed") else "warning"),
+  item.detail,
+  ('<a href="' ~ item.href ~ '">' ~ item.kind ~ '</a>') | safe
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Everything that is not healthy right now, with where to look.", table_id="degradations", complete=true, row_count=report.degradations | length) }}
+{% else %}
+<p class="notice">Nothing is degraded: health is <strong>{{ report.health.status }}</strong>, no breaker is open, no model has regressed.</p>
+{% endif %}
+
+<h3>Recent decisions</h3>
+{% if report.decisions %}
+{% set columns = [{"label": "Decision"}, {"label": "Task profile"}, {"label": "Selected"}, {"label": "Score", "numeric": true}, {"label": "Flags"}, {"label": "Requested"}] %}
+{% set rows = [] %}
+{% for decision in report.decisions %}
+{% set _ = rows.append([
+  ('<a class="mono" href="/routing/' ~ decision.decision_id ~ '">' ~ decision.decision_id ~ "</a>") | safe,
+  decision.task_profile_id,
+  decision.selected_canonical_id or "—",
+  "%.4f"|format(decision.selected_score) if decision.selected_score is not none else "—",
+  (decision.flags | map("string") | join(" ")) or "none",
+  decision.requested_at | timestamp
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="The ten most recent; every decision is persisted, not sampled.", table_id="recent-decisions", complete=true, row_count=report.decisions | length) }}
+<p class="muted"><a href="/routing">All decisions</a></p>
+{% else %}
+{{ empty_state("No routing decision has been made yet. Submit a job, or POST /api/v1/route, and it appears here with its explanation.", action_label="Routing", action_href="/routing") }}
+{% endif %}
+
+<h3>Recent jobs</h3>
+{% if report.jobs %}
+{% set columns = [{"label": "Job"}, {"label": "State"}, {"label": "Class"}, {"label": "Task"}, {"label": "Created"}] %}
+{% set rows = [] %}
+{% for job in report.jobs %}
+{% set _ = rows.append([
+  ('<a class="mono" href="/jobs/' ~ job.job_id ~ '">' ~ job.job_id ~ "</a>") | safe,
+  badge(job.state.value, tone="success" if job.state.value == "completed" else "danger" if job.state.value == "failed" else "neutral"),
+  job.job_class.value, job.task_profile_id, job.created_at | timestamp
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="The ten most recent.", table_id="recent-jobs", complete=true, row_count=report.jobs | length) }}
+<p class="muted"><a href="/jobs">All jobs</a></p>
+{% else %}
+{{ empty_state("No job has been submitted yet. POST /api/v1/jobs, or run `loadcoach job submit --task general.chat --prompt 'hello'`.", action_label="Jobs", action_href="/jobs") }}
+{% endif %}
+
+<h3>Model mix, last {{ report.window_hours }} h</h3>
+{% if report.model_mix %}
+{% set columns = [{"label": "Model"}, {"label": "Jobs", "numeric": true}, {"label": "Completed", "numeric": true}, {"label": "Failed", "numeric": true}, {"label": "Other", "numeric": true}] %}
+{% set rows = [] %}
+{% for entry in report.model_mix %}
+{% set _ = rows.append([
+  ('<a class="mono" href="/models">' ~ entry.canonical_id ~ "</a>") | safe,
+  entry.jobs, entry.completed, entry.failed, entry.other
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Which models the router chose, and how those jobs ended.", table_id="model-mix", sortable=true, complete=true, row_count=report.model_mix | length) }}
+{% else %}
+{{ empty_state("No job has been routed to a model in the last " ~ report.window_hours ~ " hours.") }}
+{% endif %}
+{% endblock %}
