@@ -111,7 +111,8 @@ if TYPE_CHECKING:
     from loadcoach.domain.routing.subject import ProviderFacts
     from loadcoach.domain.validation import ValidationOutcome
     from loadcoach.services.database import Database
-    from loadcoach.services.job_events import JobEventSink
+from loadcoach.services.job_events import JobEventSink
+from loadcoach.services.machine import machine_fingerprint
 
 __all__ = [
     "POLL_BUSY_SECONDS",
@@ -1678,7 +1679,11 @@ def build_runtime(
         wakeup=event,
         sleep=sleep if sleep is not None else _wall_sleep,
         policy=RoutingPolicy.from_settings(
-            routing=settings.routing, runtime=settings.runtime, telemetry=settings.telemetry
+            routing=settings.routing,
+            runtime=settings.runtime,
+            telemetry=settings.telemetry,
+            evidence=settings.evidence,
+            machine_fingerprint=machine_fingerprint(),
         ),
         schemas_dir=schemas_dir,
         owner_prefix=owner_prefix if owner_prefix is not None else new_id(),

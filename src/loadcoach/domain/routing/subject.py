@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Literal
 
 from baseaicore import RuntimeProfile
 
+from loadcoach.domain.evidence_policy import CalibrationFacts
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from datetime import datetime
@@ -136,8 +138,15 @@ class CapabilitySignal:
         machine_fingerprint: The machine it was taken on. Benchmark evidence only.
         measured_at: When. Benchmark and production evidence only.
         sample_count: How many observations stand behind it.
-        match_state: ``"bound"``, ``"name_only"`` or ``"unmatched"`` for imported evidence
-            (ADR-0022 §4). Anything but ``"bound"`` never contributes.
+        match_state: ``"bound"``, ``"unmatched"`` or ``"ambiguous_name_only"`` for imported
+            evidence (ADR-0022 §4). Anything but ``"bound"`` never contributes.
+        age_days: How old the measurement is, in whole days from ``measured_at`` — never from
+            ``computed_at`` (ADR-0022 §2). Computed where the clock lives, so that scoring stays
+            a pure function of its inputs.
+        stale: Whether the evidence carries a staleness badge.
+        stale_reason: Which of ADR-0017's four reasons raised it.
+        calibration: For a ``user.*`` capability, the judge's measured agreement with the person
+            whose goal it is — what ADR-0032 §6 requires the explanation to state in words.
     """
 
     capability_id: str
@@ -149,6 +158,10 @@ class CapabilitySignal:
     measured_at: datetime | None = None
     sample_count: int | None = None
     match_state: str | None = None
+    age_days: int | None = None
+    stale: bool = False
+    stale_reason: str | None = None
+    calibration: CalibrationFacts | None = None
 
 
 @dataclass(frozen=True, slots=True)

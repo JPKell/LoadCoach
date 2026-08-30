@@ -19,6 +19,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
+from loadcoach.domain.evidence_policy import (
+    is_user_capability,
+    machine_admits,
+    user_capability_note,
+)
 from loadcoach.domain.routing.subject import signals_by_capability
 
 if TYPE_CHECKING:
@@ -85,13 +90,21 @@ class CapabilityScore:
         score: The resolved ability, or ``None`` when absent.
         confidence: The confidence attached to it, or ``None`` when absent.
         source: ``"benchmark"``, ``"production"``, ``"manual"``, ``"declared"``, ``"prior"``,
-            ``"absent"``, ``"evidence_profile_mismatch"`` or ``"evidence_unbound"``.
-        note: Human-readable reason, present whenever ``score`` is ``None``.
+            ``"absent"``, ``"evidence_profile_mismatch"``, ``"evidence_foreign_machine"`` or
+            ``"evidence_unbound"``.
+        note: Human-readable reason. Present whenever ``score`` is ``None``, and also on a
+            ``user.*`` capability that *did* score — ADR-0032 §6 requires the goal, its
+            ``kappa_w`` and its ``n_holdout`` to be stated in words, not only as numbers in the
+            breakdown.
         remedy: For a profile mismatch, the FreeWeight invocation that would produce matching
             evidence (ADR-0023 §3).
-        evidence_age_days: Age of the evidence behind the score, when it has one.
+        evidence_age_days: Age of the evidence behind the score, from ``measured_at``.
         sample_count: How many observations stand behind it.
         measured_profile_hash: The profile a mismatched measurement was taken under.
+        measured_machine_fingerprint: The machine a measurement was taken on, when it was not
+            this one.
+        stale: Whether the evidence behind the score carries a staleness badge.
+        stale_reason: Which of ADR-0017's four reasons raised it.
     """
 
     capability_id: str
@@ -104,6 +117,9 @@ class CapabilityScore:
     evidence_age_days: int | None = None
     sample_count: int | None = None
     measured_profile_hash: str | None = None
+    measured_machine_fingerprint: str | None = None
+    stale: bool = False
+    stale_reason: str | None = None
 
     @property
     def present(self) -> bool:
@@ -130,9 +146,13 @@ class CapabilityScore:
             ("evidence_age_days", self.evidence_age_days),
             ("sample_count", self.sample_count),
             ("measured_profile_hash", self.measured_profile_hash),
+            ("measured_machine_fingerprint", self.measured_machine_fingerprint),
+            ("stale_reason", self.stale_reason),
         ):
             if value is not None:
                 payload[key] = value
+        if self.stale:
+            payload["stale"] = True
         return payload
 
 
@@ -168,12 +188,16 @@ class ScoringInputs:
             no entry, and therefore no prior — not a zero one.
         require_evidence: When true, priors do not stand in for evidence: a capability with only
             a declared flag, a manual score or a band prior behind it is absent (routing §10).
+        machine_fingerprint: This machine's fingerprint, from SweatMeter at startup (spec §10).
+            ``None`` when it could not be produced, which admits every measurement rather than
+            refusing them all.
     """
 
     weights: Mapping[str, float]
     min_confidence: float = 0.05
     parameter_priors: Mapping[str, float] | None = None
     require_evidence: bool = False
+    machine_fingerprint: str | None = None
 
 
 def parameter_band_priors(
@@ -211,7 +235,7 @@ def parameter_band_priors(
     }
 
 
-def resolve_capability(
+def resolve_capability(  # noqa: PLR0913 — every argument is one documented scoring input
     capability_id: str,
     weight: float,
     signals: tuple[CapabilitySignal, ...],
@@ -221,6 +245,7 @@ def resolve_capability(
     min_confidence: float,
     band_prior: float | None,
     require_evidence: bool,
+    machine_fingerprint: str | None = None,
 ) -> CapabilityScore:
     """Choose the one signal that scores this capability, or record why none does.
 
@@ -232,6 +257,10 @@ def resolve_capability(
       reused and not scored zero: the capability is **absent**, named
       ``evidence_profile_mismatch`` with both hashes and the FreeWeight invocation that would
       produce matching evidence.
+    * A performance, memory or energy measurement taken on **another machine** does not
+      describe this one (ADR-0017's last hard separation). It is absent, named
+      ``evidence_foreign_machine``, and counted toward ``low_evidence``. A *quality* measurement
+      from another machine is used, and its badge is carried into the explanation.
     * Evidence whose ``match_state`` is not ``"bound"`` never contributes (ADR-0022 §4).
 
     Where an excluded measurement exists, no prior stands in for it. A model that *was* measured,
@@ -249,6 +278,10 @@ def resolve_capability(
         band_prior: This model's parameter band prior, or ``None`` if it has none.
         require_evidence: When true, only benchmark and production evidence counts — declared
             flags, manual scores and band priors are all priors for this purpose (routing §10).
+        machine_fingerprint: This machine's fingerprint, or ``None`` when SweatMeter could not
+            produce one — in which case nothing is excluded for being measured elsewhere,
+            because not knowing which machine this is has not established that it is a different
+            one.
 
     Returns:
         The resolved :class:`CapabilityScore`, present or absent with a named reason.
@@ -271,6 +304,27 @@ def resolve_capability(
                         f"evidence match_state is {signal.match_state!r}, not 'bound'; "
                         "it does not describe a model this registry has identified"
                     ),
+                )
+                continue
+            if signal.machine_fingerprint is not None and not machine_admits(
+                signal.machine_fingerprint, machine_fingerprint, capability_id
+            ):
+                excluded = excluded or CapabilityScore(
+                    capability_id=capability_id,
+                    weight=weight,
+                    score=None,
+                    confidence=None,
+                    source="evidence_foreign_machine",
+                    note=(
+                        f"this is a performance measurement taken on machine "
+                        f"{signal.machine_fingerprint}, not on this one; throughput, memory and "
+                        "energy describe the card they were measured on (ADR-0017)"
+                    ),
+                    remedy=(
+                        f"freeweight run start --model <this model> --context-size "
+                        f"{served_context}   # on this machine"
+                    ),
+                    measured_machine_fingerprint=signal.machine_fingerprint,
                 )
                 continue
             if signal.runtime_profile_hash != runtime_profile_hash:
@@ -311,13 +365,31 @@ def resolve_capability(
                 source="declared",
                 note="provider-declared flag, scored as a neutral prior (routing §5.1)",
             )
+        foreign = (
+            chosen.machine_fingerprint is not None
+            and machine_fingerprint is not None
+            and chosen.machine_fingerprint != machine_fingerprint
+        )
+        note: str | None = None
+        if is_user_capability(capability_id):
+            note = user_capability_note(capability_id, chosen.calibration)
+        elif foreign:
+            note = (
+                f"quality measured on machine {chosen.machine_fingerprint}, not on this one; "
+                "retained with a machine badge (ADR-0017)"
+            )
         return CapabilityScore(
             capability_id=capability_id,
             weight=weight,
             score=chosen.score,
             confidence=chosen.confidence,
             source=source,
+            note=note,
+            evidence_age_days=chosen.age_days,
             sample_count=chosen.sample_count,
+            measured_machine_fingerprint=chosen.machine_fingerprint if foreign else None,
+            stale=chosen.stale,
+            stale_reason=chosen.stale_reason,
         )
 
     if excluded is not None:
@@ -367,6 +439,7 @@ def score_subject(subject: ExecutionSubject, inputs: ScoringInputs) -> TaskFit:
             min_confidence=inputs.min_confidence,
             band_prior=band_prior,
             require_evidence=inputs.require_evidence,
+            machine_fingerprint=inputs.machine_fingerprint,
         )
         for capability_id, weight in sorted(inputs.weights.items())
     )

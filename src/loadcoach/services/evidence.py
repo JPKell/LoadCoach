@@ -37,12 +37,16 @@ from setspec.capability.v1 import CapabilityEvidenceFields, CapabilityEvidenceIn
 from weightsdb import upsert
 
 from loadcoach.domain.evidence_policy import (
+    CalibrationFacts,
+    EvidenceCandidate,
     EvidenceIdentity,
+    EvidenceOverview,
     LocalModel,
     bind_identity,
     environment_drift,
     evaluate_staleness,
 )
+from loadcoach.domain.routing.subject import CapabilitySignal
 from loadcoach.infrastructure.db.models import CapabilityEvidence, EvidenceSource, Model
 from loadcoach.infrastructure.freeweight_client import (
     MAX_IMPORT_BYTES,
@@ -71,7 +75,9 @@ __all__ = [
     "RejectedRecord",
     "RebindOutcome",
     "SourceStatus",
+    "bound_signals_for_routing",
     "credential_for",
+    "evidence_overview",
     "import_bundle",
     "last_generated_at",
     "list_sources",
@@ -1053,3 +1059,197 @@ def _record_source_failure(
         source.last_status = status
         source.error_text = reason
         session.flush()
+
+
+def evidence_overview(database: Database, *, configured_url: str = "") -> EvidenceOverview:
+    """Summarize the evidence store for the explanation, the UI and ``/health``.
+
+    Args:
+        database: The application's database handle.
+        configured_url: ``[evidence] freeweight_url``.
+
+    Returns:
+        The :class:`EvidenceOverview`. On a fresh install with nothing configured this reports
+        ``not_configured``, which is the state spec §6's degradation contract names.
+    """
+    from sqlalchemy import func, select
+
+    from loadcoach.domain.evidence_policy import policy_version_key
+
+    with database.read() as session:
+        totals = session.execute(
+            select(
+                func.count(CapabilityEvidence.id),
+                func.sum(_case_one(CapabilityEvidence.match_state == "bound")),
+                func.sum(_case_one(CapabilityEvidence.match_state == "unmatched")),
+                func.sum(_case_one(CapabilityEvidence.match_state == "ambiguous_name_only")),
+                func.sum(_case_one(CapabilityEvidence.stale.is_(True))),
+                func.min(CapabilityEvidence.measured_at),
+                func.max(CapabilityEvidence.measured_at),
+                func.max(CapabilityEvidence.imported_at),
+            )
+        ).one()
+        policies = [
+            str(row[0])
+            for row in session.execute(select(CapabilityEvidence.policy_version).distinct()).all()
+        ]
+        vocabularies = [
+            str(row[0])
+            for row in session.execute(
+                select(CapabilityEvidence.vocabulary_version).distinct()
+            ).all()
+        ]
+        source = None
+        if configured_url:
+            source = session.query(EvidenceSource).filter_by(url=configured_url).one_or_none()
+        if source is None:
+            source = (
+                session.query(EvidenceSource).order_by(EvidenceSource.last_import_at.desc()).first()
+            )
+        return EvidenceOverview(
+            configured=bool(configured_url),
+            source_status=None if source is None else source.last_status,
+            rows=int(totals[0] or 0),
+            bound=int(totals[1] or 0),
+            unmatched=int(totals[2] or 0),
+            ambiguous=int(totals[3] or 0),
+            stale=int(totals[4] or 0),
+            imported_at=_as_datetime(totals[7]),
+            generated_at=None if source is None else source.generated_at,
+            oldest_measured_at=_as_datetime(totals[5]),
+            newest_measured_at=_as_datetime(totals[6]),
+            bundle_schema_version=None if source is None else source.schema_version,
+            policy_version=max(policies, key=policy_version_key, default=None),
+            vocabulary_version=max(vocabularies, key=policy_version_key, default=None),
+            error_text=None if source is None else source.error_text,
+        )
+
+
+def _case_one(condition: Any) -> Any:  # noqa: ANN401 — a SQLAlchemy boolean expression
+    """Return ``1`` where ``condition`` holds and ``0`` elsewhere, for a dialect-neutral count."""
+    from sqlalchemy import case
+
+    return case((condition, 1), else_=0)
+
+
+def bound_signals_for_routing(
+    database: Database,
+    *,
+    weights: Mapping[str, float],
+    now: datetime,
+    local_machine_fingerprint: str | None = None,
+) -> dict[str, tuple[CapabilitySignal, ...]]:
+    """Read the benchmark evidence routing may score, keyed by model.
+
+    Three rules are applied here rather than in scoring, because each needs either the store or
+    the clock and scoring has neither:
+
+    * **Only ``match_state = 'bound'``.** The query filters on it and uses
+      ``(model_id, capability_id)``, which is data model §4's stated plan for exactly this
+      lookup. Unbound rows are counted in the explanation's summary instead.
+    * **The ``user.*`` opt-in.** A ``user.*`` capability the active task profile does not name
+      never becomes a signal at all, so importing one changes no existing decision — not its
+      score, not its flags, not its breakdown (ADR-0032 §6). Naming it in the profile makes it
+      score on the next decision with no re-import.
+    * **One record per (capability, runtime profile).** Several rows can exist for one subject
+      under different policy versions or machines;
+      :func:`~loadcoach.domain.evidence_policy.collapse_evidence` selects one rather than
+      averaging, and rows measured under a *different* profile survive so the explanation can
+      name the mismatch with a hash that evidence actually exists for.
+
+    Args:
+        database: The application's database handle.
+        weights: The active task profile's capability weights — the ``user.*`` gate's input.
+        now: The instant ages are measured from.
+        local_machine_fingerprint: This machine's fingerprint, or ``None``.
+
+    Returns:
+        ``model_id -> signals``. A model with no bound evidence has no entry, not an empty one.
+    """
+    from sqlalchemy import select
+
+    from loadcoach.domain.evidence_policy import collapse_evidence, weights_admit
+
+    with database.read() as session:
+        rows = (
+            session.execute(
+                select(CapabilityEvidence).where(CapabilityEvidence.match_state == "bound")
+            )
+            .scalars()
+            .all()
+        )
+
+    per_model: dict[str, list[EvidenceCandidate]] = {}
+    facts: dict[str, CapabilityEvidence] = {}
+    for row in rows:
+        if row.model_id is None or not weights_admit(row.capability_id, weights):
+            continue
+        facts[row.id] = row
+        per_model.setdefault(row.model_id, []).append(
+            EvidenceCandidate(
+                row_id=row.id,
+                capability_id=row.capability_id,
+                runtime_profile_hash=row.runtime_profile_hash,
+                machine_fingerprint=row.machine_fingerprint,
+                policy_version=row.policy_version,
+                measured_at=row.measured_at,
+                score=row.score,
+                confidence=row.confidence,
+                sample_count=row.sample_count,
+                benchmark_versions=_versions_of(row.benchmark_versions_json),
+                calibration=_calibration_of(row.goal_json),
+            )
+        )
+
+    signals: dict[str, tuple[CapabilitySignal, ...]] = {}
+    for model_id, candidates in per_model.items():
+        selected = collapse_evidence(
+            candidates, local_machine_fingerprint=local_machine_fingerprint
+        )
+        signals[model_id] = tuple(
+            CapabilitySignal(
+                capability_id=candidate.capability_id,
+                source="benchmark",
+                score=candidate.score,
+                confidence=candidate.confidence,
+                runtime_profile_hash=candidate.runtime_profile_hash,
+                machine_fingerprint=candidate.machine_fingerprint,
+                measured_at=candidate.measured_at,
+                sample_count=candidate.sample_count,
+                match_state="bound",
+                age_days=max(0, int((now - candidate.measured_at).total_seconds() // 86400)),
+                stale=bool(facts[candidate.row_id].stale),
+                stale_reason=facts[candidate.row_id].stale_reason,
+                calibration=candidate.calibration,
+            )
+            for candidate in selected
+        )
+    return signals
+
+
+def _versions_of(value: object) -> tuple[tuple[str, str], ...]:
+    """Render a stored ``benchmark_versions`` mapping as sorted pairs."""
+    if not isinstance(value, dict):
+        return ()
+    return tuple(sorted((str(key), str(item)) for key, item in value.items()))
+
+
+def _calibration_of(value: object) -> CalibrationFacts | None:
+    """Lift a stored goal group's calibration into the domain's value object."""
+    if not isinstance(value, dict):
+        return None
+    calibration = value.get("calibration")
+    if not isinstance(calibration, dict):
+        return None
+    measured_at = _as_datetime(calibration.get("measured_at"))
+    if measured_at is None:
+        return None
+    try:
+        return CalibrationFacts(
+            kappa_w=float(calibration["kappa_w"]),
+            n_holdout=int(calibration["n_holdout"]),
+            graded_by=str(calibration["graded_by"]),
+            measured_at=measured_at,
+        )
+    except (KeyError, TypeError, ValueError):
+        return None

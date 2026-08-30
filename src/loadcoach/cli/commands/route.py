@@ -82,6 +82,7 @@ def explain(
 
     from loadcoach.domain.routing.subject import ProviderFacts, RuntimeOverrides
     from loadcoach.infrastructure.providers.factory import build_provider
+    from loadcoach.services.machine import machine_fingerprint
     from loadcoach.services.routing import (
         NoEligibleModel,
         RouteRequest,
@@ -123,6 +124,8 @@ def explain(
                     routing=settings.routing,
                     runtime=settings.runtime,
                     telemetry=settings.telemetry,
+                    evidence=settings.evidence,
+                    machine_fingerprint=machine_fingerprint(),
                 ),
                 snapshot=snapshot,
                 now=datetime.now(UTC),

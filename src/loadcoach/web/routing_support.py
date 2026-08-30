@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from loadcoach.services.execution import provider_facts_for
+from loadcoach.services.machine import machine_fingerprint
 from loadcoach.services.routing import RoutingPolicy
 
 if TYPE_CHECKING:
@@ -28,9 +29,18 @@ __all__ = ["current_snapshot", "provider_facts_for", "routing_policy_for"]
 
 
 def routing_policy_for(settings: Settings) -> RoutingPolicy:
-    """Build the configured routing policy from settings."""
+    """Build the configured routing policy from settings.
+
+    The machine fingerprint is read here rather than passed in because it is a property of the
+    process, not of a request: SweatMeter profiles the host once and every decision compares
+    imported evidence against that one value (spec §10).
+    """
     return RoutingPolicy.from_settings(
-        routing=settings.routing, runtime=settings.runtime, telemetry=settings.telemetry
+        routing=settings.routing,
+        runtime=settings.runtime,
+        telemetry=settings.telemetry,
+        evidence=settings.evidence,
+        machine_fingerprint=machine_fingerprint(),
     )
 
 

@@ -40,6 +40,21 @@ packaging and release standards §3.
     never LoadCoach's clock; the scheduler runs it on `import_interval_hours`.
   - Degradation: an unreachable source retains its last import and badges those rows
     `source_unreachable`; `freeweight_url = ""` is *not configured*, which attempts nothing.
+- Phase 6, unit 4: scoring on measured evidence (routing §5, §5.1, §8, ADR-0023 §3, ADR-0032 §6).
+  - Routing reads `capability_evidence` filtered on `match_state = 'bound'`, collapses several
+    records for one subject to the one that scores rather than averaging them, and carries the
+    measurement's age, sample count and staleness into the explanation.
+  - `evidence_foreign_machine`: a performance, memory or energy measurement from another machine
+    is absent with a named reason and a remedy; a quality measurement from elsewhere is used and
+    badged (ADR-0017's last hard separation).
+  - `user.*` capabilities never become a signal unless the active task profile names them, and a
+    decision that used one states the goal slug, `kappa_w` and `n_holdout` in the rendered note.
+  - `evidence_summary` gains routing §8's documented fields — `imported_at`,
+    `oldest_measured_at`, `bundle_schema_version`, `policy_version`, `vocabulary_version`,
+    `stale`, `unmatched_records` — plus a `status` and a sentence saying, in words, what state
+    the evidence source is in.
+  - `loadcoach.services.machine`: this machine's fingerprint, from SweatMeter, so LoadCoach and
+    FreeWeight agree on it without either knowing about the other (spec §10).
 - Phase 5, unit 8: the surface (api.md §5, §8; spec §7.2).
   - `POST /jobs` (202; a repeated key returns the original job with `X-Idempotent-Replay`),
     `GET /jobs` (filters by state, class, task and source; opaque cursor pagination),

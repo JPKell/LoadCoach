@@ -69,6 +69,7 @@ from loadcoach.infrastructure.db.models import (
     RoutingDecision,
 )
 from loadcoach.infrastructure.db.models import RuntimeProfile as RuntimeProfileModel
+from loadcoach.services.evidence import bound_signals_for_routing, evidence_overview
 from loadcoach.services.task_profiles import StoredTaskProfile, list_stored_task_profiles
 
 if TYPE_CHECKING:
@@ -77,7 +78,12 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
     from sweatmeter import TelemetrySnapshot
 
-    from loadcoach.config import RoutingSettings, RuntimeSettings, TelemetrySettings
+    from loadcoach.config import (
+        EvidenceSettings,
+        RoutingSettings,
+        RuntimeSettings,
+        TelemetrySettings,
+    )
     from loadcoach.services.database import Database
 
 __all__ = [
@@ -160,6 +166,12 @@ class RoutingPolicy:
     vram_headroom_bytes: int = 512 * 1024 * 1024
     runtime_defaults: RuntimeProfile = field(default_factory=RuntimeProfile)
     runtime_per_model: Mapping[str, RuntimeProfile] = field(default_factory=dict)
+    machine_fingerprint: str | None = None
+    """This machine's fingerprint, from SweatMeter at startup (spec §10). ``None`` when it could
+    not be produced, which admits evidence from anywhere rather than refusing all of it."""
+    evidence_url: str = ""
+    """``[evidence] freeweight_url``, so a decision can say whether a source is configured at all
+    — which is a different state from one that is unavailable."""
 
     @classmethod
     def from_settings(
@@ -168,6 +180,8 @@ class RoutingPolicy:
         routing: RoutingSettings,
         runtime: RuntimeSettings,
         telemetry: TelemetrySettings,
+        evidence: EvidenceSettings | None = None,
+        machine_fingerprint: str | None = None,
     ) -> RoutingPolicy:
         """Build the policy from the three settings sections that shape a decision.
 
@@ -194,6 +208,8 @@ class RoutingPolicy:
                 canonical_id: RuntimeProfile(context_size=override.context_size)
                 for canonical_id, override in runtime.models.items()
             },
+            machine_fingerprint=machine_fingerprint,
+            evidence_url="" if evidence is None else evidence.freeweight_url.strip(),
         )
 
 
@@ -320,14 +336,23 @@ def _signals_for(rows: Sequence[ModelCapability]) -> tuple[CapabilitySignal, ...
 
 
 def _read_candidates(
-    database: Database, *, is_remote: bool
+    database: Database,
+    *,
+    is_remote: bool,
+    weights: Mapping[str, float],
+    now: datetime,
+    machine_fingerprint: str | None,
 ) -> tuple[tuple[ModelFacts, tuple[CapabilitySignal, ...]], ...]:
-    """Read every model the registry knows, with its non-benchmark capability signals.
+    """Read every model the registry knows, with every capability signal that may score it.
 
-    Benchmark evidence is not read here: the ``capability_evidence`` table arrives with P6's
-    import, and this phase's whole premise is routing with no FreeWeight in the picture. The
-    signal type it will produce is already the one scoring consumes, so P6 adds a query, not a
-    reshaping.
+    Two sources, one signal type: ``model_capabilities`` for declared flags, manual scores and
+    production statistics, and ``capability_evidence`` for FreeWeight's measurements. P3 built
+    the signal so that adding the second source would be a query rather than a reshaping, and
+    that is what this is.
+
+    The benchmark half filters on ``match_state = 'bound'`` and applies the ``user.*`` opt-in
+    before a signal exists at all — see
+    :func:`~loadcoach.services.evidence.bound_signals_for_routing`.
     """
     with database.read() as session:
         models = session.execute(select(Model).order_by(Model.canonical_id)).scalars().all()
@@ -335,8 +360,17 @@ def _read_candidates(
     by_model: dict[str, list[ModelCapability]] = {}
     for row in capability_rows:
         by_model.setdefault(row.model_id, []).append(row)
+    evidence = bound_signals_for_routing(
+        database,
+        weights=weights,
+        now=now,
+        local_machine_fingerprint=machine_fingerprint,
+    )
     return tuple(
-        (_facts_for(model, is_remote=is_remote), _signals_for(by_model.get(model.id, [])))
+        (
+            _facts_for(model, is_remote=is_remote),
+            _signals_for(by_model.get(model.id, [])) + evidence.get(model.id, ()),
+        )
         for model in models
     )
 
@@ -449,7 +483,14 @@ def route(
     min_output_tokens = cast("int | None", execution.get("min_output_tokens"))
     fallback_depth = int(cast("int", execution.get("fallback_depth", 0)))
 
-    candidates = _read_candidates(database, is_remote=provider.is_remote)
+    candidates = _read_candidates(
+        database,
+        is_remote=provider.is_remote,
+        weights=profile.weights,
+        now=now,
+        machine_fingerprint=policy.machine_fingerprint,
+    )
+    overview = evidence_overview(database, configured_url=policy.evidence_url)
     priors = parameter_band_priors(
         {facts.canonical_id: facts.parameter_count for facts, _ in candidates}
     )
@@ -458,6 +499,7 @@ def route(
         min_confidence=policy.min_confidence,
         parameter_priors=priors,
         require_evidence=request.overrides.require_evidence,
+        machine_fingerprint=policy.machine_fingerprint,
     )
 
     ranked: list[RankedCandidate] = []
@@ -577,6 +619,7 @@ def route(
         telemetry_snapshot=telemetry_snapshot_json(snapshot),
         overrides=_overrides_json(request.overrides),
         min_present_weight=policy.min_present_weight,
+        evidence=overview,
     )
 
     if persist:

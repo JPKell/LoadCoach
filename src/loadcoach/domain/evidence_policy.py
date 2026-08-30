@@ -46,6 +46,7 @@ __all__ = [
     "CalibrationFacts",
     "EvidenceCandidate",
     "EvidenceIdentity",
+    "EvidenceOverview",
     "LocalModel",
     "MatchState",
     "Staleness",
@@ -601,6 +602,88 @@ def user_capability_note(capability_id: str, calibration: CalibrationFacts | Non
         f"{calibration.n_holdout} held-out samples graded by {calibration.graded_by} on "
         f"{calibration.measured_at.date().isoformat()}"
     )
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceOverview:
+    """What routing §8's ``evidence_summary`` needs from the store rather than from a candidate.
+
+    Attributes:
+        configured: Whether ``[evidence] freeweight_url`` names a source at all. ``False`` is
+            **not configured**, which is a different state from unavailable and reads differently
+            everywhere.
+        source_status: The configured source's last outcome — ``ok``, ``unreachable``,
+            ``refused``, ``failed`` — or ``None`` when nothing has been attempted.
+        rows: How many evidence rows exist, in any ``match_state``.
+        bound: How many contribute to routing.
+        unmatched: Retained for a model discovery has not seen.
+        ambiguous: Retained ``ambiguous_name_only``; never scores.
+        stale: How many carry a staleness badge.
+        imported_at: The most recent import.
+        generated_at: The producer's own timestamp for that bundle.
+        oldest_measured_at: The oldest measurement in the store.
+        newest_measured_at: The newest.
+        bundle_schema_version: The bundle version last imported.
+        policy_version: The highest confidence-policy version present (ADR-0022 §3).
+        vocabulary_version: The highest capability-vocabulary version present.
+        error_text: The last failure's message, when there is one.
+    """
+
+    configured: bool = False
+    source_status: str | None = None
+    rows: int = 0
+    bound: int = 0
+    unmatched: int = 0
+    ambiguous: int = 0
+    stale: int = 0
+    imported_at: datetime | None = None
+    generated_at: datetime | None = None
+    oldest_measured_at: datetime | None = None
+    newest_measured_at: datetime | None = None
+    bundle_schema_version: str | None = None
+    policy_version: str | None = None
+    vocabulary_version: str | None = None
+    error_text: str | None = None
+
+    @property
+    def status(self) -> str:
+        """The one word the UI, ``/health`` and the explanation all use for this state."""
+        if not self.configured and self.rows == 0:
+            return "not_configured"
+        if self.source_status in ("unreachable", "refused", "failed"):
+            return self.source_status
+        if self.rows == 0:
+            return "none"
+        return "ok"
+
+    @property
+    def note(self) -> str:
+        """One sentence a person can read, for the explanation and the evidence page."""
+        if self.status == "not_configured":
+            return (
+                "No evidence source is configured ([evidence] freeweight_url is empty), so "
+                "routing ranks on declared capabilities and priors and says so."
+            )
+        if self.status == "none":
+            return (
+                "An evidence source is configured but nothing has been imported from it yet; "
+                "routing ranks on declared capabilities and priors."
+            )
+        if self.status == "unreachable":
+            return (
+                f"FreeWeight could not be reached, so the last import is retained and marked "
+                f"stale ({self.stale} of {self.rows} records); routing continues on it and on "
+                "its priors."
+            )
+        if self.status in ("refused", "failed"):
+            return (
+                f"The last refresh was {self.status}: {self.error_text or 'no detail recorded'}. "
+                f"The previous import's {self.rows} records are retained and still in use."
+            )
+        return (
+            f"{self.bound} of {self.rows} imported records are bound to a discovered model "
+            f"({self.stale} stale, {self.unmatched} unmatched, {self.ambiguous} ambiguous)."
+        )
 
 
 @dataclass(frozen=True, slots=True)
