@@ -41,7 +41,12 @@
 <p class="muted"><a href="/routing/{{ job.routing.decision_id }}">Every candidate, every number, and the stored document</a></p>
 {% endif %}
 
-{% if job.output.text %}
+{% if job.retention.content_scrubbed_at %}
+<h3>Output</h3>
+<p class="muted">Content removed by retention at {{ job.retention.content_scrubbed_at }} — the
+hashes, token counts, timings and the routing decision remain (spec §14). A database backup taken
+before the sweep keeps the text.</p>
+{% elif job.output.text %}
 <h3>Output</h3>
 <pre>{{ job.output.text }}</pre>
 {% endif %}

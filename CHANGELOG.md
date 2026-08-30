@@ -48,6 +48,11 @@ packaging and release standards §3.
   synchronous executor marks and releases the half-open probe exactly as the queue worker does.
   A decision made where no breaker registry exists — the CLI's one-shot process — now carries a
   `breaker_state_unavailable` flag instead of silently assuming no breakers are open.
+- A job whose text the retention sweep removed showed nothing where its output had been. The
+  job document now carries `retention.content_scrubbed_at` and `/jobs/{id}` says "content
+  removed by retention" with the instant, what remains, and that a `loadcoach db backup` taken
+  before the sweep keeps the text. Spec §14 now states the retention default M5 decided
+  (text kept 24 h after completion, then swept) instead of the pre-M5 "hashes by default".
 - `discover_models` was the one mutating service without the inner scope check: it now takes a
   `principal` and requires `admin` in the service layer as well as at `POST /models/discover`,
   closing P9's named failure mode for the last writer.

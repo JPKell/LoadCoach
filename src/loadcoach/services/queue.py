@@ -53,6 +53,7 @@ from loadcoach.domain.queue_state import (
 from loadcoach.domain.routing.subject import RuntimeOverrides
 from loadcoach.infrastructure.db.models import Job
 from loadcoach.services.execution import GenerateRequest
+from loadcoach.services.retention import SCRUBBED_MARKER
 from loadcoach.services.routing import load_task_profile
 
 if TYPE_CHECKING:
@@ -1347,6 +1348,13 @@ def job_document(database: Database, job_id: str) -> dict[str, Any]:
             "queue_wait_ms": record.queue_wait_ms,
         },
         "validation": {"passed": record.validation_passed, "attempts": len(attempts)},
+        # Retention's promise (F9/M5C-9): a scrubbed job says so, rather than showing nothing
+        # where its text was. The marker is written by services.retention's sweep.
+        "retention": {
+            "content_scrubbed_at": None
+            if record.request is None
+            else record.request.get(SCRUBBED_MARKER)
+        },
         "feedback": feedback,
         "attempts": [
             {

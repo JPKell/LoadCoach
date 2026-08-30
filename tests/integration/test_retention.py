@@ -81,6 +81,14 @@ def test_finished_jobs_lose_their_text_after_the_retention_and_keep_everything_e
         assert scrub_content(database, now=far_future, retention_hours=24).scrubbed_jobs == 0
         document = client.get(f"/api/v1/jobs/{job_id}").json()
         assert document["output"]["text"] is None
+        # F9 (M5C-9): retention's docstring promises the page and the API can say "content
+        # removed by retention" rather than showing nothing — now they do.
+        assert document["retention"]["content_scrubbed_at"] is not None
+        page = client.get(f"/jobs/{job_id}", headers={"Accept": "text/html"}).text
+        assert "Content removed by retention" in page
+        assert "A database backup taken" in page and "keeps the text" in page
+        fresh = client.get(f"/api/v1/jobs/{queued}").json()
+        assert fresh["retention"]["content_scrubbed_at"] is None
         client.post("/api/v1/queue/resume")
 
 

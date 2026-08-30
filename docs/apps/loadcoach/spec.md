@@ -264,7 +264,14 @@ Behavioural rules:
   application most likely to be exposed on a LAN, so its startup refusal matters most.
 * Scopes: `read` (status, models, explanations), `write` (submit, cancel, feedback), `admin`
   (settings, evidence import, queue control).
-* Prompts and responses are stored as hashes by default; full content only when explicitly enabled.
+* Prompt and response text is retained for `[storage] content_retention_hours` (24 by default)
+  after a job finishes, then removed by a sweep — the hashes, token counts, timings, model,
+  decision and events stay, so the job remains explicable (the M5-14 reconciliation: a queued job
+  needs its transcript to run, and a caller polling a finished job expects its output for a
+  while). A scrubbed job says "content removed by retention" wherever the text would have shown.
+  `retain_content = true` keeps text for ever and is config-only. Note that a
+  `loadcoach db backup` taken before the sweep is a byte copy: it keeps the text for as long as
+  the backup exists, outside the sweep's reach.
 * Imported evidence is untrusted input: schema-validated, size-limited, provenance-checked; an import
   can never execute anything or alter task profiles.
 * An import that names a **URL** is a fetch LoadCoach performs on a caller's behalf, so it obeys the
