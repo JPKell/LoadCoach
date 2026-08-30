@@ -1,6 +1,6 @@
 # LoadCoach — Public API
 
-**Base path:** `/api/v1` · **Conventions:** API and Contract Standards
+**Base path:** `/api/v1` · **Conventions:** [API and Contract Standards](../../standards/api-and-contract-standards.md)
 This is the suite's most externally consumed API: IdeaPress and any third-party tool depend on it.
 Everything here is additive within v1, and the committed OpenAPI snapshot is diff-checked in CI.
 
@@ -11,7 +11,7 @@ Everything here is additive within v1, and the committed OpenAPI snapshot is dif
 | Endpoint | Purpose |
 |---|---|
 | `GET /health` | Components: `database`, `provider`, `evidence`, `queue`, `gpu_telemetry` |
-| `GET /version` | Application version, API versions, accepted SetSpec schema versions. **Never authenticated** — negotiation precedes credentials (ADR-0026 §5) |
+| `GET /version` | Application version, API versions, accepted SetSpec schema versions. **Never authenticated** — negotiation precedes credentials ([ADR-0026 §5](../../adr/0026-local-http-hardening.md)) |
 | `GET /system/status` | Queue depth by state/class, oldest queued age, dispatch latency, active executions, residency, telemetry snapshot, starvation counter, circuit breakers |
 | `GET /system/telemetry/stream` | SSE telemetry |
 
@@ -21,7 +21,7 @@ Everything here is additive within v1, and the committed OpenAPI snapshot is dif
 |---|---|
 | `GET /models` | Registry with declared capabilities, evidence summary, reliability, residency |
 | `POST /models/discover` | Re-discovery through ModelRack |
-| `GET /models/{model_ref}` | Identity, descriptor, evidence per capability with source, age and `match_state`, reliability, circuit-breaker state. `model_ref` is the local ULID or an unambiguous prefix — **not** the canonical ID, which contains `/`, `:` and `@` and does not survive a path segment (ADR-0024) |
+| `GET /models/{model_ref}` | Identity, descriptor, evidence per capability with source, age and `match_state`, reliability, circuit-breaker state. `model_ref` is the local ULID or an unambiguous prefix — **not** the canonical ID, which contains `/`, `:` and `@` and does not survive a path segment ([ADR-0024](../../adr/0024-canonical-id-and-model-references.md)) |
 | `GET /models?canonical_id=…` | Lookup by identity; `?provider_kind=&provider_model_name=&artifact_digest=` is the exact-triple form |
 | `GET /task-profiles` · `GET /task-profiles/{id}` | Definitions with version, weights, constraints, execution and validation policy |
 
@@ -39,7 +39,7 @@ Everything here is additive within v1, and the committed OpenAPI snapshot is dif
 }
 ```
 
-Returns the full routing explanation (Routing §8) **without** executing. Errors:
+Returns the full routing explanation ([Routing §8](routing.md)) **without** executing. Errors:
 `TASK_PROFILE_NOT_FOUND`, `NO_ELIGIBLE_MODEL` (with every candidate and rejection reason).
 
 This endpoint is the cheapest way to understand the system, and the one to reach for when a decision
@@ -125,7 +125,7 @@ event: result       data: {"schema":"event.envelope",…,"payload":{…the full 
 
 Every frame carries the SetSpec event envelope **except** `token`, which is bare — the one documented
 exception, taken because a five-field envelope per token is roughly a hundred bytes of overhead on the
-hottest path in the suite (ADR-0025 §3).
+hottest path in the suite ([ADR-0025 §3](../../adr/0025-envelope-boundaries.md)).
 
 Terminal event is always `result` or `error`. Reconnection with `Last-Event-ID` replays from the
 persisted job events.
@@ -175,15 +175,15 @@ preservation uniform across both endpoints. Where a provider cannot stream
 unauthenticated loopback bind) and the body's value is ignored when a token is present, so one caller
 cannot overwrite another's feedback. Idempotent per `(job_id, source)`; a second call from the same
 source updates the existing record. Feeds the
-`reliability_factor` and regression detection (Routing §11). Never mutates benchmark
+`reliability_factor` and regression detection ([Routing §11](routing.md)). Never mutates benchmark
 evidence — production and benchmark evidence remain separate sources.
 
 ## 7. Evidence
 
 | Endpoint | Notes |
 |---|---|
-| `POST /evidence/import` | Body: a SetSpec `benchmark.evidence_bundle`, or `{"url": "http://127.0.0.1:8765"}` to pull from FreeWeight. Returns counts imported / updated / **unmatched** / rejected with reasons. The URL form obeys the fetch allowlist in ADR-0026 §3 — scheme, `evidence.allowed_source_hosts` (loopback only by default), literal-IP, redirect and size checks — and returns `EVIDENCE_SOURCE_REFUSED` when a URL fails them |
-| `GET /evidence` | Imported evidence, filterable by capability, model, `match_state`, minimum confidence, staleness. A **collection** envelope (`items`/`page`) whose items are `capability.evidence` SetSpec envelopes (ADR-0025 §2) |
+| `POST /evidence/import` | Body: a SetSpec `benchmark.evidence_bundle`, or `{"url": "http://127.0.0.1:8765"}` to pull from FreeWeight. Returns counts imported / updated / **unmatched** / rejected with reasons. The URL form obeys the fetch allowlist in [ADR-0026 §3](../../adr/0026-local-http-hardening.md) — scheme, `evidence.allowed_source_hosts` (loopback only by default), literal-IP, redirect and size checks — and returns `EVIDENCE_SOURCE_REFUSED` when a URL fails them |
+| `GET /evidence` | Imported evidence, filterable by capability, model, `match_state`, minimum confidence, staleness. A **collection** envelope (`items`/`page`) whose items are `capability.evidence` SetSpec envelopes ([ADR-0025 §2](../../adr/0025-envelope-boundaries.md)) |
 | `GET /evidence/sources` | Configured and observed sources with last import time, schema version and status |
 | `GET /reliability` | Production evidence per (model, task profile) |
 
@@ -194,7 +194,7 @@ Import never fails because a model has not been discovered. Evidence for an unkn
 `name_only` evidence against a locally-digested model, is **retained** with a `match_state` and
 counted separately in the response; it is bound automatically when discovery next produces a match,
 and it never contributes to a routing score until it is
-(ADR-0022 §4).
+([ADR-0022 §4](../../adr/0022-capability-evidence-record-contract.md)).
 
 ## 8. Queue
 

@@ -4,7 +4,7 @@
 evidence bundles exist to build against.
 **Milestones:** M4 (beta) at P6 · **M5 (LoadCoach 1.0) at P9**.
 **Also produces:** WeightsDB (extracted at P1), MirrorWall and `setspec.prompts` (extracted at P4).
-**Corrected 2026-08-21** by the final architecture audit:
+**Corrected 2026-08-21** by the [final architecture audit](../../reviews/final_architecture_audit.md):
 P3's resource constraints, P4's runtime-profile resolution, P5's queue mechanics.
 
 ---
@@ -19,12 +19,12 @@ WeightsDB — proving the package works for a second schema.
 **Work**
 * Repository skeleton; settings with precedence and unsafe-combination refusals; logging;
   request IDs; health and version endpoints; CLI skeleton.
-* **Extract WeightsDB** (WeightsDB Phase 1–2) from
+* **Extract WeightsDB** ([WeightsDB Phase 1–2](../../packages/weightsdb/development-plan.md)) from
   FreeWeight's storage layer, generalizing as it moves.
 * LoadCoach models and migration `0001`: `models`, `model_capabilities`, `runtime_profiles`,
   `task_profiles`, `settings`, `api_tokens`.
 * `Host` validation and the non-loopback refusal set — bind + token + acknowledgement +
-  `server.allowed_hosts` (ADR-0026) — from the first phase,
+  `server.allowed_hosts` ([ADR-0026](../../adr/0026-local-http-hardening.md)) — from the first phase,
   as FreeWeight does, because this is the application most likely to be exposed.
 * `loadcoach db upgrade|status|backup|restore`.
 
@@ -84,7 +84,7 @@ tests/unit/{test_task_profile_validation,test_registry}.py
 
 **Acceptance criteria**
 1. All **fifteen** shipped task profiles load and validate, including `content.review` — the prose
-   review intent IdeaPress's audit stages route to (Routing §2).
+   review intent IdeaPress's audit stages route to ([Routing §2](routing.md)).
 2. Models list shows declared capabilities and availability with reasons.
 3. A malformed profile refuses startup with the file, key and problem named.
 
@@ -100,8 +100,8 @@ using declared capabilities and manual scores — with **no FreeWeight in the pi
 
 **Prerequisites:** P2; SweatMeter for resource constraints.
 
-> **Sequencing note.** The VRAM constraint in Routing §4 needs the estimate specified in
-> Queue §5, which was scheduled for P5. The **estimator** therefore lands
+> **Sequencing note.** The VRAM constraint in [Routing §4](routing.md) needs the estimate specified in
+> [Queue §5](queue-and-scheduling.md), which was scheduled for P5. The **estimator** therefore lands
 > here, as a pure function over a descriptor, a runtime profile and a telemetry snapshot — which is
 > exactly what a constraint filter needs and what a unit test can drive. P5 adds the *admission
 > policy* around it: deferral, re-evaluation, the `waiting_resources` state and the aggregate check.
@@ -109,12 +109,12 @@ using declared capabilities and manual scores — with **no FreeWeight in the pi
 
 **Work**
 * **Runtime profile resolution** and the `served_context` derivation
-  (ADR-0023); every candidate is an execution subject,
+  ([ADR-0023](../../adr/0023-runtime-profile-resolution.md)); every candidate is an execution subject,
   and `runtime_profiles` rows are written here.
 * Pure scoring domain: constraint filter, capability scoring with the absent-evidence rule, adjustment
   factors (reliability neutral for now), ranking with a total order, fallback selection.
 * VRAM/KV estimator as a pure function, evaluated **per GPU** and never summed
-  (ADR-0027).
+  ([ADR-0027](../../adr/0027-multi-gpu-semantics.md)).
 * Context estimation and budgeting against `served_context`.
 * Explanation assembly and persistence (`routing_decisions`, `routing_candidates`).
 * `POST /route`; `loadcoach route explain`; a Routing page rendering the explanation readably.
@@ -174,10 +174,10 @@ the UI runs on the newly extracted MirrorWall.
   prompt.
 * `POST /generate`, `POST /generate/stream`; job records for synchronous requests too (so every
   execution has an explanation and a history).
-* **Extract MirrorWall** (MirrorWall Phases 1–2);
+* **Extract MirrorWall** ([MirrorWall Phases 1–2](../../packages/mirrorwall/development-plan.md));
   rebuild LoadCoach's pages on it; telemetry bar live.
 * **Extract `setspec.prompts`** from FreeWeight's prompt module
-  (ADR-0028); LoadCoach uses it from the start, and a
+  ([ADR-0028](../../adr/0028-prompt-pack-granularity.md)); LoadCoach uses it from the start, and a
   golden test asserts FreeWeight's existing pack hashes identically before and after the move.
 
 **Files/subsystems**
@@ -226,7 +226,7 @@ recovery — with the scheduling simulator proving the properties.
 * Worker threads with atomic lease-based claiming (the claim does **not** touch `attempt`), adaptive
   polling and an enqueue wake-up; a **lease keeper** on the scheduler thread renewing the leases of
   executing jobs, because a worker inside a blocking provider call cannot renew its own
-  (ADR-0029 §4).
+  ([ADR-0029 §4](../../adr/0029-queue-mechanics.md)).
 * Admission **policy** around P3's estimator: the `admitted` and `waiting_resources` states, lease
   release on deferral, re-evaluation on unload or headroom, per-device aggregate checks, and
   FreeWeight's measured KV bytes per token where present.
@@ -256,7 +256,7 @@ tests/integration/{test_queue,test_recovery,test_cancellation}.py
   1, 2, 3 with no collision, and `max_attempts` bounds the total.
 * Lease renewal across an attempt longer than `lease_seconds`: not reclaimed while the worker is
   inside a blocking call; reclaimed once the keeper stops.
-* Every legal transition in Queue §2 is exercised and every illegal one
+* Every legal transition in [Queue §2](queue-and-scheduling.md) is exercised and every illegal one
   rejected — including `leased → waiting_resources` (which releases the lease) and
   `leased → cancelling`.
 * Admission: defers with numbers when VRAM is short; resumes when it frees.
@@ -288,14 +288,14 @@ priority inversion.
 
 **Work**
 * Importer: file upload and pull-from-URL (through the fetch allowlist,
-  ADR-0026 §3); schema-version negotiation; provenance
+  [ADR-0026 §3](../../adr/0026-local-http-hardening.md)); schema-version negotiation; provenance
   validation; per-record reporting of imported / updated / **unmatched** / rejected.
-* Identity binding per ADR-0022 §4: evidence
+* Identity binding per [ADR-0022 §4](../../adr/0022-capability-evidence-record-contract.md): evidence
   for an undiscovered model is retained and bound later; a digest in the bundle upgrades a local
   `name_only` row; `name_only` evidence against a locally-digested model stays `ambiguous_name_only`
   and never scores.
 * Evidence matched to an execution only on `runtime_profile_hash`
-  (ADR-0023); a mismatch is named in the explanation
+  ([ADR-0023](../../adr/0023-runtime-profile-resolution.md)); a mismatch is named in the explanation
   with both hashes and the FreeWeight invocation that would fix it.
 * `[evidence] freeweight_api_key_env` so a FreeWeight that requires a token can be pulled from.
 * `capability_evidence` and `evidence_sources` tables; staleness evaluation; scheduled refresh.
@@ -306,7 +306,7 @@ priority inversion.
   is stored and shown in the evidence UI like any other, but contributes nothing to routing until
   named. A routing explanation that used one names the goal, its `kappa_w` and its `n_holdout` in
   words — not just the confidence number
-  (ADR-0032 §6).
+  ([ADR-0032 §6](../../adr/0032-judge-validity-and-user-capability-namespace.md)).
 * `POST /evidence/import`, `GET /evidence`, `GET /evidence/sources`; CLI; a Benchmarks (evidence) UI
   page showing source, age, confidence and coverage per capability.
 
@@ -425,7 +425,7 @@ tests/accessibility/test_ui_checklist.py
 
 **Acceptance criteria**
 1. A user can answer "why did it pick that model?" entirely from the UI in under a minute.
-2. Every acceptance item in UI/UX Standards §13 passes.
+2. Every acceptance item in [UI/UX Standards §13](../../standards/ui-ux-standards.md) passes.
 
 **Known risks:** explanation rendering that is technically complete but unreadable. Mitigated by the
 one-minute usability criterion above.
@@ -462,7 +462,7 @@ tests/security/**  tests/performance/**
 ```
 
 **Tests**
-* Every security test in Security Standards §14.
+* Every security test in [Security Standards §14](../../standards/security-standards.md).
 * Non-loopback bind without tokens refuses to start; scoped endpoints reject wrong scopes.
 * Rate limit and queue cap enforced per token.
 * Every performance budget met.
@@ -470,7 +470,7 @@ tests/security/**  tests/performance/**
 
 **Acceptance criteria**
 1. All 12 acceptance criteria in the [spec §20](spec.md) pass.
-2. All LoadCoach gold standards in Gold Standards §2 are met.
+2. All LoadCoach gold standards in [Gold Standards §2](../../standards/gold-standards.md) are met.
 3. Documentation complete; `loadcoach doctor` diagnoses every documented failure mode.
 4. `loadcoach 1.0.0` published; **IdeaPress may begin its LoadCoach integration phase.**
 
