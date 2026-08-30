@@ -86,7 +86,9 @@ POST /jobs                       GET  /jobs                     GET  /jobs/{id}
 GET  /jobs/{id}/stream           POST /jobs/{id}/cancel         POST /jobs/{id}/feedback
 GET  /jobs/{id}/explanation      GET  /queue                    GET  /evidence
 POST /evidence/import            GET  /evidence/sources         GET  /reliability
-GET  /settings                   PUT  /settings
+GET  /settings                   PUT  /settings                 GET  /routing-decisions
+GET  /routing-decisions/{id}     POST /queue/pause              POST /queue/resume
+POST /queue/drain
 ```
 
 `POST /route` performs routing **without executing** — the "explain what you would do" endpoint, and
@@ -96,7 +98,8 @@ the cheapest way for a caller to understand the system.
 
 ```text
 loadcoach serve | health | doctor | version
-loadcoach config show|validate|init|path        loadcoach db upgrade|status|backup|restore
+loadcoach config show|validate|init|path|reference
+loadcoach db upgrade|status|backup|restore
 loadcoach models list|show|refresh|residency    loadcoach tasks list|show|validate
 loadcoach route explain --task … [--prompt-file …]
 loadcoach generate --task … [--prompt-file …] [--stream]
