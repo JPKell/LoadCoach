@@ -15,6 +15,7 @@ import typer
 from loadcoach.cli.commands import config as config_commands
 from loadcoach.cli.commands import db as db_commands
 from loadcoach.cli.commands import evidence as evidence_commands
+from loadcoach.cli.commands import generate as generate_commands
 from loadcoach.cli.commands import job as job_commands
 from loadcoach.cli.commands import models as models_commands
 from loadcoach.cli.commands import queue as queue_commands
@@ -62,6 +63,7 @@ app.command(name="serve", help="Start the web server (also the default with no s
 app.command(name="health", help="Report component health.")(system_commands.health)
 app.command(name="version", help="Print the application and API versions.")(system_commands.version)
 app.command(name="doctor", help="Diagnose a broken installation.")(system_commands.doctor)
+app.command(name="generate", help="Route a task and execute it now.")(generate_commands.generate)
 app.add_typer(config_commands.app, name="config", help="Configuration inspection and management.")
 app.add_typer(db_commands.app, name="db", help="Database migration and maintenance.")
 app.add_typer(models_commands.app, name="models", help="Model discovery and inspection.")

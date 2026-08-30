@@ -33,6 +33,7 @@ from mirrorwall import sse_response
 from modelrack import CancellationToken, Message, Role
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from setspec import GeneratorInfo
+from starlette.responses import StreamingResponse
 
 from loadcoach.__about__ import __version__
 from loadcoach.domain.authorization import authorize
@@ -53,8 +54,6 @@ from loadcoach.web.routes.routing import OverridesBody
 from loadcoach.web.routing_support import current_snapshot, routing_policy_for
 
 if TYPE_CHECKING:
-    from starlette.responses import StreamingResponse
-
     from loadcoach.services.database import Database
     from loadcoach.services.job_events import JobEventSink
 

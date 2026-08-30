@@ -292,3 +292,43 @@ def test_models_residency_is_empty_on_a_fresh_install() -> None:
     result = runner.invoke(app, ["models", "residency", "--json"])
     assert result.exit_code == 0
     assert json.loads(result.stdout) == []
+
+
+def test_generate_routes_executes_and_prints_the_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """spec §7.2's ``loadcoach generate``, through the same executor as POST /generate."""
+    import json
+
+    from tests.integration.test_generate import NOW
+
+    from loadcoach.config import ProviderSettings
+    from loadcoach.infrastructure.providers.factory import build_provider
+    from loadcoach.services.database import Database, ensure_ready
+    from loadcoach.services.models import discover_models
+
+    url = f"sqlite:///{tmp_path / 'gen.sqlite3'}"
+    monkeypatch.setenv("LOADCOACH_STORAGE__DATABASE_URL", url)
+    database = Database.from_url(url)
+    ensure_ready(database, auto_migrate=True)
+    # Discover with the same fake the command itself builds, so the two agree on the model.
+    discover_models(database, build_provider(ProviderSettings(kind="fake")), now=NOW)
+    database.close()
+    result = runner.invoke(app, ["generate", "--task", "general.chat", "--prompt", "2+2?"])
+    assert result.exit_code == 0, result.output
+    text = result.stdout.strip()
+    assert text  # the fake provider's default generation
+    as_json = runner.invoke(app, ["generate", "--task", "general.chat", "--prompt", "x", "--json"])
+    assert as_json.exit_code == 0, as_json.output
+    document = json.loads(as_json.stdout)
+    assert document["status"] == "completed" and document["routing"]["decision_id"]
+    assert document["output"]["text"]  # the fake's default text differs per call
+    prompt_file = tmp_path / "p.txt"
+    prompt_file.write_text("from a file")
+    streamed = runner.invoke(
+        app, ["generate", "--task", "general.chat", "--prompt-file", str(prompt_file), "--stream"]
+    )
+    assert streamed.exit_code == 0, streamed.output
+    assert streamed.stdout.strip()  # the deltas, printed as they arrived
+    assert runner.invoke(app, ["generate", "--task", "general.chat"]).exit_code == 2
+    assert runner.invoke(app, ["generate", "--task", "no.such", "--prompt", "x"]).exit_code == 5

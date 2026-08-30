@@ -107,12 +107,31 @@ def version(
     print_version(json_output=json_output)
 
 
-def doctor() -> None:
-    """Diagnose a broken installation. Mode: local."""
-    from loadcoach.services.health import get_health_report
+def doctor(
+    config: Annotated[
+        str | None, typer.Option("--config", help="Path to a config.toml file.")
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print every finding as JSON.")
+    ] = False,
+) -> None:
+    """Diagnose an installation against every documented failure mode. Mode: local.
 
-    report = get_health_report()
-    typer.echo(f"loadcoach doctor — status: {report.status}")
-    for component in report.components:
-        symbol = "✓" if component.status == "ok" else "!" if component.status == "degraded" else "✗"
-        typer.echo(f"  {symbol} {component.name}: {component.detail}")
+    One line per failure mode spec §13 and §5 document: ✓ it cannot happen here, ! it is
+    degrading service, ✗ it is happening, each with what to do. Exit 0 (ok), 0 with warnings,
+    or 4 when anything fails.
+    """
+    from loadcoach.services.doctor import diagnose
+
+    diagnosis = diagnose(config_path=config)
+    if json_output:
+        typer.echo(json.dumps(diagnosis.as_json()))
+    else:
+        typer.echo(f"loadcoach doctor — {diagnosis.status}")
+        for finding in diagnosis.findings:
+            symbol = {"ok": "✓", "warn": "!", "fail": "✗", "skip": "-"}[finding.verdict]
+            typer.echo(f"  {symbol} {finding.code}: {finding.detail}")
+            if finding.remedy and finding.verdict in ("warn", "fail"):
+                typer.echo(f"      → {finding.remedy}")
+    if diagnosis.status == "fail":
+        raise typer.Exit(4)

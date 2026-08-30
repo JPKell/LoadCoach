@@ -1,60 +1,65 @@
 # LoadCoach
 
-Turns FreeWeight's measurements (or declared capabilities) into routed, queued, validated inference execution with a fully explainable decision for every job.
+Turns FreeWeight's measurements (or declared capabilities) into routed, queued, validated inference
+execution with a fully explainable decision for every job.
 
-**Status:** `0.9.0b0` — beta. Phases 1–6 of the
-[development plan](docs/apps/loadcoach/development-plan.md) are built: the registry and task
-profiles, evidence-weighted routing with a full explanation for every decision, synchronous and
-streaming generation with validation and corrective retries, a durable priority queue with leases,
-ageing, cancellation, recovery and a circuit breaker, and FreeWeight evidence import that visibly
-changes routing. Phases 7–9 — production feedback and regression detection, the dashboard, and
-auth/rate-limit hardening for 1.0 — are not.
+**Status:** `1.0.0` — the M5 release, **prepared and not yet published**. Every phase of the
+[development plan](docs/apps/loadcoach/development-plan.md) is built: the registry and task
+profiles; evidence-weighted routing with a readable explanation for every decision; synchronous and
+streaming generation with validation and corrective retries; a durable priority queue with leases,
+ageing, cancellation, recovery and a circuit breaker; FreeWeight evidence import; production
+feedback, reliability and regression detection; a complete operator UI (dashboard, jobs, live
+queue, models, reliability, system, settings); and the hardening a LAN bind needs — scopes checked
+at the route and in the service, per-token rate limits, per-source queue caps, CSRF, Host
+validation, body limits, content retention.
 
-What that means in practice:
-
-* `loadcoach serve` starts with zero configuration and needs no provider, no GPU and no FreeWeight.
-  Each of those absences is a documented degraded state, never a failure to serve.
-* Every routing decision is persisted in full and retrievable, with per-capability scores,
-  confidences, evidence ages and the reason for every rejection and every absence.
-* Importing a FreeWeight bundle changes routing, and the explanation says exactly how.
-* **Not yet ready to expose on a LAN.** Bearer tokens and the cumulative scope rule exist and gate
-  evidence import; per-token rate limits and queue-depth caps do not. That is Phase 9's work.
-
-**Not installable from an index yet:** `weightsdb` and `mirrorwall`, two of this package's runtime
-dependencies, are extracted from this repository's own work and are not published. See
-[`requirements/README.md`](requirements/README.md).
+**Not installable from an index yet:** `weightsdb 0.2.0`, one of this package's runtime
+dependencies, is tagged but its PyPI release was still awaiting approval when 1.0.0 was stamped
+(`mirrorwall 0.2.0` is published). Until it lands, `pip install loadcoach` cannot resolve and CI's
+install jobs stay red; see [`requirements/README.md`](requirements/README.md). Locally the
+repository runs against editable installs of the sibling packages.
 
 Part of the **Local AI Suite**.
 
 ## Install
 
 ```bash
-pip install loadcoach     # not yet — see the status note above
-loadcoach serve
+pip install loadcoach          # once weightsdb 0.2.0 is on PyPI
+loadcoach serve                # web UI + API on http://127.0.0.1:8766, zero configuration
+loadcoach doctor               # every documented failure mode, ✓ / ! / ✗, with what to do
 ```
 
-Starts on `127.0.0.1:8766` with zero configuration. See [docs/apps/loadcoach/spec.md](docs/apps/loadcoach/spec.md) §12 for the full configuration surface and `LOADCOACH_*` environment variables.
+No provider, no GPU, no FreeWeight is required to start; each absence is a documented degraded
+state. Ollama on `127.0.0.1:11434` is the default provider.
 
-## Quickstart
+## What it does
 
-```bash
-pip install loadcoach
-loadcoach serve            # starts the web UI + API on 127.0.0.1:8766
-loadcoach health --json     # same health data the API reports, from the CLI
-loadcoach --help
-```
+* **Routes explainably.** Every decision is persisted in full — candidates, per-capability scores
+  with their source and age, the four adjustment factors with their inputs, every rejection with
+  its numbers — and `/jobs/<id>` answers *why this model?* before it shows a table.
+* **Learns from production.** Attempt outcomes and caller feedback become bounded per-model
+  reliability statistics that deprioritize a failing model, exclude it through a circuit breaker
+  with a re-probe, and flag a regression against the model's own history.
+* **Queues durably.** Priority classes, ageing with a proven starvation bound, leases, cancellation
+  within a chunk, VRAM-aware admission, residency management, and recovery after a kill that loses
+  and duplicates nothing.
+* **Exposes safely.** Loopback and open by default; on a LAN, tokens with cumulative scopes checked
+  twice, Host validation before authentication, CSRF on forms, rate limits with `Retry-After`,
+  and a `doctor` that names what is wrong.
 
 ## Documentation
 
-Project documentation lives under [`docs/`](docs/README.md). Start with [`docs/README.md`](docs/README.md).
-
 | Read this | For |
 |---|---|
-| [docs/apps/loadcoach/spec.md](docs/apps/loadcoach/spec.md) | Purpose, scope, non-goals, public contracts, configuration, acceptance criteria |
-| [docs/apps/loadcoach/development-plan.md](docs/apps/loadcoach/development-plan.md) | The phased build plan: goals, work, tests, acceptance criteria per phase |
-| [docs/apps/loadcoach/routing.md](docs/apps/loadcoach/routing.md) | How a model is chosen, and what the explanation contains |
-| [docs/apps/loadcoach/queue-and-scheduling.md](docs/apps/loadcoach/queue-and-scheduling.md) | Priority, ageing, leases, admission and recovery |
-| [docs/apps/loadcoach/api.md](docs/apps/loadcoach/api.md) | Every endpoint, its shape and its scope |
+| [docs/quickstart.md](docs/quickstart.md) | The first request, reading a decision, feedback |
+| [docs/configuration.md](docs/configuration.md) | Every key, generated from the settings model |
+| [docs/routing.md](docs/routing.md) | How a model is chosen and how to change the answer |
+| [docs/operations.md](docs/operations.md) | Health, queue controls, retention, backups, what to watch |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Every error code and what to do |
+| [docs/upgrading.md](docs/upgrading.md) | Migrations, behaviour changes, the downgrade path |
+| [docs/security.md](docs/security.md) | The LAN-exposure path end to end |
+| [docs/openapi.json](docs/openapi.json) | The API, as a committed OpenAPI snapshot |
+| [docs/apps/loadcoach/](docs/apps/loadcoach/) | The specification, routing, queue and API documents (mirrored from the suite) |
 
 ## Development
 
@@ -62,12 +67,10 @@ Project documentation lives under [`docs/`](docs/README.md). Start with [`docs/R
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 pre-commit install
+ruff format --check . && ruff check . && mypy src tests && lint-imports
 pytest -m "not live and not performance"
+pytest -m performance            # every spec §15 budget, measured
+pytest tests/security            # Security Standards §14, item by item
 ```
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full workflow and [`SECURITY.md`](SECURITY.md) for
-how to report a vulnerability.
-
-## License
-
-Apache-2.0 — see [`LICENSE`](LICENSE).
+Licensed under the Apache License 2.0.

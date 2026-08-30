@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from mirrorwall import sse_response
+from starlette.responses import StreamingResponse
 
 from loadcoach.domain.authorization import Principal, authorize
 from loadcoach.services.queue import queue_flags, set_queue_flag
@@ -25,8 +26,6 @@ from loadcoach.web.csrf import render_form_page
 from loadcoach.web.routes.generate import GENERATOR
 
 if TYPE_CHECKING:
-    from starlette.responses import StreamingResponse
-
     from loadcoach.services.worker import QueueRuntime
 
 __all__ = ["router", "ui_router"]

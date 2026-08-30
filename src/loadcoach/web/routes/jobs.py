@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import base64
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from fastapi import APIRouter, Query, Request, Response, status
 from fastapi.responses import HTMLResponse
 from mirrorwall import clamp_limit, paginated_response, sse_response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
+from starlette.responses import StreamingResponse
 
 from loadcoach.domain.authorization import authorize
 from loadcoach.domain.priority import JobClass
@@ -45,9 +46,6 @@ from loadcoach.web.routes.generate import (
     overrides_of,
     source_of,
 )
-
-if TYPE_CHECKING:
-    from starlette.responses import StreamingResponse
 
 __all__ = ["FeedbackBody", "JobBody", "router", "ui_router"]
 

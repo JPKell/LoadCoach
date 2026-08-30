@@ -7,6 +7,17 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-08-30
+
+LoadCoach 1.0: the M5 exit — an explainable, durable, secure routing service. Phases 7 through 9
+of the [development plan](docs/apps/loadcoach/development-plan.md): production feedback and
+reliability, the complete operator UI, and hardening for a LAN.
+
+**Prepared, not published.** No tag, no upload. `weightsdb 0.2.0` is tagged but its release run
+was still waiting on approval when this version was stamped; until it is on PyPI this package
+cannot be installed from an index — see [`requirements/README.md`](requirements/README.md).
+`mirrorwall 0.2.0` is published.
+
 ### Added
 - Phase 7, unit 1: the feedback and reliability schema and its pure statistics (data model §2–§4,
   routing §6 and §11, ADR-0016).
@@ -110,6 +121,17 @@ packaging and release standards §3.
   and the added latency per streamed chunk. `tests/simulation/test_scale.py` drives a thousand
   mixed-class jobs through the real queue on the fake clock: every job completes, interactive
   work waits least, and the background wait stays inside the starvation bound.
+
+### Changed
+- `loadcoach doctor` diagnoses every documented failure mode by name (spec §13 and §5), with a
+  remedy each, and exits 4 when one is present; `--json` prints every finding.
+- `loadcoach config reference` generates `docs/configuration.md` from the settings model;
+  `--check` fails on drift and a test holds the committed file to it (configuration standards §8).
+- `loadcoach generate --task … [--prompt|--prompt-file] [--stream]` — spec §7.2's synchronous
+  command, which the beta listed but did not ship.
+- `docs/openapi.json` is the committed OpenAPI snapshot, held by a contract test.
+- Seven operator documents under `docs/`: quickstart, configuration, routing, operations,
+  troubleshooting, upgrading, security.
 
 ## [0.9.0b0] — 2026-08-30
 

@@ -8,11 +8,11 @@ phase, so today that is simply the router's default.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from mirrorwall import sse_response
+from starlette.responses import StreamingResponse
 
 from loadcoach.__about__ import __version__
 from loadcoach.domain.authorization import authorize
@@ -24,9 +24,6 @@ from loadcoach.web.auth import CurrentPrincipal
 from loadcoach.web.rendering import render
 from loadcoach.web.routes.generate import GENERATOR
 from loadcoach.web.routing_support import current_snapshot
-
-if TYPE_CHECKING:
-    from starlette.responses import StreamingResponse
 
 __all__ = ["router", "ui_router"]
 
