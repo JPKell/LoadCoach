@@ -15,7 +15,8 @@ a failure is (P5-9's ``breaker_source`` seam).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 from weightsdb import upsert
@@ -25,10 +26,12 @@ from loadcoach.domain.reliability import (
     WINDOWS,
     AttemptOutcome,
     FeedbackOutcome,
+    RegressionVerdict,
     ReliabilityFactor,
     WindowStats,
     compute_stats,
     counts_as_success,
+    detect_regression,
     reliability_factor,
 )
 from loadcoach.infrastructure.db.models import (
@@ -40,7 +43,7 @@ from loadcoach.infrastructure.db.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
     from datetime import datetime
 
     from sqlalchemy.orm import Session
@@ -49,6 +52,7 @@ if TYPE_CHECKING:
     from loadcoach.services.database import Database
 
 __all__ = [
+    "ReliabilityEntry",
     "attempt_outcomes",
     "breaker_samples",
     "factors_for_task",
@@ -57,6 +61,8 @@ __all__ = [
     "record_breaker_verdicts",
     "recompute_all",
     "recompute_pair",
+    "regression_warnings",
+    "reliability_report",
     "stats_for",
 ]
 
@@ -335,3 +341,110 @@ def record_breaker_verdicts(
             row.updated_at = now
             updated += 1
     return updated
+
+
+@dataclass(frozen=True, slots=True)
+class ReliabilityEntry:
+    """One ``(model, task_profile)`` as ``GET /reliability`` and the Reliability page show it.
+
+    Attributes:
+        model_id: The model's registry ULID.
+        canonical_id: The model's canonical ID.
+        task_profile_id: The profile.
+        windows: The stored statistics keyed by window; a missing window is an empty one.
+        factor: The reliability factor routing applies to this pair right now.
+        regression: The verdict of the ``7d`` window against everything before it.
+        circuit_state: The breaker's persisted state for the model.
+        circuit_opened_at: When it opened, if it is open.
+        circuit_reason: The breaker's own line.
+        updated_at: When the rows were last recomputed.
+    """
+
+    model_id: str
+    canonical_id: str
+    task_profile_id: str
+    windows: Mapping[str, WindowStats]
+    factor: ReliabilityFactor
+    regression: RegressionVerdict
+    circuit_state: str
+    circuit_opened_at: datetime | None
+    circuit_reason: str | None
+    updated_at: datetime
+
+    def as_json(self) -> dict[str, Any]:
+        """The API record: every statistic bounded, every absence with its reason."""
+        from baseaicore.timeutil import to_rfc3339
+
+        return {
+            "model": {"canonical_id": self.canonical_id, "model_ref": self.model_id},
+            "task_profile_id": self.task_profile_id,
+            "windows": {name: stats.as_json() for name, stats in self.windows.items()},
+            "factor": self.factor.as_json(),
+            "regression": self.regression.as_json(),
+            "circuit_breaker": {
+                "state": self.circuit_state,
+                "opened_at": (
+                    None if self.circuit_opened_at is None else to_rfc3339(self.circuit_opened_at)
+                ),
+                "reason": self.circuit_reason,
+            },
+            "updated_at": to_rfc3339(self.updated_at),
+        }
+
+
+def reliability_report(
+    database: Database,
+    *,
+    task_profile_id: str | None = None,
+    canonical_id: str | None = None,
+) -> tuple[ReliabilityEntry, ...]:
+    """Every known pair's statistics, factor, regression verdict and breaker state.
+
+    Args:
+        database: The application's database handle.
+        task_profile_id: Restrict to one profile, or ``None`` for all.
+        canonical_id: Restrict to one model, or ``None`` for all.
+
+    Returns:
+        Entries ordered by canonical ID then profile. A pair is present once any window row
+        exists for it; the windows it has no row for are reported empty, not omitted.
+    """
+    query = select(ReliabilityStat, Model.canonical_id).join(
+        Model, Model.id == ReliabilityStat.model_id
+    )
+    if task_profile_id is not None:
+        query = query.where(ReliabilityStat.task_profile_id == task_profile_id)
+    if canonical_id is not None:
+        query = query.where(Model.canonical_id == canonical_id)
+    grouped: dict[tuple[str, str, str], list[ReliabilityStat]] = {}
+    with database.read() as session:
+        for row, model_canonical_id in session.execute(query).all():
+            grouped.setdefault((model_canonical_id, row.task_profile_id, row.model_id), []).append(
+                row
+            )
+        entries: list[ReliabilityEntry] = []
+        for (model_canonical_id, profile, model_id), rows in sorted(grouped.items()):
+            windows = {row.window: _stats_of(row) for row in rows}
+            for window in WINDOWS:
+                windows.setdefault(window.name, WindowStats(window=window.name))
+            latest = max(rows, key=lambda row: row.updated_at)
+            entries.append(
+                ReliabilityEntry(
+                    model_id=model_id,
+                    canonical_id=model_canonical_id,
+                    task_profile_id=profile,
+                    windows=windows,
+                    factor=reliability_factor(windows),
+                    regression=detect_regression(recent=windows["7d"], all_time=windows["all"]),
+                    circuit_state=latest.circuit_state,
+                    circuit_opened_at=latest.circuit_opened_at,
+                    circuit_reason=latest.circuit_reason,
+                    updated_at=latest.updated_at,
+                )
+            )
+    return tuple(entries)
+
+
+def regression_warnings(database: Database) -> tuple[ReliabilityEntry, ...]:
+    """The pairs whose recent validated-success rate has regressed (routing §11, spec §17)."""
+    return tuple(entry for entry in reliability_report(database) if entry.regression.regressed)

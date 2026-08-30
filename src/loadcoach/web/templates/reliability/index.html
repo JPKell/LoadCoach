@@ -1,0 +1,106 @@
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import badge, empty_state, json_viewer, table %}
+{% block title %}Reliability — LoadCoach{% endblock %}
+
+{# Every statistic is a bounded value: present with its sample count, or an em dash carrying the
+   reason it is absent (ADR-0016 rule 5). The dash comes from MirrorWall's `measurement` filter,
+   so it is the same dash, with the same tooltip and aria-label, every other page uses. #}
+{% macro pct(stat) -%}
+{% if stat.value is none %}{{ none | measurement(stat.reason) }}{% else %}{{ "%.0f%%"|format(stat.value * 100) }}{% endif %}
+{%- endmacro %}
+{% macro ms(stat) -%}
+{% if stat.value is none %}{{ none | measurement(stat.reason) }}{% else %}{{ stat.value | measurement(none, "ms") }}{% endif %}
+{%- endmacro %}
+{% macro num(stat, fmt="%.1f") -%}
+{% if stat.value is none %}{{ none | measurement(stat.reason) }}{% else %}{{ fmt|format(stat.value) }}{% endif %}
+{%- endmacro %}
+{% macro trend(verdict) -%}
+{% if verdict.status == "regressed" %}{{ badge("regression", tone="danger", title=verdict.reason) }}
+{% elif verdict.status == "stable" %}{{ badge("stable", tone="success", title=verdict.reason) }}
+{% else %}{{ badge("not evaluated", tone="neutral", title=verdict.reason) }}{% endif %}
+{%- endmacro %}
+{% macro breaker(entry) -%}
+{% if entry.circuit_state == "open" %}{{ badge("open", tone="danger", title=entry.circuit_reason) }}
+{% elif entry.circuit_state == "half_open" %}{{ badge("half-open", tone="warning", title=entry.circuit_reason) }}
+{% else %}{{ badge("closed", tone="success", title=entry.circuit_reason) }}{% endif %}
+{%- endmacro %}
+
+{% block content %}
+<h2>Reliability</h2>
+<p class="muted">Production evidence per model and task profile: what actually happened when jobs
+ran. Every rate needs {{ minimums.rate_samples }} samples, every percentile
+{{ minimums.percentile_samples }}, and the routing factor {{ minimums.factor_attempts }} counted
+attempts in the last 7 or 30 days — below that a value is shown as — with the reason, never as a
+number. A regression is a drop of at least {{ "%.0f%%"|format(minimums.regression_drop * 100) }}
+in validated success against the model's own history, at z ≥ {{ minimums.regression_z }}.</p>
+
+{% if task or model %}
+<p class="muted">Filtered to{% if task %} task <span class="mono">{{ task }}</span>{% endif %}{% if model %} model <span class="mono">{{ model }}</span>{% endif %}. <a href="/reliability">Show all</a></p>
+{% endif %}
+
+{% if not entries %}
+{{ empty_state("No production evidence yet. Statistics appear once jobs have run; feedback from callers (POST /jobs/{id}/feedback) is folded in as it arrives.") }}
+{% else %}
+{% set columns = [
+  {"label": "Model"}, {"label": "Task profile"},
+  {"label": "Attempts 7d / 30d / all", "numeric": true},
+  {"label": "Factor", "numeric": true},
+  {"label": "Answered", "numeric": true}, {"label": "Validated", "numeric": true},
+  {"label": "Accepted", "numeric": true}, {"label": "Quality", "numeric": true},
+  {"label": "p50", "numeric": true}, {"label": "p95", "numeric": true},
+  {"label": "Trend"}, {"label": "Breaker"}
+] %}
+{% set rows = [] %}
+{% for entry in entries %}
+{% set week = entry.windows["7d"] %}
+{% set _ = rows.append([
+  entry.canonical_id,
+  entry.task_profile_id,
+  week.counted ~ " / " ~ entry.windows["30d"].counted ~ " / " ~ entry.windows["all"].counted,
+  '<span title="' ~ entry.factor.reason ~ '">' ~ "%.3f"|format(entry.factor.value) ~ (" (neutral)" if entry.factor.neutral else "") ~ '</span>',
+  pct(week.success_rate()), pct(week.validation_pass_rate()),
+  pct(week.acceptance()), num(week.quality(), "%.2f"),
+  ms(week.p50()), ms(week.p95()),
+  trend(entry.regression), breaker(entry)
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="The last seven days, per model and task profile. Hover a dash for why it is absent; hover a factor for how it was computed.",
+         table_id="reliability", sortable=true, complete=true, row_count=entries | length) }}
+
+<h3>Every window</h3>
+{% set columns = [
+  {"label": "Model"}, {"label": "Task profile"}, {"label": "Window"},
+  {"label": "Attempts", "numeric": true}, {"label": "Answered", "numeric": true},
+  {"label": "Validated", "numeric": true}, {"label": "Errors", "numeric": true},
+  {"label": "Timeouts", "numeric": true}, {"label": "Cancelled", "numeric": true},
+  {"label": "Accepted", "numeric": true}, {"label": "Quality", "numeric": true},
+  {"label": "p50", "numeric": true}, {"label": "p95", "numeric": true},
+  {"label": "Tokens/s", "numeric": true}, {"label": "Output tokens", "numeric": true}
+] %}
+{% set rows = [] %}
+{% for entry in entries %}
+{% for name in windows %}
+{% set stats = entry.windows[name] %}
+{% set _ = rows.append([
+  entry.canonical_id, entry.task_profile_id, name,
+  stats.counted, pct(stats.success_rate()), pct(stats.validation_pass_rate()),
+  stats.errors, stats.timeouts, stats.cancellations,
+  pct(stats.acceptance()), num(stats.quality(), "%.2f"),
+  ms(stats.p50()), ms(stats.p95()),
+  num(stats.tokens_per_second(), "%.1f"), num(stats.output_tokens(), "%.0f")
+]) %}
+{% endfor %}
+{% endfor %}
+{{ table(columns, rows, table_id="reliability-windows", complete=true, row_count=rows | length) }}
+
+{% set regressions = entries | selectattr("regression.regressed") | list %}
+{% if regressions %}
+<h3>Regressions</h3>
+<ul>
+{% for entry in regressions %}
+<li><span class="mono">{{ entry.canonical_id }}</span> · {{ entry.task_profile_id }} — {{ entry.regression.reason }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+{% endif %}
+{% endblock %}

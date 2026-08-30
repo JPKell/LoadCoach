@@ -18,6 +18,7 @@ from loadcoach.cli.commands import evidence as evidence_commands
 from loadcoach.cli.commands import job as job_commands
 from loadcoach.cli.commands import models as models_commands
 from loadcoach.cli.commands import queue as queue_commands
+from loadcoach.cli.commands import reliability as reliability_commands
 from loadcoach.cli.commands import route as route_commands
 from loadcoach.cli.commands import system as system_commands
 from loadcoach.cli.commands import tasks as tasks_commands
@@ -71,4 +72,9 @@ app.add_typer(job_commands.app, name="job", help="Submit, inspect, cancel and wa
 app.add_typer(queue_commands.app, name="queue", help="Queue status and operator controls.")
 app.add_typer(
     evidence_commands.app, name="evidence", help="FreeWeight evidence import and inspection."
+)
+app.add_typer(
+    reliability_commands.app,
+    name="reliability",
+    help="Production reliability per model and task profile.",
 )

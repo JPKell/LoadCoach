@@ -43,6 +43,18 @@ packaging and release standards §3.
     equal over random sequences.
   - The circuit breaker's samples come from `services.reliability`, classified by the statistics'
     own success rule, and a changed verdict is persisted onto the model's rows.
+- Phase 7, unit 4: the reliability surface (api.md §7; spec §7.2, §17).
+  - `GET /reliability`: every tracked `(model, task_profile)` with its `7d`/`30d`/`all` statistics
+    (each value with its sample count and a reason when absent), the factor routing applies with
+    its inputs, the regression verdict against the model's own baseline, and the breaker's
+    persisted state; filter by `task` and `model`.
+  - The Reliability page (`/reliability`): acceptance, validation pass rate, latency distribution
+    and trend per pair, an em dash carrying the reason for every absent value, and the regressions
+    listed by name. `loadcoach reliability show [--task] [--model] [--json]` reads the same report.
+  - `/health` gains the `reliability` component: degraded, naming the pair and the numbers, when
+    a model's recent validated-success rate has regressed against its own history.
+  - The breaker's probe is marked when execution starts (not when routing merely ranked the
+    model), released if that attempt is cancelled, and presumed lost after one cool-down.
 
 ## [0.9.0b0] — 2026-08-30
 

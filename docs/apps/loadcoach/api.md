@@ -189,7 +189,7 @@ evidence — production and benchmark evidence remain separate sources.
 | `POST /evidence/import` | Body: a SetSpec `benchmark.evidence_bundle`, or `{"url": "http://127.0.0.1:8765"}` to pull from FreeWeight. Returns counts imported / updated / **unmatched** / rejected with reasons. The URL form obeys the fetch allowlist in [ADR-0026 §3](../../adr/0026-local-http-hardening.md) — scheme, `evidence.allowed_source_hosts` (loopback only by default), literal-IP, redirect and size checks — and returns `EVIDENCE_SOURCE_REFUSED` when a URL fails them |
 | `GET /evidence` | Imported evidence, filterable by capability, model, `match_state`, minimum confidence, staleness. A **collection** envelope (`items`/`page`) whose items are `capability.evidence` SetSpec envelopes ([ADR-0025 §2](../../adr/0025-envelope-boundaries.md)), plus a `summary` object — the same store overview `GET /evidence/sources`, the Benchmarks page, `/health`'s `evidence` component and every routing explanation carry, so the four cannot disagree |
 | `GET /evidence/sources` | Configured and observed sources with last import time, schema version and status |
-| `GET /reliability` | Production evidence per (model, task profile) |
+| `GET /reliability` | Production evidence per (model, task profile): the `7d`, `30d` and `all` window statistics, each value with the sample count behind it and a reason when absent; the `reliability_factor` routing applies with its inputs; the regression verdict against the model's own baseline; and the circuit breaker's persisted state. Filter by `task` and `model` |
 
 An unsupported schema major is rejected with `SCHEMA_VERSION_UNSUPPORTED` naming both versions;
 existing evidence is untouched — the version is decided *before* the transaction opens, so a

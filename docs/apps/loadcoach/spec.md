@@ -303,7 +303,9 @@ disabled where the provider cannot report it.
 
 * Structured logs with `request_id`, `job_id`, `attempt`, `task_profile_id`, `model_canonical_id`.
 * Persisted job events with SSE replay.
-* Health components: `database`, `provider`, `evidence`, `queue`, `gpu_telemetry`.
+* Health components: `database`, `provider`, `evidence`, `queue`, `reliability` (degraded when a
+  model's recent validated-success rate has regressed against its own baseline, naming the pair
+  and the numbers — [Routing §11](routing.md)), `gpu_telemetry`.
 * `GET /api/v1/system/status`: queue depth by state and priority, oldest queued age, active
   executions, residency, telemetry snapshot, dispatch latency, starvation counter.
 * Every routing decision persisted in full — 100 % of decisions, not a sample.

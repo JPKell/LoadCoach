@@ -10,7 +10,9 @@ coincidence. Not in the Phase 1 file list verbatim, but required by it for the s
 Phase 1 reported two components — ``database`` and ``provider``; Phase 5 adds ``queue`` (queue
 §11: degraded when the starvation counter is non-zero, depth exceeds a fraction of ``max_depth``,
 or any circuit breaker is open); Phase 6 adds ``evidence``, whose ``not_configured`` state is
-healthy rather than degraded because LoadCoach is designed to run without FreeWeight (spec §6).
+healthy rather than degraded because LoadCoach is designed to run without FreeWeight (spec §6);
+Phase 7 adds ``reliability`` — degraded when any model's recent validated-success rate has
+regressed against its own baseline (routing §11), naming the pair and the numbers.
 ``gpu_telemetry`` (spec §17) arrives with the phase that builds it.
 """
 
@@ -261,6 +263,65 @@ def _evidence_component(
         return HealthComponent(name="evidence", status="degraded", detail=f"unreadable: {exc}")
 
 
+def _reliability_component(database: Database | None, settings: Settings | None) -> HealthComponent:
+    """Build the ``reliability`` component (spec §17; P7 acceptance criterion 3).
+
+    ``ok`` with the number of pairs tracked and no regression; ``degraded`` naming every pair
+    whose ``7d`` validated-success rate has dropped against its own history, with the verdict's
+    own line. A pair below the sample bound is not a regression and not a warning.
+    """
+    from loadcoach.config import ConfigurationError, load_settings
+    from loadcoach.services.database import Database
+    from loadcoach.services.reliability import reliability_report
+
+    def evaluate(handle: Database) -> HealthComponent:
+        entries = reliability_report(handle)
+        regressed = [entry for entry in entries if entry.regression.regressed]
+        if regressed:
+            named = "; ".join(
+                f"{entry.canonical_id} / {entry.task_profile_id}: {entry.regression.reason}"
+                for entry in regressed[:5]
+            )
+            more = "" if len(regressed) <= 5 else f" (+{len(regressed) - 5} more)"
+            return HealthComponent(name="reliability", status="degraded", detail=f"{named}{more}")
+        if not entries:
+            return HealthComponent(
+                name="reliability", status="ok", detail="no production evidence yet"
+            )
+        return HealthComponent(
+            name="reliability",
+            status="ok",
+            detail=f"{len(entries)} model/profile pair(s) tracked, no regression",
+        )
+
+    if database is not None:
+        try:
+            return evaluate(database)
+        except Exception as exc:  # noqa: BLE001 — an unmigrated table is degraded, not a crash
+            return HealthComponent(
+                name="reliability", status="degraded", detail=f"unreadable: {exc}"
+            )
+    if settings is None:
+        try:
+            settings = load_settings().settings
+        except ConfigurationError as exc:
+            return HealthComponent(
+                name="reliability", status="degraded", detail=f"configuration: {exc.message}"
+            )
+    database_url = settings.storage.database_url
+    if database_url is None:  # pragma: no cover — StorageSettings always fills this in
+        return HealthComponent(
+            name="reliability", status="degraded", detail="no database_url configured"
+        )
+    try:
+        with Database.from_url(
+            database_url, statement_timeout_ms=settings.storage.statement_timeout_ms
+        ) as opened:
+            return evaluate(opened)
+    except Exception as exc:  # noqa: BLE001 — unreadable statistics are degraded, not a crash
+        return HealthComponent(name="reliability", status="degraded", detail=f"unreadable: {exc}")
+
+
 def get_health_report(
     *,
     database: Database | None = None,
@@ -295,6 +356,7 @@ def get_health_report(
         _provider_component(provider),
         _queue_component(database, settings, queue_runtime, clock),
         _evidence_component(database, settings, clock),
+        _reliability_component(database, settings),
     )
     worst = max(
         (
