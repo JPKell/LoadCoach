@@ -193,6 +193,7 @@ environment, then CLI, field by field. Principal sections:
 [providers]   allow_remote = false
 [server]      allowed_hosts = []           # required when host is not loopback (ADR-0026)
               rate_limit_per_minute = 600  rate_limit_burst = 100  failed_auth_per_minute = 20
+              max_body_bytes = 16777216    # 413 before buffering (Security Standards §14)
 [execution]   max_concurrent_jobs = 1      # raise only on multi-GPU or CPU-only setups
               default_timeout_seconds = 300  max_attempts = 3  attempt_backoff_seconds = 2
 [runtime]     # the default runtime profile every execution resolves against (ADR-0023)

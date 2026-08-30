@@ -34,7 +34,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from baseaicore import ModelIdentity, ProviderKind, SuiteError, is_supported, new_id
+from baseaicore import (
+    ModelIdentity,
+    ProviderKind,
+    SuiteError,
+    ValidationError,
+    is_supported,
+    new_id,
+)
 from modelrack import (
     CancellationToken,
     GenerationCancelled,
@@ -340,7 +347,17 @@ def load_task_schema(schema_ref: str | None, *, schemas_dir: Path) -> dict[str, 
     """
     if schema_ref is None:
         return None
-    parsed: dict[str, Any] = json.loads((schemas_dir / schema_ref).read_text(encoding="utf-8"))
+    root = schemas_dir.resolve()
+    target = (root / schema_ref).resolve()
+    if root not in target.parents:
+        # A profile's schema reference resolves *inside* the schemas directory, never out of it
+        # (Security Standards §14: path traversal). Task-profile validation refuses this at
+        # startup; reaching it here means the profile changed since, and it is still refused.
+        raise ValidationError(
+            f"json_schema_ref {schema_ref!r} resolves outside the schemas directory.",
+            details={"json_schema_ref": schema_ref, "schemas_dir": str(root)},
+        )
+    parsed: dict[str, Any] = json.loads(target.read_text(encoding="utf-8"))
     return parsed
 
 

@@ -147,6 +147,16 @@ def _validate_one(
 
     if profile.execution.json_schema_ref is not None:
         schema_path = schemas_dir / profile.execution.json_schema_ref
+        root = schemas_dir.resolve()
+        if root not in schema_path.resolve().parents:
+            # A reference resolves inside the schemas directory, never out of it (Security
+            # Standards §14: path traversal). Refused here, at startup, before any job can run.
+            raise _fail(
+                file,
+                profile_id,
+                f"execution.json_schema_ref {profile.execution.json_schema_ref!r} resolves "
+                f"outside the schemas directory {root}",
+            )
         if not schema_path.is_file():
             raise _fail(
                 file,

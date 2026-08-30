@@ -117,6 +117,16 @@ class ServerSettings(BaseModel):
         examples=[["loadcoach.local"]],
     )
 
+    max_body_bytes: int = Field(
+        default=16 * 1024 * 1024,
+        ge=1024,
+        description=(
+            "The largest request body accepted, refused with 413 before buffering (Security "
+            "Standards §14). Matches SetSpec's envelope limit, the largest document any endpoint "
+            "parses."
+        ),
+        examples=[16777216],
+    )
     rate_limit_per_minute: int = Field(
         default=600,
         ge=0,

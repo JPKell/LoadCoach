@@ -97,6 +97,13 @@ packaging and release standards §3.
   `429 RATE_LIMITED` with `Retry-After`; failed authentications are braked per address; the
   per-source queue cap (`[queue] max_active_per_source`) refuses with `QUEUE_FULL` naming the
   source. Host validation runs before authentication and before the limiter on every bind.
+- Phase 9, unit 2 (security pass): `tests/security/**` holds every Security Standards §14 item
+  — held here, held by a named P6 test (the map asserts each exists), or shown not to apply by
+  asserting the surface (no endpoint accepts a path or an archive; a tool call the provider
+  requests is returned to the caller and never run). New refusals: an oversize body is
+  `413 PAYLOAD_TOO_LARGE` before buffering (`[server] max_body_bytes`); a cross-origin JSON
+  write is `403 CSRF_FAILED`; a task profile's `json_schema_ref` cannot resolve outside the
+  schemas directory.
 
 ## [0.9.0b0] — 2026-08-30
 

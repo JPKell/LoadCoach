@@ -44,6 +44,7 @@ from loadcoach.services.queue_stream import QueueStatusPublisher
 from loadcoach.services.status import queue_status
 from loadcoach.services.telemetry_stream import TelemetrySampler
 from loadcoach.services.worker import build_runtime
+from loadcoach.web.limits import BodySizeLimitMiddleware, SameOriginMiddleware
 from loadcoach.web.rate_limit import RateLimitMiddleware
 from loadcoach.web.rendering import render, templates
 from loadcoach.web.routes import access as access_routes
@@ -364,9 +365,11 @@ def create_app(settings: Settings) -> FastAPI:
         failed_auth_per_minute=settings.server.failed_auth_per_minute,
     )
     app.add_middleware(HostValidationMiddleware, allowed_hosts=_resolve_allowed_hosts(settings))
-    # Innermost of the three: a forged HTML form post is refused with CSRF_FAILED (Security
-    # Standards §14) after Host validation and with a request ID already bound.
+    # A forged HTML form post is refused with CSRF_FAILED, a cross-origin JSON write likewise,
+    # and an oversize body is 413 before it is buffered (Security Standards §14).
     app.add_middleware(CsrfMiddleware)
+    app.add_middleware(SameOriginMiddleware)
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.server.max_body_bytes)
 
     register_exception_handlers(app)
 
