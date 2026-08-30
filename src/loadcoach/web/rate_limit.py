@@ -18,13 +18,23 @@ UI is not the failure mode, and ``/api/v1/version`` is exempt because negotiatio
 credentials (ADR-0026 §5).
 
 Failed authentication: each ``401`` from an address counts; past ``failed_auth_per_minute`` in a
-minute the address gets ``429`` for the rest of that minute, whatever it presents. Logged with the
-address and request ID, never with the token.
+minute the address gets ``429`` for the rest of that minute, whatever it presents — a correct
+token included. Logged with the address and request ID, never with the token.
+
+**The address behind a proxy.** ADR-0014 §7 makes a TLS reverse proxy the standard non-loopback
+deployment, and behind one every caller shares the proxy's socket address — one stranger's
+twenty bad bearers would brake everyone (F4/M5C-4). ``[server] trusted_proxies`` names the proxy
+networks whose ``X-Forwarded-For`` is believed; :func:`resolve_client_address` then keys the
+brake and the unauthenticated bucket by the last untrusted hop, and ignores the header entirely
+from any other peer. The brake stays keyed by address alone, deliberately: keyed by
+``(address, credential digest)`` a guesser would mint a fresh bucket with every guessed token
+and the brake would never fire.
 """
 
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import logging
 import math
 import threading
@@ -39,14 +49,57 @@ from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-__all__ = ["RateLimitMiddleware", "TokenBucket", "credential_key"]
+    _Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+__all__ = ["RateLimitMiddleware", "TokenBucket", "credential_key", "resolve_client_address"]
 
 logger = logging.getLogger(__name__)
 
 _EXEMPT_PATHS = frozenset({"/api/v1/version"})
 _API_PREFIX = "/api/v1"
+
+
+def _in_networks(address: str, networks: Sequence[_Network]) -> bool:
+    """Whether ``address`` parses as an IP inside one of ``networks``; unparseable is never in."""
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return any(parsed in network for network in networks)
+
+
+def resolve_client_address(
+    peer: str | None, headers: Headers, trusted_proxies: Sequence[_Network]
+) -> str | None:
+    """The address the brake and the unauthenticated bucket key on (F4/M5C-4, ADR-0014 §7).
+
+    When the connecting ``peer`` is inside one of the ``trusted_proxies`` networks, the client
+    address is the **last untrusted hop** of ``X-Forwarded-For`` — the rightmost entry that is
+    not itself a trusted proxy — because every entry left of it is client-supplied text a
+    stranger controls. A chain that is trusted all the way down, or an absent header, falls
+    back to the peer. From any peer *not* in ``trusted_proxies`` the header is ignored
+    entirely: anyone can send it, and believing it would let one caller pin their failures on
+    another's address.
+
+    Args:
+        peer: The socket's remote address, or ``None`` when the transport reports none.
+        headers: The request headers.
+        trusted_proxies: Parsed networks whose ``X-Forwarded-For`` may be believed.
+
+    Returns:
+        The address to key buckets by, or ``None`` when even the peer is unknown.
+    """
+    if peer is None or not trusted_proxies or not _in_networks(peer, trusted_proxies):
+        return peer
+    forwarded = headers.get("x-forwarded-for", "")
+    for entry in reversed([part.strip() for part in forwarded.split(",") if part.strip()]):
+        if not _in_networks(entry, trusted_proxies):
+            return entry
+    return peer
 
 
 def credential_key(headers: Headers, client_host: str | None) -> tuple[str, bool]:
@@ -108,13 +161,22 @@ class RateLimitMiddleware:
         per_minute: int,
         burst: int,
         failed_auth_per_minute: int = 20,
+        trusted_proxies: Sequence[str] = (),
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        """Wrap ``app``. ``per_minute = 0`` disables the request limit (not the auth brake)."""
+        """Wrap ``app``. ``per_minute = 0`` disables the request limit (not the auth brake).
+
+        ``trusted_proxies`` are CIDR networks whose ``X-Forwarded-For`` is believed — see
+        :func:`resolve_client_address`. Entries are validated by configuration before they
+        reach here.
+        """
         self.app = app
         self._per_minute = max(per_minute, 0)
         self._burst = max(burst, 1)
         self._failed_limit = max(failed_auth_per_minute, 0)
+        self._trusted_proxies: tuple[_Network, ...] = tuple(
+            ipaddress.ip_network(entry, strict=False) for entry in trusted_proxies
+        )
         self._clock = clock
         self._buckets: dict[str, TokenBucket] = {}
         self._failures: dict[str, TokenBucket] = {}
@@ -160,7 +222,9 @@ class RateLimitMiddleware:
             return
         headers = Headers(scope=scope)
         client = scope.get("client")
-        address = client[0] if client else None
+        address = resolve_client_address(
+            client[0] if client else None, headers, self._trusted_proxies
+        )
         key, _authenticated = credential_key(headers, address)
         now = self._clock()
         with self._lock:

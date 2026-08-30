@@ -18,30 +18,38 @@ from loadcoach.web.app import create_app
 from loadcoach.web.rate_limit import TokenBucket, credential_key
 
 
-@pytest.fixture
-def client(tmp_path: Path) -> Iterator[TestClient]:
-    """Three requests at once, then one a second; two tokens; auth brake at two failures."""
-    url = f"sqlite:///{tmp_path / 'rl.sqlite3'}"
+def _seeded_settings(tmp_path: Path, name: str, **server: object) -> Settings:
+    """Two read tokens in a fresh database; three requests at once; auth brake at two failures."""
+    url = f"sqlite:///{tmp_path / name}"
     seed = Database.from_url(url)
     ensure_ready(seed, auto_migrate=True)
     with seed.write() as session:
-        for name, raw in (("a", "token-a"), ("b", "token-b")):
+        for token_name, raw in (("a", "token-a"), ("b", "token-b")):
             session.add(
                 ApiToken(
-                    name=name,
+                    name=token_name,
                     token_sha256=hashlib.sha256(raw.encode()).hexdigest(),
                     scope="read",
                     created_at=NOW,
                 )
             )
     seed.close()
-    settings = Settings(
+    return Settings(
         server=ServerSettings(
-            rate_limit_per_minute=60, rate_limit_burst=3, failed_auth_per_minute=2
+            rate_limit_per_minute=60,
+            rate_limit_burst=3,
+            failed_auth_per_minute=2,
+            **server,  # type: ignore[arg-type]  # test-local keyword passthrough
         ),
         storage=StorageSettings(database_url=url),
         provider=ProviderSettings(kind="fake"),
     )
+
+
+@pytest.fixture
+def client(tmp_path: Path) -> Iterator[TestClient]:
+    """Three requests at once, then one a second; two tokens; auth brake at two failures."""
+    settings = _seeded_settings(tmp_path, "rl.sqlite3")
     with TestClient(create_app(settings), base_url="http://localhost") as test_client:
         yield test_client
 
@@ -90,6 +98,77 @@ def test_failed_authentication_is_braked_per_address(client: TestClient) -> None
     )
     # The brake is on the address, whatever it presents now — a right token included.
     assert client.get("/api/v1/health", headers=_auth("token-b")).status_code == 429
+
+
+def test_forwarded_for_from_an_untrusted_peer_is_ignored(tmp_path: Path) -> None:
+    """F4 (M5C-4), the default half: with no trusted_proxies the header is anyone's to send.
+
+    This is also Fable's reproduction of the lockout: everyone behind one address shares one
+    failure budget, so once it is spent a *correct* token gets 429 for the rest of the minute.
+    A forged X-Forwarded-For must not buy a stranger a fresh bucket — or pin their failures on
+    someone else's address.
+    """
+    settings = _seeded_settings(tmp_path, "xff.sqlite3")
+    with TestClient(create_app(settings), base_url="http://localhost") as client:
+        for index in range(2):
+            forged = {**_auth("wrong"), "X-Forwarded-For": f"198.51.100.{index}"}
+            assert client.get("/api/v1/health", headers=forged).status_code == 401
+        escaped = {**_auth("token-a"), "X-Forwarded-For": "198.51.100.9"}
+        assert client.get("/api/v1/health", headers=escaped).status_code == 429
+
+
+def test_behind_a_trusted_proxy_the_brake_keys_on_the_forwarded_client(tmp_path: Path) -> None:
+    """F4 (M5C-4): with the proxy in trusted_proxies, clients get their own addresses back.
+
+    ADR-0014 §7 makes a TLS reverse proxy the standard non-loopback deployment; before this
+    setting existed, twenty bad bearers a minute from anyone braked every user behind it.
+    """
+    settings = _seeded_settings(tmp_path, "proxy.sqlite3", trusted_proxies=("10.0.0.0/8",))
+    with TestClient(
+        create_app(settings), base_url="http://localhost", client=("10.9.9.9", 40000)
+    ) as client:
+        guesser = "198.51.100.7"
+        for _ in range(2):
+            forged = {**_auth("wrong"), "X-Forwarded-For": guesser}
+            assert client.get("/api/v1/health", headers=forged).status_code == 401
+        # The guessing client is braked — a correct token from the same client included.
+        braked = {**_auth("token-a"), "X-Forwarded-For": guesser}
+        assert client.get("/api/v1/health", headers=braked).status_code == 429
+        # Another client behind the same proxy is untouched.
+        neighbour = {**_auth("token-a"), "X-Forwarded-For": "198.51.100.8"}
+        assert client.get("/api/v1/health", headers=neighbour).status_code == 200
+        # A chain: hops inside the trusted networks are hops; the last untrusted entry is the
+        # client, and everything left of it stays client-supplied text nobody believes.
+        for _ in range(2):
+            # A fresh wrong bearer: "wrong" already spent its own per-credential request bucket.
+            chained = {**_auth("wrong-2"), "X-Forwarded-For": "203.0.113.5, 10.0.0.2"}
+            assert client.get("/api/v1/health", headers=chained).status_code == 401
+        chained_braked = {**_auth("token-b"), "X-Forwarded-For": "203.0.113.5, 10.0.0.2"}
+        assert client.get("/api/v1/health", headers=chained_braked).status_code == 429
+        chained_other = {**_auth("token-b"), "X-Forwarded-For": "203.0.113.9, 10.0.0.2"}
+        assert client.get("/api/v1/health", headers=chained_other).status_code == 200
+
+
+def test_resolve_client_address_edges() -> None:
+    """The pure function's corners: all-trusted chains, unparseable entries, absent headers."""
+    import ipaddress
+
+    from loadcoach.web.rate_limit import resolve_client_address
+
+    trusted = (ipaddress.ip_network("10.0.0.0/8"),)
+    header = {"x-forwarded-for": "10.0.0.3, 10.0.0.2"}
+    # A chain trusted all the way down falls back to the peer — never to nothing.
+    assert resolve_client_address("10.9.9.9", Headers(header), trusted) == "10.9.9.9"
+    # An unparseable entry cannot be a trusted proxy, so it is the client.
+    garbled = Headers({"x-forwarded-for": "not-an-ip, 10.0.0.2"})
+    assert resolve_client_address("10.9.9.9", garbled, trusted) == "not-an-ip"
+    # No header from a trusted peer: the peer.
+    assert resolve_client_address("10.9.9.9", Headers({}), trusted) == "10.9.9.9"
+    # An untrusted peer's header is ignored entirely.
+    assert resolve_client_address("192.0.2.1", Headers(header), trusted) == "192.0.2.1"
+    # No trust configured: the header never matters.
+    assert resolve_client_address("10.9.9.9", Headers(header), ()) == "10.9.9.9"
+    assert resolve_client_address(None, Headers(header), trusted) is None
 
 
 def test_the_bucket_arithmetic_and_the_credential_key() -> None:

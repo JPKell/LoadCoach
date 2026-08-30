@@ -7,6 +7,17 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Added
+
+- `[server] trusted_proxies` (CIDR list, config-only): reverse-proxy networks whose
+  `X-Forwarded-For` is believed. Behind ADR-0014 §7's mandated TLS proxy every caller shared
+  the proxy's address, so twenty bad bearers a minute from anyone braked every user — correct
+  tokens included — for the rest of the minute. With the proxy listed, the failed-auth brake
+  and the unauthenticated rate bucket key on the last untrusted hop of the header; from any
+  other peer the header is ignored entirely. The brake stays keyed per address, deliberately:
+  keyed per `(address, credential)` a guesser would mint a fresh bucket with every guess.
+  api.md §11 now says what the brake does to valid tokens.
+
 ### Fixed
 
 - The bare `pytest` console script — the invocation CI, the README and CONTRIBUTING use — could

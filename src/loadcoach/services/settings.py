@@ -158,6 +158,7 @@ CONFIG_ONLY_SECURITY_KEYS: Final[frozenset[str]] = frozenset(
         "server.port",
         "server.allow_lan_exposure",
         "server.allowed_hosts",
+        "server.trusted_proxies",
         "providers.allow_remote",
         "provider.base_url",
         "provider.kind",

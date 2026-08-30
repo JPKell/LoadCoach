@@ -267,7 +267,15 @@ token bucket keyed by the credential's digest (by address before authentication)
 rate_limit_burst` (100) requests may arrive at once, then `rate_limit_per_minute` (600) sustained;
 at the boundary the caller gets `429 RATE_LIMITED` with a `Retry-After` header, never a dropped
 request. Only `/api/v1` is limited and `/version` is exempt. Failed authentications are braked per
-address (`failed_auth_per_minute`, 20). The queue cap is `[queue] max_active_per_source` (200):
+address (`failed_auth_per_minute`, 20). **The brake is on the address, whatever it presents**: once
+an address has spent its failure budget, every further request from it that minute gets `429` — a
+*correct* token included — until the budget refills. It is deliberately not keyed by
+`(address, credential)`: a guesser would mint a fresh bucket with every guessed token and the brake
+would never fire. Behind a reverse proxy (the standard non-loopback deployment, ADR-0014 §7) every
+caller shares the proxy's address, so one stranger's failures would brake everyone: set `[server]
+trusted_proxies` to the proxy's networks (CIDRs) and the brake keys on the client address taken from
+the last untrusted hop of `X-Forwarded-For`; from any peer not listed there the header is ignored
+entirely. The queue cap is `[queue] max_active_per_source` (200):
 a source past it is refused with `QUEUE_FULL` naming the source, its active count and the cap.
 
 ## 12. Client guidance (IdeaPress and others)

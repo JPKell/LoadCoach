@@ -363,6 +363,7 @@ def create_app(settings: Settings) -> FastAPI:
         per_minute=settings.server.rate_limit_per_minute,
         burst=settings.server.rate_limit_burst,
         failed_auth_per_minute=settings.server.failed_auth_per_minute,
+        trusted_proxies=settings.server.trusted_proxies,
     )
     app.add_middleware(HostValidationMiddleware, allowed_hosts=_resolve_allowed_hosts(settings))
     # A forged HTML form post is refused with CSRF_FAILED, a cross-origin JSON write likewise,

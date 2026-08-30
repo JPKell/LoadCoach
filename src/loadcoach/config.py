@@ -152,8 +152,37 @@ class ServerSettings(BaseModel):
         ),
         examples=[20],
     )
+    trusted_proxies: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "CIDR networks of reverse proxies whose X-Forwarded-For may be believed "
+            "(ADR-0014 §7). When the connecting peer is inside one, the client address — what "
+            "the failed-authentication brake and the unauthenticated rate bucket key on — is "
+            "taken from the last untrusted hop of X-Forwarded-For; from any other peer the "
+            "header is ignored entirely, because anyone can send it. Empty by default: behind "
+            "a proxy with this unset, every caller shares the proxy's address and one caller's "
+            "failures brake them all. Comma-separated in the environment."
+        ),
+        examples=[["127.0.0.0/8"]],
+    )
 
     _split_allowed_hosts = field_validator("allowed_hosts", mode="before")(_split_csv)
+    _split_trusted_proxies = field_validator("trusted_proxies", mode="before")(_split_csv)
+
+    @field_validator("trusted_proxies")
+    @classmethod
+    def _trusted_proxies_are_networks(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """Refuse a value that is not a parseable network, at startup rather than per request."""
+        import ipaddress
+
+        for entry in value:
+            try:
+                ipaddress.ip_network(entry, strict=False)
+            except ValueError as exc:
+                raise ValueError(
+                    f"trusted_proxies entry {entry!r} is not an IP network (e.g. 127.0.0.0/8)"
+                ) from exc
+        return value
 
 
 class StorageSettings(BaseModel):
