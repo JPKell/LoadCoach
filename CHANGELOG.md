@@ -8,6 +8,15 @@ packaging and release standards §3.
 ## [Unreleased]
 
 ### Added
+- Phase 5, unit 2: the scheduling simulator (`tests/simulation/simulator.py`, queue §12), built
+  before the scheduler it will drive. A settable `FakeClock`; a discrete-event `Driver` that runs
+  real worker threads through handshakes so exactly one thread runs at a time and the interleaving
+  of workers, scheduler ticks and arrivals is fixed by `(time, insertion order)`; a
+  `SimulatedWakeup` with `threading.Event`'s semantics; a `SimulatedProvider` whose generations
+  take simulated seconds, chunk by chunk, load on demand (counted) and are cancellable within one
+  chunk; and a `Simulation` composition over a real migrated database, simulated per-device VRAM
+  and the shipped settings. Its own mechanics — ordering, wake-ups, cancellation, timeout, failure
+  injection, load accounting, determinism — are tested in `test_simulator_mechanics.py`.
 - Phase 5, unit 1: the queue's schema and pure domain.
   - Migration `0004`: the `residency` table (data model §2, ADR-0027), with the
     `vram_bytes`/`vram_bytes_unavailable_reason` measurement pair; and the claim index recreated as
