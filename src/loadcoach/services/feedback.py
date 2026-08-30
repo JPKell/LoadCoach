@@ -21,6 +21,7 @@ from baseaicore import ValidationError
 from baseaicore.timeutil import to_rfc3339
 from sqlalchemy import select
 
+from loadcoach.domain.authorization import Principal, authorize
 from loadcoach.infrastructure.db.models import Feedback, Job
 from loadcoach.services.queue import JobNotFound
 
@@ -149,7 +150,12 @@ def _check(submission: FeedbackSubmission) -> None:
 
 
 def record_feedback(
-    database: Database, job_id: str, submission: FeedbackSubmission, *, now: datetime
+    database: Database,
+    job_id: str,
+    submission: FeedbackSubmission,
+    *,
+    now: datetime,
+    principal: Principal | None = None,
 ) -> FeedbackOutcome:
     """Store or update one source's feedback on one job, then refresh its reliability statistics.
 
@@ -171,6 +177,7 @@ def record_feedback(
         ValidationError: A blank or over-long ``source``, a ``quality_score`` outside ``[0, 1]``,
             or over-long ``notes``.
     """
+    authorize(principal, "write")
     _check(submission)
     with database.write() as session:
         job = session.get(Job, job_id)

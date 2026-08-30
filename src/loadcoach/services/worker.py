@@ -44,6 +44,7 @@ from loadcoach.domain.admission import (
     reserved_bytes_by_device,
     waiting_job_can_proceed,
 )
+from loadcoach.domain.authorization import Principal, authorize
 from loadcoach.domain.circuit_breaker import CircuitBreakers
 from loadcoach.domain.queue_state import IN_FLIGHT_STATES, JobState, event_type_for
 from loadcoach.domain.retry_policy import (
@@ -270,16 +271,18 @@ class QueueFlags:
         now: datetime,
         paused: bool | None = None,
         draining: bool | None = None,
+        principal: Principal | None = None,
     ) -> None:
         """Write the given flags durably and to this copy, atomically with any refresh."""
         from loadcoach.services.queue import set_queue_flag
 
         with self.lock:
+            authorize(principal, "admin")
             if paused is not None:
-                set_queue_flag(database, "queue.paused", paused, now=now)
+                set_queue_flag(database, "queue.paused", paused, now=now, principal=principal)
                 self.paused = paused
             if draining is not None:
-                set_queue_flag(database, "queue.draining", draining, now=now)
+                set_queue_flag(database, "queue.draining", draining, now=now, principal=principal)
                 self.draining = draining
 
     def refresh(self, database: Database) -> None:

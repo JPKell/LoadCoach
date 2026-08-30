@@ -15,10 +15,12 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from mirrorwall import sse_response
 
 from loadcoach.__about__ import __version__
+from loadcoach.domain.authorization import authorize
 from loadcoach.services.health import get_health_report
 from loadcoach.services.machine import machine_fingerprint
 from loadcoach.services.status import queue_status
 from loadcoach.services.telemetry_stream import TELEMETRY_STREAM_ID, telemetry_payload
+from loadcoach.web.auth import CurrentPrincipal
 from loadcoach.web.rendering import render
 from loadcoach.web.routes.generate import GENERATOR
 from loadcoach.web.routing_support import current_snapshot
@@ -33,13 +35,14 @@ ui_router = APIRouter(tags=["ui"], include_in_schema=False)
 
 
 @router.get("/health", summary="Component health")
-async def health(request: Request) -> JSONResponse:
+async def health(request: Request, principal: CurrentPrincipal) -> JSONResponse:
     """Return the current health report; 200 for ok/degraded, 503 for unavailable.
 
     Reports on the handle the server is serving from, not a connection opened for the check — a
     health check against a different connection than requests use is answering a question nobody
     asked.
     """
+    authorize(principal, "read")
     report = get_health_report(
         database=request.app.state.database,
         provider=request.app.state.provider,
@@ -60,12 +63,13 @@ async def version() -> dict[str, object]:
 
 
 @router.get("/system/telemetry/stream", summary="Sampled machine telemetry")
-async def telemetry_stream(request: Request) -> StreamingResponse:
+async def telemetry_stream(request: Request, principal: CurrentPrincipal) -> StreamingResponse:
     """SSE: one ``telemetry.sampled`` frame per ``[telemetry] interval_ms`` (api.md §1).
 
     A new client receives the latest sample at once and follows from there; the stream is
     open-ended and closes when the client disconnects.
     """
+    authorize(principal, "read")
     sampler = request.app.state.telemetry_stream
     return sse_response(
         sampler,
@@ -79,8 +83,9 @@ async def telemetry_stream(request: Request) -> StreamingResponse:
 
 
 @ui_router.get("/system", summary="System page", response_class=HTMLResponse)
-def system_page(request: Request) -> HTMLResponse:
+def system_page(request: Request, principal: CurrentPrincipal) -> HTMLResponse:
     """Telemetry, residency, the thread pool, dispatch latency, starvation and breakers (P8)."""
+    authorize(principal, "read")
     app = request.app
     runtime = app.state.queue_runtime
     now = datetime.now(UTC)

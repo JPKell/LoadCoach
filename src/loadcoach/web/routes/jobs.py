@@ -19,6 +19,7 @@ from mirrorwall import clamp_limit, paginated_response, sse_response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from loadcoach.domain.authorization import authorize
 from loadcoach.domain.priority import JobClass
 from loadcoach.domain.queue_state import JobState
 from loadcoach.domain.routing.narrative import narrate
@@ -35,7 +36,7 @@ from loadcoach.services.queue import (
     list_jobs,
 )
 from loadcoach.services.routing import read_decision
-from loadcoach.web.auth import require_scope
+from loadcoach.web.auth import CurrentPrincipal
 from loadcoach.web.rendering import render
 from loadcoach.web.routes.generate import (
     GENERATOR,
@@ -90,12 +91,15 @@ def _submission(body: JobBody, *, source: str) -> JobSubmission:
 
 
 @router.post("/jobs", status_code=status.HTTP_202_ACCEPTED, summary="Submit a job")
-def post_job(request: Request, body: JobBody, response: Response) -> dict[str, Any]:
+def post_job(
+    request: Request, principal: CurrentPrincipal, body: JobBody, response: Response
+) -> dict[str, Any]:
     """Enqueue ``body`` and return the job. ``202``; a repeated key returns the original job.
 
     Errors: ``TASK_PROFILE_NOT_FOUND``, ``VALIDATION_ERROR`` (a priority outside the class's
     band), ``QUEUE_FULL`` (429).
     """
+    authorize(principal, "write")
     app = request.app
     runtime = app.state.queue_runtime
     outcome = enqueue(
@@ -106,6 +110,7 @@ def post_job(request: Request, body: JobBody, response: Response) -> dict[str, A
         execution_settings=app.state.settings.execution,
         sink=app.state.event_sink,
         wakeup=None if runtime is None else runtime.wakeup,
+        principal=principal,
     )
     response.headers["X-Idempotent-Replay"] = "false" if outcome.created else "true"
     return job_document(app.state.database, outcome.job_id)
@@ -130,6 +135,7 @@ def _decode_cursor(cursor: str | None) -> datetime | None:
 @router.get("/jobs", summary="List jobs")
 def get_jobs(
     request: Request,
+    principal: CurrentPrincipal,
     state: str | None = Query(default=None),
     job_class: str | None = Query(default=None, alias="class"),
     task: str | None = Query(default=None),
@@ -138,6 +144,7 @@ def get_jobs(
     cursor: str | None = Query(default=None),
 ) -> Response:
     """Jobs newest first, filtered by state, class, task and source; cursor-paginated."""
+    authorize(principal, "read")
     effective = clamp_limit(limit, maximum=200)
     states = None if state is None else [JobState(s) for s in state.split(",") if s]
     records = list_jobs(
@@ -163,18 +170,22 @@ def get_jobs(
 
 
 @router.get("/jobs/{job_id}", summary="One job in full")
-def get_job_document(request: Request, job_id: str) -> dict[str, Any]:
+def get_job_document(request: Request, principal: CurrentPrincipal, job_id: str) -> dict[str, Any]:
     """The job: state, attempts, routing summary, usage, timings, validation, degradations."""
+    authorize(principal, "read")
     return job_document(request.app.state.database, job_id)
 
 
 @router.get("/jobs/{job_id}/stream", summary="The job's event stream")
-async def get_job_stream(request: Request, job_id: str) -> StreamingResponse:
+async def get_job_stream(
+    request: Request, principal: CurrentPrincipal, job_id: str
+) -> StreamingResponse:
     """SSE: state changes, tokens when streaming was requested, and the terminal event.
 
     Replays the persisted events after ``Last-Event-ID`` and follows the live broker; closes on
     the terminal event.
     """
+    authorize(principal, "read")
     import anyio
 
     app = request.app
@@ -191,11 +202,12 @@ async def get_job_stream(request: Request, job_id: str) -> StreamingResponse:
 
 
 @router.post("/jobs/{job_id}/cancel", status_code=status.HTTP_202_ACCEPTED, summary="Cancel a job")
-def post_cancel(request: Request, job_id: str) -> dict[str, Any]:
+def post_cancel(request: Request, principal: CurrentPrincipal, job_id: str) -> dict[str, Any]:
     """Cancel: at once for a waiting job, at the next chunk boundary for an executing one.
 
     ``409 JOB_NOT_CANCELLABLE`` for a terminal job; idempotent otherwise.
     """
+    authorize(principal, "write")
     app = request.app
     runtime = app.state.queue_runtime
     outcome = cancel_job(
@@ -204,13 +216,17 @@ def post_cancel(request: Request, job_id: str) -> dict[str, Any]:
         job_id,
         now=datetime.now(UTC),
         on_request=None if runtime is None else runtime.in_flight.request_cancel,
+        principal=principal,
     )
     return {"job_id": outcome.job_id, "state": outcome.state.value, "already": outcome.already}
 
 
 @router.get("/jobs/{job_id}/explanation", summary="The job's routing explanation")
-def get_job_explanation(request: Request, job_id: str) -> dict[str, Any]:
+def get_job_explanation(
+    request: Request, principal: CurrentPrincipal, job_id: str
+) -> dict[str, Any]:
     """The routing decision whose ``job_id`` matches — a lookup, never a copy (LCX3)."""
+    authorize(principal, "read")
     database = request.app.state.database
     get_job(database, job_id)  # JOB_NOT_FOUND if there is no such job at all
     with database.read() as session:
@@ -262,22 +278,19 @@ def _feedback_source(request: Request, body_source: str | None) -> str:
 
 @router.post("/jobs/{job_id}/feedback", summary="Caller feedback on a job")
 def post_feedback(
-    request: Request, job_id: str, body: FeedbackBody, response: Response
+    request: Request,
+    principal: CurrentPrincipal,
+    job_id: str,
+    body: FeedbackBody,
+    response: Response,
 ) -> dict[str, Any]:
     """Record the caller's verdict on the job; ``write`` scope (spec §14).
 
     ``201`` with the stored record on a source's first feedback for the job, ``200`` on an
     update; idempotent per ``(job_id, source)``. ``404 JOB_NOT_FOUND`` otherwise.
     """
+    authorize(principal, "write")
     app = request.app
-    settings = app.state.settings
-    request.state.token_name = require_scope(
-        app.state.database,
-        required="write",
-        authorization=request.headers.get("authorization"),
-        bind_host=settings.server.host,
-        now=datetime.now(UTC),
-    )
     outcome = record_feedback(
         app.state.database,
         job_id,
@@ -291,6 +304,7 @@ def post_feedback(
             notes=body.notes,
         ),
         now=datetime.now(UTC),
+        principal=principal,
     )
     response.status_code = status.HTTP_201_CREATED if outcome.created else status.HTTP_200_OK
     return {**outcome.record.as_json(), "created": outcome.created}
@@ -302,6 +316,7 @@ _PAGE_SIZE = 50
 @ui_router.get("/jobs", summary="Jobs page", response_class=HTMLResponse)
 def jobs_page(
     request: Request,
+    principal: CurrentPrincipal,
     state: str | None = Query(default=None),
     job_class: str | None = Query(default=None, alias="class"),
     task: str | None = Query(default=None),
@@ -313,6 +328,7 @@ def jobs_page(
     The same filters and cursor ``GET /api/v1/jobs`` takes, so the page and the API agree on what
     "the next page" is.
     """
+    authorize(principal, "read")
     database = request.app.state.database
     states = None
     if state:
@@ -362,8 +378,9 @@ def jobs_page(
 
 
 @ui_router.get("/jobs/{job_id}", summary="Job page", response_class=HTMLResponse)
-def job_page(request: Request, job_id: str) -> HTMLResponse:
+def job_page(request: Request, principal: CurrentPrincipal, job_id: str) -> HTMLResponse:
     """Render one job: its document, attempts and event history."""
+    authorize(principal, "read")
     from loadcoach.infrastructure.db.models import JobEvent
 
     database = request.app.state.database

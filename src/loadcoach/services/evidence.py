@@ -36,6 +36,7 @@ from setspec import SchemaVersion, load_envelope
 from setspec.capability.v1 import CapabilityEvidenceFields, CapabilityEvidenceIn
 from weightsdb import upsert
 
+from loadcoach.domain.authorization import Principal, authorize
 from loadcoach.domain.evidence_policy import (
     CalibrationFacts,
     EvidenceCandidate,
@@ -388,6 +389,7 @@ def import_bundle(  # noqa: PLR0913 — every argument is a documented import in
     source_kind: str = "file",
     url: str | None = None,
     current_environment: Mapping[str, Any] | None = None,
+    principal: Principal | None = None,
 ) -> ImportOutcome:
     """Import one ``benchmark.evidence_bundle`` in a single transaction.
 
@@ -416,6 +418,7 @@ def import_bundle(  # noqa: PLR0913 — every argument is a documented import in
         EvidenceImportFailed: The document is oversized, unparsable, not an evidence bundle, or
             its envelope is malformed. Nothing has been written.
     """
+    authorize(principal, "admin")
     envelope = _negotiate(document, accept_schema_majors=accept_schema_majors)
     payload = envelope.payload
     if not isinstance(payload, dict):

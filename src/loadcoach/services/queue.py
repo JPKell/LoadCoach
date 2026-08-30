@@ -32,6 +32,7 @@ from sqlalchemy import Integer, case, func, select, update
 from sqlalchemy.exc import IntegrityError
 from weightsdb import UtcDateTime
 
+from loadcoach.domain.authorization import Principal, authorize
 from loadcoach.domain.priority import (
     AGEING_EPSILON_POINTS,
     JobClass,
@@ -452,6 +453,7 @@ def enqueue(
     execution_settings: ExecutionSettings,
     sink: JobEventSink,
     wakeup: Wakeup | None = None,
+    principal: Principal | None = None,
 ) -> EnqueueOutcome:
     """Persist a new job in ``queued``, or return the job an unexpired idempotency key names.
 
@@ -474,6 +476,7 @@ def enqueue(
         QueueFull: ``max_depth`` active jobs already exist. Checked before the insert, and never
             counted against a replayed idempotent submission.
     """
+    authorize(principal, "write")
     profile = load_task_profile(database, submission.task)
     priority = base_priority(submission.job_class, submission.priority)
     if submission.idempotency_key is not None:
@@ -487,6 +490,19 @@ def enqueue(
             f"The queue holds {active} active jobs; max_depth is {queue_settings.max_depth}.",
             details={"active": active, "max_depth": queue_settings.max_depth},
         )
+    per_source = queue_settings.max_active_per_source
+    if per_source:
+        held = _active_count(database, source=submission.source)
+        if held >= per_source:
+            raise QueueFull(
+                f"Source {submission.source!r} already holds {held} active job(s); the "
+                f"per-source cap is {per_source} (spec §14).",
+                details={
+                    "source": submission.source,
+                    "active": held,
+                    "max_active_per_source": per_source,
+                },
+            )
 
     job_id = new_id()
     transcript = submission.transcript()
@@ -569,15 +585,17 @@ def _existing_by_key(
     return EnqueueOutcome(job_id=found[0], state=JobState(found[1]), created=False)
 
 
-def _active_count(database: Database) -> int:
+def _active_count(database: Database, *, source: str | None = None) -> int:
+    """Active jobs in the queue — all of them, or one source's (the per-source cap's input)."""
     with database.read() as session:
-        return int(
-            session.execute(
-                select(func.count())
-                .select_from(Job)
-                .where(Job.state.in_([state.value for state in ACTIVE_STATES]))
-            ).scalar_one()
+        statement = (
+            select(func.count())
+            .select_from(Job)
+            .where(Job.state.in_([state.value for state in ACTIVE_STATES]))
         )
+        if source is not None:
+            statement = statement.where(Job.source == source)
+        return int(session.execute(statement).scalar_one())
 
 
 # -------------------------------------------------------------------------------------- claim
@@ -832,6 +850,7 @@ def cancel_job(
     *,
     now: datetime,
     on_request: Callable[[str], object] | None = None,
+    principal: Principal | None = None,
 ) -> CancelOutcome:
     """Request a job's cancellation, transactionally (queue §8).
 
@@ -857,6 +876,7 @@ def cancel_job(
         JobNotFound: No such job.
         JobNotCancellable: The job is terminal.
     """
+    authorize(principal, "write")
     with sink.write(database) as (session, events):
         row = session.execute(select(Job.state).where(Job.id == job_id)).scalar_one_or_none()
         if row is None:
@@ -1416,12 +1436,20 @@ QUEUE_FLAG_KEYS = ("queue.paused", "queue.draining")
 from another process reaches the running scheduler and a restart honours it (api.md §8)."""
 
 
-def set_queue_flag(database: Database, name: str, value: bool, *, now: datetime) -> None:  # noqa: FBT001 — the flag's value is the argument
+def set_queue_flag(  # noqa: FBT001 — the flag's value is the argument
+    database: Database,
+    name: str,
+    value: bool,
+    *,
+    now: datetime,
+    principal: Principal | None = None,
+) -> None:
     """Set ``queue.paused`` or ``queue.draining`` durably.
 
     Raises:
         ValueError: ``name`` is not one of the two flags.
     """
+    authorize(principal, "admin")
     from loadcoach.infrastructure.db.models import Setting
 
     if name not in QUEUE_FLAG_KEYS:

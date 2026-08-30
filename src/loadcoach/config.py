@@ -117,6 +117,32 @@ class ServerSettings(BaseModel):
         examples=[["loadcoach.local"]],
     )
 
+    rate_limit_per_minute: int = Field(
+        default=600,
+        ge=0,
+        description=(
+            "Requests per minute one credential may make to /api/v1, sustained (spec §14). A "
+            "token bucket: rate_limit_burst may arrive at once, then this rate. 0 disables. At "
+            "the limit a caller gets 429 RATE_LIMITED with Retry-After, never a dropped request."
+        ),
+        examples=[600],
+    )
+    rate_limit_burst: int = Field(
+        default=100,
+        ge=1,
+        description="How many requests one credential may make at once before the rate applies.",
+        examples=[100],
+    )
+    failed_auth_per_minute: int = Field(
+        default=20,
+        ge=0,
+        description=(
+            "Failed authentications one address may make per minute before it is refused with "
+            "429 for the rest of the minute (ADR-0014 §6). 0 disables."
+        ),
+        examples=[20],
+    )
+
     _split_allowed_hosts = field_validator("allowed_hosts", mode="before")(_split_csv)
 
 
@@ -302,6 +328,16 @@ class QueueSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     max_depth: int = Field(default=1000, ge=1, examples=[1000])
+    max_active_per_source: int = Field(
+        default=200,
+        ge=0,
+        description=(
+            "Active (non-terminal) jobs one source — a token, or an X-Client-Name on loopback — "
+            "may hold at once; a submission past it is refused with QUEUE_FULL naming the "
+            "source and the cap (spec §14). 0 disables the per-source cap."
+        ),
+        examples=[200],
+    )
     lease_seconds: int = Field(default=60, ge=1, examples=[60])
     poll_interval_ms: int = Field(default=250, ge=1, examples=[250])
     lease_renewal_interval_seconds: int = Field(

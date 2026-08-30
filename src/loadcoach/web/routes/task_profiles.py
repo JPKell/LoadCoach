@@ -5,7 +5,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
+from loadcoach.domain.authorization import authorize
 from loadcoach.services.task_profiles import StoredTaskProfile, list_stored_task_profiles
+from loadcoach.web.auth import CurrentPrincipal
 from loadcoach.web.rendering import render
 
 __all__ = ["router", "ui_router"]
@@ -29,15 +31,17 @@ def _profile_to_json(profile: StoredTaskProfile) -> dict[str, object]:
 
 
 @router.get("/task-profiles", summary="Task profile definitions")
-async def list_task_profiles(request: Request) -> dict[str, object]:
+async def list_task_profiles(request: Request, principal: CurrentPrincipal) -> dict[str, object]:
     """Return every task profile: version, weights, constraints, execution and validation policy."""
+    authorize(principal, "read")
     profiles = list_stored_task_profiles(request.app.state.database)
     return {"task_profiles": [_profile_to_json(profile) for profile in profiles]}
 
 
 @ui_router.get("/task-profiles", summary="Task profiles page", response_class=HTMLResponse)
-async def task_profiles_page(request: Request) -> HTMLResponse:
+async def task_profiles_page(request: Request, principal: CurrentPrincipal) -> HTMLResponse:
     """Render the plain (pre-MirrorWall) task profiles page."""
+    authorize(principal, "read")
     profiles = list_stored_task_profiles(request.app.state.database)
     return HTMLResponse(
         render("task_profiles/index.html", page="task-profiles", task_profiles=profiles)

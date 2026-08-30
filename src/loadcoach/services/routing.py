@@ -30,6 +30,7 @@ from baseaicore import RuntimeProfile, SuiteError, new_id
 from sqlalchemy import select
 from weightsdb import upsert
 
+from loadcoach.domain.authorization import Principal, authorize
 from loadcoach.domain.registry import geometry_from_json
 from loadcoach.domain.reliability import neutral_factor
 from loadcoach.domain.routing.constraints import (
@@ -447,6 +448,7 @@ def route(
     circuit_breaker_details: Mapping[str, Mapping[str, object]] | None = None,
     now: datetime,
     persist: bool = True,
+    principal: Principal | None = None,
 ) -> RoutingResult:
     """Run the whole routing pipeline and persist the decision.
 
@@ -475,6 +477,7 @@ def route(
         ConstraintsNotTightening: The request's constraints would loosen the profile's.
         NoEligibleModel: Every candidate was rejected. ``details`` names each one and why.
     """
+    authorize(principal, "write")
     started = datetime.now(tz=now.tzinfo)
     profile = load_task_profile(database, request.task)
     constraints = _merged_constraints(profile, request.constraints)

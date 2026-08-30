@@ -11,7 +11,9 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
+from loadcoach.domain.authorization import authorize
 from loadcoach.services.dashboard import dashboard_report
+from loadcoach.web.auth import CurrentPrincipal
 from loadcoach.web.rendering import render
 
 __all__ = ["ui_router"]
@@ -20,8 +22,9 @@ ui_router = APIRouter(tags=["ui"], include_in_schema=False)
 
 
 @ui_router.get("/", summary="Dashboard", response_class=HTMLResponse)
-def dashboard_page(request: Request) -> HTMLResponse:
+def dashboard_page(request: Request, principal: CurrentPrincipal) -> HTMLResponse:
     """Current activity, queue health, recent decisions, model mix and degradations."""
+    authorize(principal, "read")
     app = request.app
     report = dashboard_report(
         app.state.database,

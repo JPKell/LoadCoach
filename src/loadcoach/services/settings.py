@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Final
 from baseaicore import SuiteError, ValidationError
 from sqlalchemy import select
 
+from loadcoach.domain.authorization import Principal, authorize
 from loadcoach.infrastructure.db.models import Setting
 from loadcoach.infrastructure.db.repositories.settings import SettingsRepository
 
@@ -208,6 +209,7 @@ def write_runtime_settings(
     *,
     settings: Settings,
     now: datetime,
+    principal: Principal | None = None,
 ) -> dict[str, Any]:
     """Validate and store ``changes``, returning every effective value afterwards.
 
@@ -224,6 +226,7 @@ def write_runtime_settings(
         SettingConfigOnly: A security-relevant key (``403 FORBIDDEN``, naming it).
         ValidationError: An unknown key, or a value of the wrong type or outside its bounds.
     """
+    authorize(principal, "admin")
     for key in changes:
         if key in CONFIG_ONLY_SECURITY_KEYS:
             raise SettingConfigOnly(

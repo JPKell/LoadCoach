@@ -18,6 +18,16 @@
   {% else %}The request was refused for the reason above; correct it and retry.
   {% endif %}
   </p>
+  {% if status_code == 401 %}
+  <form method="post" action="/token-cookie" class="field">
+    <input type="hidden" name="{{ csrf_field_name }}" value="{{ csrf_token }}">
+    <input type="hidden" name="next" value="{{ path }}">
+    <label for="token">Use an API token in this browser</label>
+    <input type="password" id="token" name="token" autocomplete="off" required>
+    <p class="field-hint">The token is kept in an HttpOnly cookie for this browser only; <span class="mono">loadcoach token create</span> issues one.</p>
+    <button type="submit" data-variant="primary">Continue</button>
+  </form>
+  {% endif %}
   <p><a href="/">Dashboard</a> · <a href="/jobs">Jobs</a> · <a href="/queue">Queue</a></p>
 </div>
 {% endblock %}

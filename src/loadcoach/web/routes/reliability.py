@@ -12,6 +12,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
+from loadcoach.domain.authorization import authorize
 from loadcoach.domain.reliability import (
     MINIMUM_MEAN_SAMPLES,
     MINIMUM_PERCENTILE_SAMPLES,
@@ -23,6 +24,7 @@ from loadcoach.domain.reliability import (
     WINDOWS,
 )
 from loadcoach.services.reliability import reliability_report
+from loadcoach.web.auth import CurrentPrincipal
 from loadcoach.web.rendering import render
 
 __all__ = ["router", "ui_router"]
@@ -46,13 +48,17 @@ _MINIMUMS: dict[str, Any] = {
 
 @router.get("/reliability", summary="Production evidence per model and task profile")
 def get_reliability(
-    request: Request, task: _TaskQuery = None, model: _ModelQuery = None
+    request: Request,
+    principal: CurrentPrincipal,
+    task: _TaskQuery = None,
+    model: _ModelQuery = None,
 ) -> dict[str, Any]:
     """Every tracked pair's window statistics, factor, regression verdict and breaker state.
 
     Every statistic carries the sample count behind it and a reason when it is absent
     (ADR-0016); ``minimums`` states the bounds so a reader can see why a value is missing.
     """
+    authorize(principal, "read")
     entries = reliability_report(
         request.app.state.database, task_profile_id=task, canonical_id=model
     )
@@ -74,9 +80,13 @@ def get_reliability(
 
 @ui_router.get("/reliability", summary="Reliability page", response_class=HTMLResponse)
 def reliability_page(
-    request: Request, task: _TaskQuery = None, model: _ModelQuery = None
+    request: Request,
+    principal: CurrentPrincipal,
+    task: _TaskQuery = None,
+    model: _ModelQuery = None,
 ) -> HTMLResponse:
     """Render every pair: acceptance, validation pass rate, latency distribution and trend."""
+    authorize(principal, "read")
     entries = reliability_report(
         request.app.state.database, task_profile_id=task, canonical_id=model
     )

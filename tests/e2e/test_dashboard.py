@@ -91,6 +91,7 @@ def test_the_telemetry_bar_is_on_every_route_and_its_stream_reports_a_sample(
     import anyio
     from starlette.requests import Request
 
+    from loadcoach.domain.authorization import Principal
     from loadcoach.web.routes.system import telemetry_stream
 
     async def first_frame() -> tuple[str, str]:
@@ -102,7 +103,8 @@ def test_the_telemetry_bar_is_on_every_route_and_its_stream_reports_a_sample(
             "query_string": b"",
             "app": client.app,
         }
-        response = await telemetry_stream(Request(scope))
+        loopback = Principal(name="loopback", scope="admin", source="loopback")
+        response = await telemetry_stream(Request(scope), principal=loopback)
         iterator = cast("AsyncGenerator[bytes | str, None]", response.body_iterator)
         chunk: bytes | str = b""
         async for chunk in iterator:  # noqa: B007 — the first chunk is the whole first frame

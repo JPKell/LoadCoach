@@ -253,7 +253,22 @@ just submitted.
 
 `GET /version` requires no scope at all.
 
-Per-token rate limits and queue-depth caps prevent one caller from starving others.
+The scope is checked twice, by design (ADR-0014 §5): at the route, from the request's principal, and
+again inside every mutating service, which takes the principal as an argument — so an internal caller
+that reaches a service directly with a read-scoped principal is refused too.
+
+A browser cannot add `Authorization` to a page navigation, so on a tokened bind the same bearer token
+is carried by the `loadcoach_token` cookie (`HttpOnly`, `Secure`, `SameSite=Strict`), set once from the
+401 page by pasting the token and cleared by `POST /token-cookie/clear`. No account, no password: the
+cookie *is* the token, and revoking the token revokes it.
+
+Per-token rate limits and queue-depth caps prevent one caller from starving others. The limit is a
+token bucket keyed by the credential's digest (by address before authentication): `[server]
+rate_limit_burst` (100) requests may arrive at once, then `rate_limit_per_minute` (600) sustained;
+at the boundary the caller gets `429 RATE_LIMITED` with a `Retry-After` header, never a dropped
+request. Only `/api/v1` is limited and `/version` is exempt. Failed authentications are braked per
+address (`failed_auth_per_minute`, 20). The queue cap is `[queue] max_active_per_source` (200):
+a source past it is refused with `QUEUE_FULL` naming the source, its active count and the cap.
 
 ## 12. Client guidance (IdeaPress and others)
 

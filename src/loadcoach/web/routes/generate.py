@@ -35,6 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from setspec import GeneratorInfo
 
 from loadcoach.__about__ import __version__
+from loadcoach.domain.authorization import authorize
 from loadcoach.domain.queue_state import TERMINAL_STATES
 from loadcoach.domain.routing.subject import RuntimeOverrides
 from loadcoach.services.execution import (
@@ -47,6 +48,7 @@ from loadcoach.services.execution import (
 )
 from loadcoach.services.queue import job_document
 from loadcoach.services.task_profiles import DEFAULT_SCHEMAS_DIR
+from loadcoach.web.auth import CurrentPrincipal
 from loadcoach.web.routes.routing import OverridesBody
 from loadcoach.web.routing_support import current_snapshot, routing_policy_for
 
@@ -197,7 +199,9 @@ def _await_terminal(database: Database, job_id: str, *, timeout_seconds: float) 
 
 
 @router.post("/generate", summary="Route, execute and validate one generation")
-def post_generate(request: Request, body: GenerateBody) -> dict[str, Any]:
+def post_generate(
+    request: Request, principal: CurrentPrincipal, body: GenerateBody
+) -> dict[str, Any]:
     """Execute ``body`` synchronously and return the result with its routing metadata.
 
     ``def``, not ``async def`` (ADR-0003 §1): this handler touches the database and the provider,
@@ -209,6 +213,7 @@ def post_generate(request: Request, body: GenerateBody) -> dict[str, Any]:
     Errors: ``TASK_PROFILE_NOT_FOUND``, ``NO_ELIGIBLE_MODEL`` (with every candidate and its
     rejection reason), ``ALL_CANDIDATES_FAILED`` (with every attempt and its error).
     """
+    authorize(principal, "write")
     app = request.app
     generate_request = _to_request(body, source=source_of(request), stream=False)
     reserved = reserve_sync_job(
@@ -295,7 +300,9 @@ def _backstop(sink: JobEventSink, database: Database, job_id: str, message: str)
 
 
 @router.post("/generate/stream", summary="Stream one generation as it is produced")
-async def post_generate_stream(request: Request, body: GenerateBody) -> StreamingResponse:
+async def post_generate_stream(
+    request: Request, principal: CurrentPrincipal, body: GenerateBody
+) -> StreamingResponse:
     """Execute ``body`` and stream the routing decision, tokens and terminal result.
 
     ``async def`` (ADR-0003 §2): this handler only streams. The reservation is one database
@@ -310,6 +317,7 @@ async def post_generate_stream(request: Request, body: GenerateBody) -> Streamin
     its own sequence space, where a foreign ``Last-Event-ID`` would skip every frame this one
     produces, so it is ignored.
     """
+    authorize(principal, "write")
     app = request.app
     generate_request = _to_request(body, source=source_of(request), stream=True)
     reserved = await anyio.to_thread.run_sync(

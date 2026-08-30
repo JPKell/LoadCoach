@@ -89,6 +89,14 @@ packaging and release standards §3.
   a queued job keeps its transcript until it has run; `retain_content = true` (config-only)
   keeps everything. `tests/accessibility/test_ui_checklist.py` holds every page to the UI/UX
   §13 items a test can hold, and names what a person must still check.
+- Phase 9, unit 1 (auth and limits): scopes are checked at the route **and** inside every
+  mutating service (ADR-0014 §5) through one pure rule, `loadcoach.domain.authorization`; a
+  contract test holds every API route except `/version` to declaring the principal. On a tokened
+  bind the UI carries the same bearer token in an `HttpOnly` cookie set once from the 401 page.
+  Per-token rate limits (`[server] rate_limit_per_minute`, `rate_limit_burst`) answer
+  `429 RATE_LIMITED` with `Retry-After`; failed authentications are braked per address; the
+  per-source queue cap (`[queue] max_active_per_source`) refuses with `QUEUE_FULL` naming the
+  source. Host validation runs before authentication and before the limiter on every bind.
 
 ## [0.9.0b0] — 2026-08-30
 

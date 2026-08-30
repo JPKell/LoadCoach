@@ -55,6 +55,7 @@ from modelrack import (
 )
 from sqlalchemy import update
 
+from loadcoach.domain.authorization import Principal, authorize
 from loadcoach.domain.routing.context_budget import estimate_input_tokens
 from loadcoach.domain.routing.subject import ProviderFacts, RuntimeOverrides
 from loadcoach.domain.validation import (
@@ -1279,6 +1280,7 @@ def execute(
     cancel: CancellationToken | None = None,
     on_chunk: Callable[[StreamChunk], None] | None = None,
     job_id: str | None = None,
+    principal: Principal | None = None,
 ) -> ExecutionOutcome:
     """Route, execute, validate and record one generation.
 
@@ -1304,6 +1306,7 @@ def execute(
         AllCandidatesFailed: Every ranked candidate was tried and failed.
         SchemaUnsupported: The profile's schema uses a keyword the validator cannot check.
     """
+    authorize(principal, "write")
     started = time.perf_counter()
     now = context.now()
     existing = job_id is not None

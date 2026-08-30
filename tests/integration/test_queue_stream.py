@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 from tests.integration.test_jobs_api import _client
 
+from loadcoach.domain.authorization import Principal
 from loadcoach.services.queue_stream import QUEUE_STREAM_ID, QueueStatusPublisher, fingerprint
 from loadcoach.web.routes.queue import get_queue_stream
 
@@ -41,7 +42,9 @@ def _frames(client: TestClient, count: int, *, last_event_id: str | None = None)
             "query_string": b"",
             "app": client.app,
         }
-        response = await get_queue_stream(Request(scope))
+        response = await get_queue_stream(
+            Request(scope), principal=Principal(name="loopback", scope="admin", source="loopback")
+        )
         iterator = cast("AsyncGenerator[bytes | str, None]", response.body_iterator)
         collected: list[str] = []
         with anyio.fail_after(5.0):  # a stream that never delivers is a failure, not a hang

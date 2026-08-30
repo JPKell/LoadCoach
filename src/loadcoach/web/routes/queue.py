@@ -16,17 +16,17 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from mirrorwall import sse_response
 
+from loadcoach.domain.authorization import Principal, authorize
 from loadcoach.services.queue import queue_flags, set_queue_flag
 from loadcoach.services.queue_stream import QUEUE_STREAM_ID
 from loadcoach.services.status import queue_status
-from loadcoach.web.auth import require_scope
+from loadcoach.web.auth import CurrentPrincipal
 from loadcoach.web.csrf import render_form_page
 from loadcoach.web.routes.generate import GENERATOR
 
 if TYPE_CHECKING:
     from starlette.responses import StreamingResponse
 
-    from loadcoach.config import Settings
     from loadcoach.services.worker import QueueRuntime
 
 __all__ = ["router", "ui_router"]
@@ -40,21 +40,10 @@ def _runtime(request: Request) -> QueueRuntime | None:
     return runtime
 
 
-def _authorize(request: Request, *, scope: str) -> None:
-    """Enforce a scope for this request (api.md §11): the controls are ``admin``."""
-    settings: Settings = request.app.state.settings
-    request.state.token_name = require_scope(
-        request.app.state.database,
-        required=scope,
-        authorization=request.headers.get("authorization"),
-        bind_host=settings.server.host,
-        now=datetime.now(UTC),
-    )
-
-
 @router.get("/queue", summary="Queue depth, latency, residency, breakers")
-def get_queue(request: Request) -> dict[str, Any]:
+def get_queue(request: Request, principal: CurrentPrincipal) -> dict[str, Any]:
     """Queue §11's report."""
+    authorize(principal, "read")
     app = request.app
     return queue_status(
         app.state.database,
@@ -65,8 +54,9 @@ def get_queue(request: Request) -> dict[str, Any]:
 
 
 @router.get("/system/status", summary="Queue, executions, residency, telemetry")
-def get_system_status(request: Request) -> dict[str, Any]:
+def get_system_status(request: Request, principal: CurrentPrincipal) -> dict[str, Any]:
     """api.md §1's status: the queue report plus the current telemetry snapshot."""
+    authorize(principal, "read")
     from loadcoach.services.routing import telemetry_snapshot_json
     from loadcoach.web.routing_support import current_snapshot
 
@@ -82,7 +72,11 @@ def get_system_status(request: Request) -> dict[str, Any]:
 
 
 def _set(
-    request: Request, *, paused: bool | None = None, draining: bool | None = None
+    request: Request,
+    principal: Principal,
+    *,
+    paused: bool | None = None,
+    draining: bool | None = None,
 ) -> dict[str, Any]:
     app = request.app
     now = datetime.now(UTC)
@@ -90,12 +84,16 @@ def _set(
     if runtime is not None:
         # The runtime's copy and the durable flag are written under one lock, so the
         # scheduler's refresh cannot overwrite this request with a value read just before it.
-        runtime.flags.update(app.state.database, now=now, paused=paused, draining=draining)
+        runtime.flags.update(
+            app.state.database, now=now, paused=paused, draining=draining, principal=principal
+        )
     else:
         if paused is not None:
-            set_queue_flag(app.state.database, "queue.paused", paused, now=now)
+            set_queue_flag(app.state.database, "queue.paused", paused, now=now, principal=principal)
         if draining is not None:
-            set_queue_flag(app.state.database, "queue.draining", draining, now=now)
+            set_queue_flag(
+                app.state.database, "queue.draining", draining, now=now, principal=principal
+            )
     if runtime is not None and (paused is False or draining is False):
         runtime.wakeup.set()
     flags = queue_flags(app.state.database)
@@ -107,30 +105,31 @@ def _set(
 
 
 @router.post("/queue/pause", status_code=status.HTTP_202_ACCEPTED, summary="Stop dispatch")
-def post_pause(request: Request) -> dict[str, Any]:
+def post_pause(request: Request, principal: CurrentPrincipal) -> dict[str, Any]:
     """Admin: stop claiming without dropping jobs. In-flight work finishes."""
-    _authorize(request, scope="admin")
-    return _set(request, paused=True)
+    authorize(principal, "admin")
+    return _set(request, principal, paused=True)
 
 
 @router.post("/queue/resume", status_code=status.HTTP_202_ACCEPTED, summary="Resume dispatch")
-def post_resume(request: Request) -> dict[str, Any]:
+def post_resume(request: Request, principal: CurrentPrincipal) -> dict[str, Any]:
     """Admin: resume claiming; also clears a drain."""
-    _authorize(request, scope="admin")
-    return _set(request, paused=False, draining=False)
+    authorize(principal, "admin")
+    return _set(request, principal, paused=False, draining=False)
 
 
 @router.post("/queue/drain", status_code=status.HTTP_202_ACCEPTED, summary="Drain for shutdown")
-def post_drain(request: Request) -> dict[str, Any]:
+def post_drain(request: Request, principal: CurrentPrincipal) -> dict[str, Any]:
     """Admin: finish in-flight work, claim nothing new. ``in_flight`` says how many remain."""
-    _authorize(request, scope="admin")
-    return _set(request, draining=True)
+    authorize(principal, "admin")
+    return _set(request, principal, draining=True)
 
 
 @router.get("/queue/stream", summary="Live queue status")
-async def get_queue_stream(request: Request) -> StreamingResponse:
+async def get_queue_stream(request: Request, principal: CurrentPrincipal) -> StreamingResponse:
     """SSE: one ``queue.status`` frame per change, each the whole current report and the page
     fragment rendered from it — never a diff, so a reconnect is right after one frame."""
+    authorize(principal, "read")
     return sse_response(
         request.app.state.queue_stream,
         stream_id=QUEUE_STREAM_ID,
@@ -143,8 +142,9 @@ async def get_queue_stream(request: Request) -> StreamingResponse:
 
 
 @ui_router.get("/queue", summary="Queue page", response_class=HTMLResponse)
-def queue_page(request: Request) -> HTMLResponse:
+def queue_page(request: Request, principal: CurrentPrincipal) -> HTMLResponse:
     """Render queue §11's report, with the controls and the live region."""
+    authorize(principal, "read")
     app = request.app
     report = queue_status(
         app.state.database,
@@ -155,26 +155,28 @@ def queue_page(request: Request) -> HTMLResponse:
     return render_form_page(request, "queue/index.html", page="queue", report=report)
 
 
-def _control_form(request: Request, **flags: bool | None) -> RedirectResponse:
+def _control_form(request: Request, principal: Principal, **flags: bool | None) -> RedirectResponse:
     """A page's control form: the same admin scope and the same write, then back to the page."""
-    _authorize(request, scope="admin")
-    _set(request, **flags)
+    _set(request, principal, **flags)
     return RedirectResponse("/queue", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @ui_router.post("/queue/pause", summary="Pause from the page")
-def queue_pause_form(request: Request) -> RedirectResponse:
+def queue_pause_form(request: Request, principal: CurrentPrincipal) -> RedirectResponse:
     """The Pause button (CSRF-checked by MirrorWall's middleware)."""
-    return _control_form(request, paused=True)
+    authorize(principal, "admin")
+    return _control_form(request, principal, paused=True)
 
 
 @ui_router.post("/queue/resume", summary="Resume from the page")
-def queue_resume_form(request: Request) -> RedirectResponse:
+def queue_resume_form(request: Request, principal: CurrentPrincipal) -> RedirectResponse:
     """The Resume button."""
-    return _control_form(request, paused=False, draining=False)
+    authorize(principal, "admin")
+    return _control_form(request, principal, paused=False, draining=False)
 
 
 @ui_router.post("/queue/drain", summary="Drain from the page")
-def queue_drain_form(request: Request) -> RedirectResponse:
+def queue_drain_form(request: Request, principal: CurrentPrincipal) -> RedirectResponse:
     """The Drain button."""
-    return _control_form(request, draining=True)
+    authorize(principal, "admin")
+    return _control_form(request, principal, draining=True)

@@ -14,12 +14,13 @@ from urllib.parse import parse_qs
 from fastapi import APIRouter, Body, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from loadcoach.domain.authorization import authorize
 from loadcoach.services.settings import (
     RUNTIME_SETTINGS,
     runtime_settings_document,
     write_runtime_settings,
 )
-from loadcoach.web.auth import require_scope
+from loadcoach.web.auth import CurrentPrincipal
 from loadcoach.web.csrf import render_form_page
 
 __all__ = ["router", "ui_router"]
@@ -28,42 +29,39 @@ router = APIRouter(tags=["settings"])
 ui_router = APIRouter(tags=["ui"], include_in_schema=False)
 
 
-def _authorize(request: Request, *, scope: str) -> None:
-    settings = request.app.state.settings
-    request.state.token_name = require_scope(
-        request.app.state.database,
-        required=scope,
-        authorization=request.headers.get("authorization"),
-        bind_host=settings.server.host,
-        now=datetime.now(UTC),
-    )
-
-
 @router.get("/settings", summary="Runtime-changeable settings")
-def get_settings(request: Request) -> dict[str, Any]:
+def get_settings(request: Request, principal: CurrentPrincipal) -> dict[str, Any]:
     """Every runtime-changeable key's effective value, its definition, and the config-only keys."""
+    authorize(principal, "read")
     app = request.app
     return runtime_settings_document(app.state.database, settings=app.state.settings)
 
 
 @router.put("/settings", summary="Change runtime settings")
-def put_settings(request: Request, body: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+def put_settings(
+    request: Request, principal: CurrentPrincipal, body: Annotated[dict[str, Any], Body()]
+) -> dict[str, Any]:
     """Set one or more runtime-changeable keys; ``admin`` scope.
 
     ``403 FORBIDDEN`` names a security-relevant key; ``400 VALIDATION_ERROR`` names an unknown
     key or a value outside its bounds. Applied by the running scheduler within a second.
     """
+    authorize(principal, "admin")
     app = request.app
-    _authorize(request, scope="admin")
     write_runtime_settings(
-        app.state.database, body, settings=app.state.settings, now=datetime.now(UTC)
+        app.state.database,
+        body,
+        settings=app.state.settings,
+        now=datetime.now(UTC),
+        principal=principal,
     )
     return runtime_settings_document(app.state.database, settings=app.state.settings)
 
 
 @ui_router.get("/settings", summary="Settings page", response_class=HTMLResponse)
-def settings_page(request: Request) -> HTMLResponse:
+def settings_page(request: Request, principal: CurrentPrincipal) -> HTMLResponse:
     """Render every runtime-changeable setting as a form, and list what is config-only."""
+    authorize(principal, "read")
     app = request.app
     document = runtime_settings_document(app.state.database, settings=app.state.settings)
     return render_form_page(
@@ -78,10 +76,10 @@ def settings_page(request: Request) -> HTMLResponse:
 
 
 @ui_router.post("/settings", summary="Save from the page")
-async def settings_form(request: Request) -> RedirectResponse:
+async def settings_form(request: Request, principal: CurrentPrincipal) -> RedirectResponse:
     """The Settings form: booleans arrive as present/absent, numbers as text (CSRF-checked)."""
+    authorize(principal, "admin")
     app = request.app
-    _authorize(request, scope="admin")
     # Parsed here rather than through ``request.form()``: the page posts
     # ``application/x-www-form-urlencoded`` only, and that needs no extra dependency.
     form = {
@@ -99,6 +97,10 @@ async def settings_form(request: Request) -> RedirectResponse:
         text = str(raw).strip()
         changes[key] = int(text) if setting.kind is int else float(text)
     write_runtime_settings(
-        app.state.database, changes, settings=app.state.settings, now=datetime.now(UTC)
+        app.state.database,
+        changes,
+        settings=app.state.settings,
+        now=datetime.now(UTC),
+        principal=principal,
     )
     return RedirectResponse("/settings?saved=1", status_code=status.HTTP_303_SEE_OTHER)

@@ -192,6 +192,7 @@ environment, then CLI, field by field. Principal sections:
 [provider]    kind = "ollama"  base_url = "http://127.0.0.1:11434"  timeout_seconds = 300
 [providers]   allow_remote = false
 [server]      allowed_hosts = []           # required when host is not loopback (ADR-0026)
+              rate_limit_per_minute = 600  rate_limit_burst = 100  failed_auth_per_minute = 20
 [execution]   max_concurrent_jobs = 1      # raise only on multi-GPU or CPU-only setups
               default_timeout_seconds = 300  max_attempts = 3  attempt_backoff_seconds = 2
 [runtime]     # the default runtime profile every execution resolves against (ADR-0023)
@@ -201,7 +202,7 @@ environment, then CLI, field by field. Principal sections:
               kv_cache_precision = ""  flash_attention = false  keep_alive = "5m"
 [runtime.models."ollama/qwen3.5:9b-q8_0@sha256:1f3a9c4e2b70"]   # optional per-model override
               context_size = 32768
-[queue]       max_depth = 1000  lease_seconds = 60  poll_interval_ms = 250
+[queue]       max_depth = 1000  max_active_per_source = 200  lease_seconds = 60  poll_interval_ms = 250
               lease_renewal_interval_seconds = 20   # lease_seconds must exceed 3x this + slack
               ageing_interval_seconds = 30
               max_wait_seconds = 3600  ageing_priority_per_minute = 1

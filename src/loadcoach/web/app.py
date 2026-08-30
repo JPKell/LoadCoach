@@ -23,7 +23,7 @@ from typing import Any, Final
 from baseaicore import SuiteError, new_id
 from fastapi import FastAPI, Request, Response, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from mirrorwall import (
     CsrfMiddleware,
     HostValidationMiddleware,
@@ -44,7 +44,9 @@ from loadcoach.services.queue_stream import QueueStatusPublisher
 from loadcoach.services.status import queue_status
 from loadcoach.services.telemetry_stream import TelemetrySampler
 from loadcoach.services.worker import build_runtime
+from loadcoach.web.rate_limit import RateLimitMiddleware
 from loadcoach.web.rendering import render, templates
+from loadcoach.web.routes import access as access_routes
 from loadcoach.web.routes import dashboard as dashboard_routes
 from loadcoach.web.routes import evidence as evidence_routes
 from loadcoach.web.routes import generate as generate_routes
@@ -101,6 +103,7 @@ _STATUS_BY_CODE: dict[str, int] = {
     "EVIDENCE_SOURCE_REFUSED": status.HTTP_403_FORBIDDEN,
     "UNAUTHORIZED": status.HTTP_401_UNAUTHORIZED,
     "FORBIDDEN": status.HTTP_403_FORBIDDEN,
+    "RATE_LIMITED": status.HTTP_429_TOO_MANY_REQUESTS,
 }
 
 _CODE_BY_HTTP_STATUS: dict[int, str] = {
@@ -159,20 +162,22 @@ def _error_response(
     request: Request | None = None,
 ) -> Response:
     if request is not None and _wants_html(request):
-        return HTMLResponse(
+        from loadcoach.web.csrf import render_form_page
+
+        response = render_form_page(
+            request,
+            "error.html",
+            page=None,
+            code=code,
+            message=message,
             status_code=status_code,
-            content=render(
-                "error.html",
-                page=None,
-                code=code,
-                message=message,
-                status_code=status_code,
-                request_id=request_id,
-                details=dict(details or {}),
-                path=request.url.path,
-            ),
-            headers={"X-Request-ID": request_id},
+            request_id=request_id,
+            details=dict(details or {}),
+            path=request.url.path,
         )
+        response.status_code = status_code
+        response.headers["X-Request-ID"] = request_id
+        return response
     return JSONResponse(
         status_code=status_code,
         content=error_body(code=code, message=message, request_id=request_id, details=details),
@@ -347,7 +352,17 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.telemetry_stream = None
     app.state.queue_stream = None
 
+    # Starlette wraps in reverse order of these calls, so the stack from the outside in is:
+    # CSRF, Host validation, the rate limiter, the request ID. Host validation therefore precedes
+    # authentication (which lives in the routes) *and* the rate limiter, so a DNS-rebinding
+    # attempt is 421 before it can spend anyone's budget (ADR-0026 §1, Security Standards §14).
     app.add_middleware(RequestIdMiddleware)
+    app.add_middleware(
+        RateLimitMiddleware,
+        per_minute=settings.server.rate_limit_per_minute,
+        burst=settings.server.rate_limit_burst,
+        failed_auth_per_minute=settings.server.failed_auth_per_minute,
+    )
     app.add_middleware(HostValidationMiddleware, allowed_hosts=_resolve_allowed_hosts(settings))
     # Innermost of the three: a forged HTML form post is refused with CSRF_FAILED (Security
     # Standards §14) after Host validation and with a request ID already bound.
@@ -375,6 +390,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(reliability_routes.ui_router)
     app.include_router(system_routes.ui_router)
     app.include_router(settings_routes.ui_router)
+    app.include_router(access_routes.ui_router)
 
     # MirrorWall's own assets, served from the installed package: no CDN, no network request at
     # page load. Passing the environment swaps the plain `asset_url` filter for the hashing one,

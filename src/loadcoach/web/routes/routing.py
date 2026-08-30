@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from loadcoach.domain.authorization import authorize
 from loadcoach.domain.routing.narrative import narrate
 from loadcoach.domain.routing.subject import RuntimeOverrides
 from loadcoach.domain.task_profile import TaskProfileConstraints
@@ -31,6 +32,7 @@ from loadcoach.services.routing import (
     recent_decisions,
     route,
 )
+from loadcoach.web.auth import CurrentPrincipal
 from loadcoach.web.rendering import render
 from loadcoach.web.routing_support import (
     current_snapshot,
@@ -105,12 +107,15 @@ def _to_request(body: RouteBody) -> RouteRequest:
 
 
 @router.post("/route", summary="Route a task without executing it")
-async def post_route(request: Request, body: RouteBody) -> dict[str, Any]:
+async def post_route(
+    request: Request, principal: CurrentPrincipal, body: RouteBody
+) -> dict[str, Any]:
     """Return the full routing explanation for ``body`` without spending a GPU second.
 
     Errors: ``TASK_PROFILE_NOT_FOUND`` when the task is unknown, ``NO_ELIGIBLE_MODEL`` (with every
     candidate and its rejection reason) when nothing survived the hard constraints.
     """
+    authorize(principal, "write")
     app = request.app
     result = route(
         app.state.database,
@@ -119,13 +124,17 @@ async def post_route(request: Request, body: RouteBody) -> dict[str, Any]:
         policy=routing_policy_for(app.state.settings, database=app.state.database),
         snapshot=current_snapshot(app),
         now=datetime.now(UTC),
+        principal=principal,
     )
     return result.explanation.payload
 
 
 @router.get("/routing-decisions", summary="Recent routing decisions")
-async def list_routing_decisions(request: Request) -> dict[str, object]:
+async def list_routing_decisions(
+    request: Request, principal: CurrentPrincipal
+) -> dict[str, object]:
     """Return the most recent decisions, newest first."""
+    authorize(principal, "read")
     summaries = recent_decisions(request.app.state.database)
     return {
         "decisions": [
@@ -147,8 +156,11 @@ async def list_routing_decisions(request: Request) -> dict[str, object]:
 
 
 @router.get("/routing-decisions/{decision_id}", summary="One stored routing explanation")
-async def get_routing_decision(request: Request, decision_id: str) -> dict[str, Any]:
+async def get_routing_decision(
+    request: Request, principal: CurrentPrincipal, decision_id: str
+) -> dict[str, Any]:
     """Return one decision's explanation exactly as it was persisted."""
+    authorize(principal, "read")
     explanation = read_decision(request.app.state.database, decision_id)
     if explanation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such decision.")
@@ -156,15 +168,19 @@ async def get_routing_decision(request: Request, decision_id: str) -> dict[str, 
 
 
 @ui_router.get("/routing", summary="Routing page", response_class=HTMLResponse)
-async def routing_page(request: Request) -> HTMLResponse:
+async def routing_page(request: Request, principal: CurrentPrincipal) -> HTMLResponse:
     """Render the recent routing decisions."""
+    authorize(principal, "read")
     summaries = recent_decisions(request.app.state.database)
     return HTMLResponse(render("routing/index.html", page="routing", decisions=summaries))
 
 
 @ui_router.get("/routing/{decision_id}", summary="Explanation page", response_class=HTMLResponse)
-async def routing_decision_page(request: Request, decision_id: str) -> HTMLResponse:
+async def routing_decision_page(
+    request: Request, principal: CurrentPrincipal, decision_id: str
+) -> HTMLResponse:
     """Render one decision's explanation as a readable table with every number behind it."""
+    authorize(principal, "read")
     explanation = read_decision(request.app.state.database, decision_id)
     if explanation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such decision.")

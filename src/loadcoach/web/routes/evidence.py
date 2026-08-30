@@ -28,6 +28,7 @@ from fastapi import APIRouter, Body, Query, Request
 from fastapi.responses import HTMLResponse
 
 from loadcoach.__about__ import __version__
+from loadcoach.domain.authorization import authorize
 from loadcoach.domain.evidence_policy import MATCH_STATES
 from loadcoach.infrastructure.freeweight_client import FreeWeightClient, policy_from_settings
 from loadcoach.services.evidence import (
@@ -42,7 +43,7 @@ from loadcoach.services.evidence import (
     list_sources,
     query_evidence,
 )
-from loadcoach.web.auth import require_scope
+from loadcoach.web.auth import CurrentPrincipal
 from loadcoach.web.rendering import render
 
 if TYPE_CHECKING:
@@ -67,20 +68,10 @@ _LimitQuery = Annotated[int, Query(ge=1, le=MAX_EVIDENCE_LIMIT, description="Pag
 _CursorQuery = Annotated[str | None, Query(description="The previous page's next_cursor.")]
 
 
-def _authorize(request: Request, *, scope: str) -> None:
-    """Enforce a scope for this request (api.md §11)."""
-    settings: Settings = request.app.state.settings
-    require_scope(
-        request.app.state.database,
-        required=scope,
-        authorization=request.headers.get("authorization"),
-        bind_host=settings.server.host,
-        now=datetime.now(UTC),
-    )
-
-
 @router.post("/evidence/import", summary="Import a FreeWeight evidence bundle")
-def import_evidence(request: Request, body: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+def import_evidence(
+    request: Request, principal: CurrentPrincipal, body: Annotated[dict[str, Any], Body()]
+) -> dict[str, Any]:
     """Import a bundle from the request body, or pull one from a URL (api.md §7).
 
     Args:
@@ -97,7 +88,7 @@ def import_evidence(request: Request, body: Annotated[dict[str, Any], Body()]) -
         EvidenceImportFailed: The bundle itself was unusable.
         EvidenceSourceRefused: A ``url`` failed the fetch allowlist (ADR-0026 §3).
     """
-    _authorize(request, scope="admin")
+    authorize(principal, "admin")
     settings: Settings = request.app.state.settings
     database: Database = request.app.state.database
     now = datetime.now(UTC)
@@ -117,6 +108,7 @@ def import_evidence(request: Request, body: Annotated[dict[str, Any], Body()]) -
             accept_schema_majors=settings.evidence.accept_schema_majors,
             source_kind="freeweight_api",
             url=url.strip(),
+            principal=principal,
         )
         return outcome.as_json()
 
@@ -132,6 +124,7 @@ def import_evidence(request: Request, body: Annotated[dict[str, Any], Body()]) -
         now=now,
         accept_schema_majors=settings.evidence.accept_schema_majors,
         source_kind="file",
+        principal=principal,
     )
     return outcome.as_json()
 
@@ -139,6 +132,7 @@ def import_evidence(request: Request, body: Annotated[dict[str, Any], Body()]) -
 @router.get("/evidence", summary="Imported capability evidence")
 def list_evidence(  # noqa: PLR0913 — every argument is a documented query parameter
     request: Request,
+    principal: CurrentPrincipal,
     capability: _CapabilityQuery = None,
     model: _ModelQuery = None,
     match_state: _MatchStateQuery = None,
@@ -167,6 +161,7 @@ def list_evidence(  # noqa: PLR0913 — every argument is a documented query par
     Raises:
         ValidationError: ``match_state`` is not one of the three.
     """
+    authorize(principal, "read")
     import json
 
     if match_state is not None and match_state not in MATCH_STATES:
@@ -205,8 +200,9 @@ def list_evidence(  # noqa: PLR0913 — every argument is a documented query par
 
 
 @router.get("/evidence/sources", summary="Evidence sources and their last import")
-def list_evidence_sources(request: Request) -> dict[str, Any]:
+def list_evidence_sources(request: Request, principal: CurrentPrincipal) -> dict[str, Any]:
     """Return every configured and observed source with its last status (api.md §7)."""
+    authorize(principal, "read")
     database: Database = request.app.state.database
     settings: Settings = request.app.state.settings
     configured = settings.evidence.freeweight_url.strip()
@@ -247,8 +243,9 @@ def _summary_json(overview: Any) -> dict[str, Any]:  # noqa: ANN401 — Evidence
 
 
 @ui_router.get("/evidence", summary="Benchmarks (evidence) page", response_class=HTMLResponse)
-def evidence_page(request: Request) -> HTMLResponse:
+def evidence_page(request: Request, principal: CurrentPrincipal) -> HTMLResponse:
     """Render the Benchmarks page: coverage per capability, then the records behind it."""
+    authorize(principal, "read")
     database: Database = request.app.state.database
     settings: Settings = request.app.state.settings
     configured = settings.evidence.freeweight_url.strip()

@@ -9,7 +9,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
+from loadcoach.domain.authorization import authorize
 from loadcoach.services.models import ModelOverview, registry_overview
+from loadcoach.web.auth import CurrentPrincipal
 from loadcoach.web.rendering import render
 
 __all__ = ["router", "ui_router"]
@@ -41,18 +43,20 @@ def _model_to_json(overview: ModelOverview) -> dict[str, object]:
 
 
 @router.get("/models", summary="The model registry")
-async def list_models(request: Request) -> dict[str, object]:
+async def list_models(request: Request, principal: CurrentPrincipal) -> dict[str, object]:
     """Return every known model, available or not, with declared capabilities, its evidence
     summary, reliability and residency (api.md §2).
 
     Unavailable models are included, with a reason — not deleted (dev-plan P2 test list).
     """
+    authorize(principal, "read")
     overviews = registry_overview(request.app.state.database)
     return {"models": [_model_to_json(overview) for overview in overviews]}
 
 
 @ui_router.get("/models", summary="Models page", response_class=HTMLResponse)
-async def models_page(request: Request) -> HTMLResponse:
+async def models_page(request: Request, principal: CurrentPrincipal) -> HTMLResponse:
     """Render every model with evidence coverage, reliability and residency."""
+    authorize(principal, "read")
     overviews = registry_overview(request.app.state.database)
     return HTMLResponse(render("models/index.html", page="models", models=overviews))
