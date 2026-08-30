@@ -3,21 +3,35 @@
 {% block title %}Models — LoadCoach{% endblock %}
 {% block content %}
 <h2>Models</h2>
+<p class="muted">Every model discovery has seen, with what is known about it: declared flags, imported
+benchmark evidence (<a href="/evidence">Benchmarks</a>), production reliability
+(<a href="/reliability">Reliability</a>) and whether it is loaded right now (<a href="/queue">Queue</a>).</p>
 {% if not models %}
 {{ empty_state("No models discovered yet. Run `loadcoach models refresh` or start the provider.") }}
 {% else %}
 {% set columns = [
   {"label": "Canonical ID"}, {"label": "Family"}, {"label": "Context", "numeric": true},
-  {"label": "Size", "numeric": true}, {"label": "Declared capabilities"}, {"label": "Availability"}
+  {"label": "Size", "numeric": true}, {"label": "Declared capabilities"},
+  {"label": "Evidence", "numeric": true}, {"label": "Reliability"}, {"label": "Resident"},
+  {"label": "Availability"}
 ] %}
 {% set rows = [] %}
-{% for model in models %}
+{% for item in models %}
+{% set model = item.entry %}
 {% set _ = rows.append([
-  model.canonical_id,
+  ('<span class="mono">' ~ (model.canonical_id | e) ~ '</span>') | safe,
   model.family or "—",
   model.max_context if model.max_context is not none else "—",
   model.size_bytes | bytes_human,
   model.declared_capabilities.keys() | join(", ") or "none declared",
+  (item.evidence.bound ~ " bound · " ~ item.evidence.capabilities ~ " capabilit" ~ ("y" if item.evidence.capabilities == 1 else "ies")
+    ~ (" · " ~ item.evidence.stale ~ " stale" if item.evidence.stale else "")
+    ~ (" · " ~ item.evidence.unmatched ~ " unmatched" if item.evidence.unmatched else "")) if item.evidence.bound or item.evidence.unmatched else "none imported",
+  ((("factor %.3f"|format(item.reliability.lowest_factor)) if item.reliability.lowest_factor is not none else "neutral")
+    ~ " · " ~ item.reliability.attempts_7d ~ " attempts 7d · " ~ item.reliability.pairs ~ " profile" ~ ("" if item.reliability.pairs == 1 else "s")
+    ~ ((" · " ~ badge("regression", tone="danger")) if item.reliability.regressions else "")
+    ~ ((" · " ~ badge(item.reliability.circuit_state | e, tone="danger")) if item.reliability.circuit_state != "closed" else "")) | safe if item.reliability.pairs else "no production evidence",
+  (badge("resident", tone="success") ~ " GPU " ~ (item.residency.gpu_indexes | join(", ") | e)) | safe if item.residency.resident else "no",
   badge("available", tone="success") if model.available
     else badge("unavailable", tone="danger") ~ " " ~ (model.unavailable_reason or "")
 ]) %}

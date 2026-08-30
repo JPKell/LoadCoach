@@ -1,0 +1,78 @@
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import badge, empty_state, kv_list, table %}
+{% block title %}System — LoadCoach{% endblock %}
+{% macro reading(value, unit=None) -%}
+{% if value is none or value == "unsupported" %}{{ none | measurement("not measurable in this environment") }}{% else %}{{ value | measurement(none, unit) }}{% endif %}
+{%- endmacro %}
+{% block content %}
+<h2>System</h2>
+{{ kv_list([
+  {"label": "Version", "value": version},
+  {"label": "Machine fingerprint", "value": machine_fingerprint or "unavailable"},
+  {"label": "Health", "value": health.status},
+  {"label": "Workers", "value": (workers ~ " of max_concurrent_jobs " ~ max_concurrent_jobs ~ " · " ~ in_flight ~ " in flight") if workers is not none else "no runtime in this process"},
+  {"label": "Dispatch latency", "value": (report.dispatch_latency_ms.median | round(1) ~ " ms median, " ~ report.dispatch_latency_ms.max | round(1) ~ " ms max over " ~ report.dispatch_latency_ms.samples ~ " claims") if report.dispatch_latency_ms and report.dispatch_latency_ms.samples else "no claim yet"},
+  {"label": "Starving", "value": report.starving},
+  {"label": "Active jobs", "value": report.active ~ " of at most " ~ report.max_depth},
+  {"label": "Dispatch", "value": (badge("paused", tone="warning") if report.flags.paused else badge("draining", tone="warning") if report.flags.draining else badge("running", tone="success")) | safe},
+]) }}
+
+<h3>Health components</h3>
+{% set columns = [{"label": "Component"}, {"label": "Status"}, {"label": "Detail"}] %}
+{% set rows = [] %}
+{% for component in health.components %}
+{% set _ = rows.append([component.name, badge(component.status, tone="success" if component.status in ("ok", "not_configured") else "danger" if component.status == "unavailable" else "warning"), component.detail]) %}
+{% endfor %}
+{{ table(columns, rows, table_id="health", complete=true, row_count=health.components | length) }}
+
+<h3>Telemetry</h3>
+{% if telemetry %}
+{{ kv_list([
+  {"label": "Sampled at", "value": telemetry.timestamp},
+  {"label": "CPU", "value": reading(telemetry.cpu_percent, "%")},
+  {"label": "CPU temperature", "value": reading(telemetry.cpu_temperature_c, "°C")},
+  {"label": "RAM used", "value": reading(telemetry.ram_used_bytes | bytes_human if telemetry.ram_used_bytes != "unsupported" else none)},
+  {"label": "RAM available", "value": reading(telemetry.ram_available_bytes | bytes_human if telemetry.ram_available_bytes != "unsupported" else none)},
+]) }}
+{% if telemetry.gpus %}
+{% set columns = [{"label": "GPU", "numeric": true}, {"label": "Utilization", "numeric": true}, {"label": "Temperature", "numeric": true}, {"label": "Power", "numeric": true}, {"label": "VRAM used", "numeric": true}, {"label": "VRAM total", "numeric": true}] %}
+{% set rows = [] %}
+{% for gpu in telemetry.gpus %}
+{% set _ = rows.append([
+  gpu.index, reading(gpu.utilization_percent, "%"), reading(gpu.temperature_c, "°C"), reading(gpu.power_watts, "W"),
+  reading(gpu.vram_used_bytes | bytes_human if gpu.vram_used_bytes != "unsupported" else none),
+  reading(gpu.vram_total_bytes | bytes_human if gpu.vram_total_bytes != "unsupported" else none)
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Per device. A dash is a reading this machine cannot provide, never zero.", table_id="gpus", complete=true, row_count=telemetry.gpus | length) }}
+{% else %}
+{{ empty_state("No GPU reported by SweatMeter: " ~ (telemetry.unavailable_reasons.gpu if telemetry.unavailable_reasons.gpu is defined else "no reason given") ~ ".") }}
+{% endif %}
+{% else %}
+{{ empty_state("Telemetry could not be read on this machine; routing runs without VRAM and RAM constraints rather than with invented zeros.") }}
+{% endif %}
+
+<h3>Resident models</h3>
+{% if report.residency %}
+{% set columns = [{"label": "Model"}, {"label": "GPU", "numeric": true}, {"label": "VRAM"}, {"label": "Idle", "numeric": true}, {"label": "Loaded"}] %}
+{% set rows = [] %}
+{% for row in report.residency %}
+{% set _ = rows.append([row.canonical_id, row.gpu_index, (row.vram_bytes | bytes_human) if row.vram_bytes is not none else (row.vram_bytes_unavailable_reason or "unknown"), row.idle_seconds | round(0) ~ " s", row.loaded_at]) %}
+{% endfor %}
+{{ table(columns, rows, table_id="residency", complete=true, row_count=report.residency | length) }}
+{% else %}
+{{ empty_state("Nothing is resident, or the provider cannot report residency.") }}
+{% endif %}
+
+<h3>Circuit breakers</h3>
+{% if report.circuit_breakers %}
+{% set columns = [{"label": "Model"}, {"label": "State"}, {"label": "Failure rate", "numeric": true}, {"label": "Samples", "numeric": true}, {"label": "Reason"}] %}
+{% set rows = [] %}
+{% for breaker in report.circuit_breakers %}
+{% set _ = rows.append([breaker.canonical_id, badge(breaker.state, tone="danger" if breaker.state == "open" else "warning" if breaker.state == "half_open" else "success"), ("%.0f%%" | format(breaker.failure_rate * 100)) if breaker.failure_rate is not none else "—", breaker.samples, breaker.reason]) %}
+{% endfor %}
+{{ table(columns, rows, table_id="breakers", complete=true, row_count=report.circuit_breakers | length) }}
+{% else %}
+{{ empty_state("No model has failed recently.") }}
+{% endif %}
+{% endblock %}

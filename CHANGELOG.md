@@ -71,6 +71,14 @@ packaging and release standards §3.
   bottom as the raw source. The jobs list gains filters (state, class, task, source), the model
   and source columns, and cursor pagination shared with the API; the job page lists every
   source's feedback.
+- Phase 8, unit 3 (live queue, models, system): the Queue page updates live over
+  `GET /api/v1/queue/stream` — every frame is the whole current report plus the page fragment
+  rendered from it, published on change, so a reconnect is correct after one frame — with
+  pause/resume/drain as forms behind MirrorWall's CSRF middleware (now wired; a forged post is
+  `403 CSRF_FAILED`) and `admin` scope on the controls. `GET /models` and the Models page carry
+  the evidence summary, reliability and residency api.md §2 names, and `model_ref`. The System
+  page (`/system`): telemetry with dashes for what cannot be measured, residency, the thread
+  pool, dispatch latency, starvation, health components and breakers.
 
 ## [0.9.0b0] — 2026-08-30
 

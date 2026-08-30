@@ -1,66 +1,47 @@
 {% extends "mirrorwall/base.html" %}
-{% from "mirrorwall/components.html" import empty_state, kv_list, table %}
 {% block title %}Queue — LoadCoach{% endblock %}
 {% block content %}
 <h2>Queue</h2>
-{{ kv_list([
-  {"label": "Active jobs", "value": report.active ~ " of at most " ~ report.max_depth},
-  {"label": "By state", "value": (report.depth_by_state | tojson) if report.depth_by_state else "empty"},
-  {"label": "By class", "value": (report.depth_by_class | tojson) if report.depth_by_class else "empty"},
-  {"label": "Oldest queued", "value": (report.oldest_queued_age_seconds | round(1) ~ " s") if report.oldest_queued_age_seconds is not none else "—"},
-  {"label": "Starving", "value": report.starving},
-  {"label": "Completed, last 5 min", "value": report.throughput.completed_last_5m},
-  {"label": "Dispatch latency", "value": (report.dispatch_latency_ms.median | round(1) ~ " ms median, " ~ report.dispatch_latency_ms.max | round(1) ~ " ms max over " ~ report.dispatch_latency_ms.samples ~ " claims") if report.dispatch_latency_ms and report.dispatch_latency_ms.samples else "no claim yet"},
-  {"label": "Paused", "value": report.flags.paused},
-  {"label": "Draining", "value": report.flags.draining},
-  {"label": "Last recovery", "value": (report.last_recovery.touched ~ " job(s) reconciled") if report.last_recovery else "—"},
-]) }}
+<div class="filter-bar" aria-label="Queue controls">
+  <form method="post" action="/queue/pause">
+    <input type="hidden" name="{{ csrf_field_name }}" value="{{ csrf_token }}">
+    <button type="submit" data-variant="secondary"{% if report.flags.paused %} disabled aria-disabled="true"{% endif %}>Pause dispatch</button>
+  </form>
+  <form method="post" action="/queue/resume">
+    <input type="hidden" name="{{ csrf_field_name }}" value="{{ csrf_token }}">
+    <button type="submit" data-variant="primary"{% if not report.flags.paused and not report.flags.draining %} disabled aria-disabled="true"{% endif %}>Resume dispatch</button>
+  </form>
+  <form method="post" action="/queue/drain">
+    <input type="hidden" name="{{ csrf_field_name }}" value="{{ csrf_token }}">
+    <button type="submit" data-variant="secondary"{% if report.flags.draining %} disabled aria-disabled="true"{% endif %}>Drain for shutdown</button>
+  </form>
+  <span class="muted" id="queue-live-status" role="status" aria-live="polite">connecting…</span>
+</div>
+<p class="muted">Pause stops claiming without dropping jobs; drain finishes in-flight work and claims nothing new; resume clears both. Each takes effect on the scheduler's next tick, and the page updates without a reload while the stream is connected.</p>
 
-<h3>Executing now</h3>
-{% if report.executions %}
-{% set columns = [{"label": "Job"}, {"label": "Worker"}, {"label": "State"}, {"label": "Class"}, {"label": "Model"}, {"label": "GPU"}] %}
-{% set rows = [] %}
-{% for entry in report.executions %}
-{% set _ = rows.append([
-  ('<a class="mono" href="/jobs/' ~ entry.job_id ~ '">' ~ entry.job_id ~ "</a>") | safe,
-  entry.worker, entry.state, entry["class"], entry.canonical_id or "—",
-  entry.target_gpu_index if entry.target_gpu_index is not none else "—"
-]) %}
-{% endfor %}
-{{ table(columns, rows, caption="Jobs a worker of this process holds.", table_id="executions", complete=true, row_count=report.executions | length) }}
-{% else %}
-{{ empty_state("No job is executing.") }}
-{% endif %}
-
-<h3>Resident models</h3>
-{% if report.residency %}
-{% set columns = [{"label": "Model"}, {"label": "GPU", "numeric": true}, {"label": "VRAM"}, {"label": "Idle", "numeric": true}, {"label": "Loaded"}] %}
-{% set rows = [] %}
-{% for row in report.residency %}
-{% set _ = rows.append([
-  row.canonical_id, row.gpu_index,
-  (row.vram_bytes | bytes_human) if row.vram_bytes is not none else (row.vram_bytes_unavailable_reason or "unknown"),
-  row.idle_seconds | round(0) ~ " s", row.loaded_at
-]) %}
-{% endfor %}
-{{ table(columns, rows, caption="Per device; max_resident_models applies per device.", table_id="residency", complete=true, row_count=report.residency | length) }}
-{% else %}
-{{ empty_state("Nothing is resident, or the provider cannot report residency.") }}
-{% endif %}
-
-<h3>Circuit breakers</h3>
-{% if report.circuit_breakers %}
-{% set columns = [{"label": "Model"}, {"label": "State"}, {"label": "Failure rate", "numeric": true}, {"label": "Samples", "numeric": true}, {"label": "Reason"}] %}
-{% set rows = [] %}
-{% for breaker in report.circuit_breakers %}
-{% set _ = rows.append([
-  breaker.canonical_id, breaker.state,
-  ("%.0f%%" | format(breaker.failure_rate * 100)) if breaker.failure_rate is not none else "—",
-  breaker.samples, breaker.reason
-]) %}
-{% endfor %}
-{{ table(columns, rows, caption="A model that keeps failing is excluded until its cool-down, then re-probed.", table_id="breakers", complete=true, row_count=report.circuit_breakers | length) }}
-{% else %}
-{{ empty_state("No model has failed recently.") }}
-{% endif %}
+<div id="queue-live" data-stream-url="/api/v1/queue/stream" aria-live="polite">
+{% include "queue/_live.html" %}
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ 'js/sse.js' | asset_url }}" defer></script>
+<script>
+  // Progressive enhancement (ADR-0020): the page above is complete and static; this swaps in
+  // each full-state frame the server renders. A frame is the whole live region, never a diff, so
+  // a reconnect after any gap is correct after its first frame.
+  document.addEventListener("DOMContentLoaded", function () {
+    var live = document.getElementById("queue-live");
+    var status = document.getElementById("queue-live-status");
+    if (!live || !window.mirrorwallSse) { if (status) { status.textContent = "static"; } return; }
+    var handle = window.mirrorwallSse.connect(live.getAttribute("data-stream-url"), {
+      "queue.status": function (payload) {
+        if (payload && typeof payload.html === "string") { live.innerHTML = payload.html; }
+        if (status) { status.textContent = "live · update " + payload.sequence; }
+      }
+    });
+    if (!handle) { if (status) { status.textContent = "static"; } return; }
+    handle.source.addEventListener("open", function () { if (status && status.textContent === "connecting…") { status.textContent = "live"; } });
+    handle.source.addEventListener("error", function () { if (status) { status.textContent = "reconnecting…"; } });
+  });
+</script>
 {% endblock %}

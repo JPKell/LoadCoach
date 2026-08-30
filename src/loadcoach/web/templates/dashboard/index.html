@@ -27,7 +27,7 @@ Every figure links to the page that owns it.</p>
   item.name,
   badge(item.status, tone="danger" if item.status in ("unavailable", "open", "regressed") else "warning"),
   item.detail,
-  ('<a href="' ~ item.href ~ '">' ~ item.kind ~ '</a>') | safe
+  ('<a href="' ~ (item.href | e) ~ '">' ~ (item.kind | e) ~ '</a>') | safe
 ]) %}
 {% endfor %}
 {{ table(columns, rows, caption="Everything that is not healthy right now, with where to look.", table_id="degradations", complete=true, row_count=report.degradations | length) }}
@@ -78,7 +78,7 @@ Every figure links to the page that owns it.</p>
 {% set rows = [] %}
 {% for entry in report.model_mix %}
 {% set _ = rows.append([
-  ('<a class="mono" href="/models">' ~ entry.canonical_id ~ "</a>") | safe,
+  ('<a class="mono" href="/models">' ~ (entry.canonical_id | e) ~ "</a>") | safe,
   entry.jobs, entry.completed, entry.failed, entry.other
 ]) %}
 {% endfor %}

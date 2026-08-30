@@ -7,23 +7,29 @@ phase, so today that is simply the router's default.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from mirrorwall import sse_response
 
 from loadcoach.__about__ import __version__
 from loadcoach.services.health import get_health_report
-from loadcoach.services.telemetry_stream import TELEMETRY_STREAM_ID
+from loadcoach.services.machine import machine_fingerprint
+from loadcoach.services.status import queue_status
+from loadcoach.services.telemetry_stream import TELEMETRY_STREAM_ID, telemetry_payload
+from loadcoach.web.rendering import render
 from loadcoach.web.routes.generate import GENERATOR
+from loadcoach.web.routing_support import current_snapshot
 
 if TYPE_CHECKING:
     from starlette.responses import StreamingResponse
 
-__all__ = ["router"]
+__all__ = ["router", "ui_router"]
 
 router = APIRouter(tags=["system"])
+ui_router = APIRouter(tags=["ui"], include_in_schema=False)
 
 
 @router.get("/health", summary="Component health")
@@ -69,4 +75,34 @@ async def telemetry_stream(request: Request) -> StreamingResponse:
         heartbeat_seconds=15.0,
         poll_interval_seconds=0.05,
         terminal_events=frozenset(),
+    )
+
+
+@ui_router.get("/system", summary="System page", response_class=HTMLResponse)
+def system_page(request: Request) -> HTMLResponse:
+    """Telemetry, residency, the thread pool, dispatch latency, starvation and breakers (P8)."""
+    app = request.app
+    runtime = app.state.queue_runtime
+    now = datetime.now(UTC)
+    snapshot = current_snapshot(app)
+    report = queue_status(app.state.database, settings=app.state.settings, runtime=runtime, now=now)
+    health = get_health_report(
+        database=app.state.database,
+        provider=app.state.provider,
+        settings=app.state.settings,
+        queue_runtime=runtime,
+    )
+    return HTMLResponse(
+        render(
+            "system/index.html",
+            page="system",
+            telemetry=None if snapshot is None else telemetry_payload(snapshot),
+            report=report,
+            health=health,
+            workers=None if runtime is None else len(runtime.workers),
+            in_flight=None if runtime is None else len(runtime.in_flight),
+            max_concurrent_jobs=app.state.settings.execution.max_concurrent_jobs,
+            machine_fingerprint=machine_fingerprint(),
+            version=__version__,
+        )
     )

@@ -17,6 +17,7 @@ import logging
 import re
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any, Final
 
 from baseaicore import SuiteError, new_id
@@ -24,6 +25,7 @@ from fastapi import FastAPI, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from mirrorwall import (
+    CsrfMiddleware,
     HostValidationMiddleware,
     RequestIdMiddleware,
     error_body,
@@ -38,6 +40,8 @@ from loadcoach.config import LOOPBACK_HOSTS, Settings
 from loadcoach.infrastructure.providers.factory import build_provider
 from loadcoach.services.database import Database
 from loadcoach.services.job_events import JobEventSink
+from loadcoach.services.queue_stream import QueueStatusPublisher
+from loadcoach.services.status import queue_status
 from loadcoach.services.telemetry_stream import TelemetrySampler
 from loadcoach.services.worker import build_runtime
 from loadcoach.web.rendering import render, templates
@@ -289,12 +293,23 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.telemetry_stream = sampler
     sampler.start()
+    # The live queue page's producer (dev-plan P8): full-state frames on change, each carrying
+    # the page fragment rendered here, in the web layer, from the same report.
+    publisher = QueueStatusPublisher(
+        lambda: queue_status(database, settings=settings, runtime=runtime, now=datetime.now(UTC)),
+        interval_seconds=max(settings.queue.poll_interval_ms / 1000.0, 0.25),
+        render=lambda report: render("queue/_live.html", report=report),
+    )
+    app.state.queue_stream = publisher
+    publisher.start()
     try:
         yield
     finally:
+        publisher.stop()
         sampler.stop()
         runtime.stop()
         database.close()
+        app.state.queue_stream = None
         app.state.telemetry_stream = None
         app.state.queue_runtime = None
         app.state.database = None
@@ -329,9 +344,13 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.event_sink = None
     app.state.queue_runtime = None
     app.state.telemetry_stream = None
+    app.state.queue_stream = None
 
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(HostValidationMiddleware, allowed_hosts=_resolve_allowed_hosts(settings))
+    # Innermost of the three: a forged HTML form post is refused with CSRF_FAILED (Security
+    # Standards §14) after Host validation and with a request ID already bound.
+    app.add_middleware(CsrfMiddleware)
 
     register_exception_handlers(app)
 
@@ -352,6 +371,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(queue_routes.ui_router)
     app.include_router(evidence_routes.ui_router)
     app.include_router(reliability_routes.ui_router)
+    app.include_router(system_routes.ui_router)
 
     # MirrorWall's own assets, served from the installed package: no CDN, no network request at
     # page load. Passing the environment swaps the plain `asset_url` filter for the hashing one,

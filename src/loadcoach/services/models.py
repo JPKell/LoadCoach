@@ -11,7 +11,7 @@ import tomllib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from baseaicore import is_supported
 from modelrack import ProviderError
@@ -35,6 +35,8 @@ if TYPE_CHECKING:
     from loadcoach.services.database import Database
 
 __all__ = [
+    "ModelOverview",
+    "registry_overview",
     "DEFAULT_MANUAL_SCORES_PATH",
     "DiscoveryOutcome",
     "RegistryEntry",
@@ -243,6 +245,8 @@ class RegistryEntry:
     first_seen_at: datetime
     last_seen_at: datetime
     declared_capabilities: dict[str, float]
+    model_id: str = ""
+    """The registry ULID — api.md §2's ``model_ref``, the form that survives a path segment."""
 
 
 def list_registry(database: Database) -> tuple[RegistryEntry, ...]:
@@ -274,9 +278,128 @@ def list_registry(database: Database) -> tuple[RegistryEntry, ...]:
                         for row in capability_rows
                         if row.score is not None
                     },
+                    model_id=model.id,
                 )
             )
         return tuple(entries)
+
+
+@dataclass(frozen=True, slots=True)
+class ModelOverview:
+    """One model as the Models page and ``GET /models`` show it (api.md §2, dev-plan P8).
+
+    Attributes:
+        entry: Identity, availability and declared capabilities.
+        evidence: Imported evidence for the model: ``bound`` records, distinct ``capabilities``
+            measured, ``stale`` and ``unmatched`` counts.
+        reliability: Production statistics across task profiles: ``pairs`` tracked, counted
+            ``attempts_7d``, the ``lowest_factor`` routing applies on any profile (``None`` when
+            every pair is neutral), ``regressions``, and the breaker's ``circuit_state``.
+        residency: ``resident`` and the ``gpu_indexes`` it is loaded on.
+    """
+
+    entry: RegistryEntry
+    evidence: dict[str, int]
+    reliability: dict[str, Any]
+    residency: dict[str, Any]
+
+    def as_json(self) -> dict[str, Any]:
+        """The three summaries ``GET /models`` carries beside the identity fields."""
+        return {
+            "evidence_summary": dict(self.evidence),
+            "reliability": dict(self.reliability),
+            "residency": dict(self.residency),
+        }
+
+
+def registry_overview(database: Database) -> tuple[ModelOverview, ...]:
+    """Every model with its evidence, reliability and residency summaries (api.md §2)."""
+    from sqlalchemy import func, select
+
+    from loadcoach.infrastructure.db.models import CapabilityEvidence, Residency
+    from loadcoach.services.reliability import reliability_report
+
+    entries = list_registry(database)
+    with database.read() as session:
+        evidence_rows = session.execute(
+            select(
+                CapabilityEvidence.model_id,
+                CapabilityEvidence.match_state,
+                CapabilityEvidence.stale,
+                func.count(),
+                func.count(func.distinct(CapabilityEvidence.capability_id)),
+            )
+            .where(CapabilityEvidence.model_id.is_not(None))
+            .group_by(
+                CapabilityEvidence.model_id,
+                CapabilityEvidence.match_state,
+                CapabilityEvidence.stale,
+            )
+        ).all()
+        resident_rows = session.execute(
+            select(Residency.model_id, Residency.gpu_index).where(Residency.resident.is_(True))
+        ).all()
+    evidence: dict[str, dict[str, int]] = {}
+    for model_id, match_state, stale, count, capabilities in evidence_rows:
+        coverage = evidence.setdefault(
+            model_id, {"bound": 0, "capabilities": 0, "stale": 0, "unmatched": 0}
+        )
+        if match_state == "bound":
+            coverage["bound"] += int(count)
+            coverage["capabilities"] = max(coverage["capabilities"], int(capabilities))
+            if stale:
+                coverage["stale"] += int(count)
+        else:
+            coverage["unmatched"] += int(count)
+    residency: dict[str, list[int]] = {}
+    for model_id, gpu_index in resident_rows:
+        residency.setdefault(model_id, []).append(int(gpu_index))
+    reliability: dict[str, dict[str, Any]] = {}
+    for report in reliability_report(database):
+        summary: dict[str, Any] = reliability.setdefault(
+            report.model_id,
+            {
+                "pairs": 0,
+                "attempts_7d": 0,
+                "lowest_factor": None,
+                "regressions": 0,
+                "circuit_state": "closed",
+            },
+        )
+        summary["pairs"] += 1
+        summary["attempts_7d"] += report.windows["7d"].counted
+        if not report.factor.neutral:
+            lowest = summary["lowest_factor"]
+            summary["lowest_factor"] = (
+                report.factor.value if lowest is None else min(lowest, report.factor.value)
+            )
+        if report.regression.regressed:
+            summary["regressions"] += 1
+        if report.circuit_state != "closed":
+            summary["circuit_state"] = report.circuit_state
+    return tuple(
+        ModelOverview(
+            entry=entry,
+            evidence=evidence.get(
+                entry.model_id, {"bound": 0, "capabilities": 0, "stale": 0, "unmatched": 0}
+            ),
+            reliability=reliability.get(
+                entry.model_id,
+                {
+                    "pairs": 0,
+                    "attempts_7d": 0,
+                    "lowest_factor": None,
+                    "regressions": 0,
+                    "circuit_state": "closed",
+                },
+            ),
+            residency={
+                "resident": entry.model_id in residency,
+                "gpu_indexes": sorted(residency.get(entry.model_id, [])),
+            },
+        )
+        for entry in entries
+    )
 
 
 def try_discover_models(

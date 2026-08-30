@@ -19,7 +19,7 @@
   {"label": "Provider time", "value": (job.timing.provider_ms ~ " ms") if job.timing.provider_ms is not none else "—"},
   {"label": "Overhead", "value": (job.timing.loadcoach_overhead_ms ~ " ms") if job.timing.loadcoach_overhead_ms is not none else "—"},
   {"label": "Error", "value": (job.error.code ~ ": " ~ (job.error.message or "")) if job.error else "none"},
-  {"label": "Explanation", "value": (('<a href="/routing/' ~ job.routing.decision_id ~ '">decision ' ~ job.routing.decision_id ~ '</a> · ') if job.routing.decision_id else '') ~ ('<a href="/api/v1/jobs/' ~ job.job_id ~ '/explanation">' ~ job.routing.explanation_url ~ '</a>') | safe},
+  {"label": "Explanation", "value": ((('<a href="/routing/' ~ (job.routing.decision_id | e) ~ '">decision ' ~ (job.routing.decision_id | e) ~ '</a> · ') if job.routing.decision_id else '') ~ ('<a href="/api/v1/jobs/' ~ (job.job_id | e) ~ '/explanation">' ~ (job.routing.explanation_url | e) ~ '</a>')) | safe},
 ]) }}
 
 {% if narrative %}

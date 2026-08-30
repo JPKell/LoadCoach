@@ -57,7 +57,7 @@ in validated success against the model's own history, at z ≥ {{ minimums.regre
   entry.canonical_id,
   entry.task_profile_id,
   week.counted ~ " / " ~ entry.windows["30d"].counted ~ " / " ~ entry.windows["all"].counted,
-  '<span title="' ~ entry.factor.reason ~ '">' ~ "%.3f"|format(entry.factor.value) ~ (" (neutral)" if entry.factor.neutral else "") ~ '</span>',
+  ('<span title="' ~ (entry.factor.reason | e) ~ '">' ~ "%.3f"|format(entry.factor.value) ~ (" (neutral)" if entry.factor.neutral else "") ~ '</span>') | safe,
   pct(week.success_rate()), pct(week.validation_pass_rate()),
   pct(week.acceptance()), num(week.quality(), "%.2f"),
   ms(week.p50()), ms(week.p95()),

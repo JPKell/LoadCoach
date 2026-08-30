@@ -39,6 +39,11 @@ def test_get_models_shows_declared_capabilities_and_availability(client: TestCli
     assert "declared_capabilities" in model
     assert "available" in model
     assert "unavailable_reason" in model
+    # api.md §2: the evidence summary, reliability and residency arrive with P8.
+    assert model["model_ref"] and "/" not in model["model_ref"]
+    assert model["evidence_summary"] == {"bound": 0, "capabilities": 0, "stale": 0, "unmatched": 0}
+    assert model["reliability"]["pairs"] == 0 and model["reliability"]["lowest_factor"] is None
+    assert model["residency"] == {"resident": False, "gpu_indexes": []}
 
 
 def test_models_ui_page_renders(client: TestClient) -> None:
@@ -46,6 +51,9 @@ def test_models_ui_page_renders(client: TestClient) -> None:
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "Models" in response.text
+    assert "none imported" in response.text  # evidence coverage
+    assert "no production evidence" in response.text  # reliability
+    assert '<th scope="col">Resident</th>' in response.text
 
 
 def test_task_profiles_ui_page_renders(client: TestClient) -> None:

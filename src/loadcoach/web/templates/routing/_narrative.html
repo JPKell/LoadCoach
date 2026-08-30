@@ -46,7 +46,7 @@
 {% set _ = rows.append([
   absence.capability, "%.2f"|format(absence.weight),
   badge(absence.source, tone="neutral") ~ " " ~ absence.note,
-  ('<code>' ~ absence.remedy ~ '</code>') | safe if absence.remedy else "—"
+  ('<code>' ~ (absence.remedy | e) ~ '</code>') | safe if absence.remedy else "—"
 ]) %}
 {% endfor %}
 {{ table(columns, rows, caption="Absent is not zero: these capabilities were left out of both numerator and denominator.", table_id="absences", complete=true, row_count=narrative.absences | length) }}
