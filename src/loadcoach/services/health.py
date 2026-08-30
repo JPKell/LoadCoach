@@ -13,7 +13,10 @@ or any circuit breaker is open); Phase 6 adds ``evidence``, whose ``not_configur
 healthy rather than degraded because LoadCoach is designed to run without FreeWeight (spec §6);
 Phase 7 adds ``reliability`` — degraded when any model's recent validated-success rate has
 regressed against its own baseline (routing §11), naming the pair and the numbers.
-``gpu_telemetry`` (spec §17) arrives with the phase that builds it.
+There is deliberately no ``gpu_telemetry`` component (F10/M5C-10): a machine without a GPU is
+not unhealthy — absence is ``UNSUPPORTED``, never a failure (ADR-0016) — and the readings live
+on ``GET /system/status`` and the System page. Spec §17 says the same, and a contract test
+holds §17, api.md §1 and this report to one list.
 """
 
 from __future__ import annotations

@@ -32,6 +32,30 @@ def test_server_boots_with_zero_configuration_and_serves_health(client: TestClie
     assert names == {"database", "provider", "queue", "evidence", "reliability"}
 
 
+def test_the_documented_health_component_lists_match_the_endpoint(client: TestClient) -> None:
+    """F10 (M5C-10): spec §17, api.md §1 and ``/api/v1/health`` name one component list.
+
+    M5-5 added ``reliability`` everywhere but left spec §17 promising a ``gpu_telemetry``
+    component no phase ever built; this parses the mirrored documents so the three sources
+    cannot drift apart silently again.
+    """
+    import re
+    from pathlib import Path
+
+    served = {item["name"] for item in client.get("/api/v1/health").json()["components"]}
+    docs = Path(__file__).resolve().parents[2] / "docs" / "apps" / "loadcoach"
+
+    spec = (docs / "spec.md").read_text(encoding="utf-8")
+    bullet_start = spec.index("* Health components:")
+    bullet = spec[bullet_start : spec.index("\n* ", bullet_start)]
+    assert set(re.findall(r"`([a-z_]+)`", bullet)) == served, bullet
+
+    api = (docs / "api.md").read_text(encoding="utf-8")
+    row = next(line for line in api.splitlines() if "`GET /health`" in line)
+    listed = row.split("Components:", 1)[1]
+    assert set(re.findall(r"`([a-z_]+)`", listed)) == served, row
+
+
 def test_health_reports_degraded_with_no_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     """Acceptance criterion 1: reports degraded health with no provider reachable."""
     monkeypatch.setenv("LOADCOACH_PROVIDER__KIND", "ollama")

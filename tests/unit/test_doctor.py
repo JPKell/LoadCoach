@@ -29,6 +29,11 @@ def test_every_documented_code_the_doctor_claims_is_in_spec_13_or_the_degradatio
         re.findall(r"`([a-z_]+)`", SPEC.read_text().split("## 17.")[1].split("## 18.")[0])
     )
     for code in DOCUMENTED_FAILURE_MODES:
+        if code == "degraded:telemetry":
+            # Deliberately not a health component (F10/M5C-10): a machine without a GPU is not
+            # unhealthy — spec §17 says so. The doctor still checks it, because the *admission*
+            # contract degrades (queue §5: RAM-only or unconstrained, with a reason).
+            continue
         if code.startswith("degraded:"):
             assert code.removeprefix("degraded:") in components, code
         elif code in (

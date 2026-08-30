@@ -48,6 +48,11 @@ packaging and release standards §3.
   synchronous executor marks and releases the half-open probe exactly as the queue worker does.
   A decision made where no breaker registry exists — the CLI's one-shot process — now carries a
   `breaker_state_unavailable` flag instead of silently assuming no breakers are open.
+- Spec §17 and api.md §1 promised a `gpu_telemetry` health component no phase ever built.
+  Removed, with the decision recorded: a machine without a GPU is not unhealthy (ADR-0016), and
+  the readings live on `GET /system/status` and the System page. A test now holds both
+  documents and `/api/v1/health` to one component list. The doctor's telemetry check is
+  recoded `degraded:telemetry` so it no longer claims the phantom component.
 - A job whose text the retention sweep removed showed nothing where its output had been. The
   job document now carries `retention.content_scrubbed_at` and `/jobs/{id}` says "content
   removed by retention" with the instant, what remains, and that a `loadcoach db backup` taken

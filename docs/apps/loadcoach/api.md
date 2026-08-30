@@ -10,7 +10,7 @@ Everything here is additive within v1, and the committed OpenAPI snapshot is dif
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /health` | Components: `database`, `provider`, `evidence`, `queue`, `reliability`, `gpu_telemetry` |
+| `GET /health` | Components: `database`, `provider`, `evidence`, `queue`, `reliability` |
 | `GET /version` | Application version, API versions, accepted SetSpec schema versions. **Never authenticated** — negotiation precedes credentials ([ADR-0026 §5](../../adr/0026-local-http-hardening.md)) |
 | `GET /system/status` | Queue depth by state/class, oldest queued age, dispatch latency, active executions, residency, telemetry snapshot, starvation counter, circuit breakers |
 | `GET /system/telemetry/stream` | SSE telemetry |

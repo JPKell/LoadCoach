@@ -52,7 +52,7 @@ DOCUMENTED_FAILURE_MODES: tuple[str, ...] = (
     "degraded:evidence",
     "degraded:queue",
     "degraded:reliability",
-    "degraded:gpu_telemetry",
+    "degraded:telemetry",
 )
 """What the doctor knows how to look for. A test holds this list against spec §13."""
 
@@ -479,7 +479,7 @@ def _telemetry() -> list[Finding]:
     except Exception as exc:  # noqa: BLE001 — an unreadable machine is the finding
         return [
             Finding(
-                "degraded:gpu_telemetry",
+                "degraded:telemetry",
                 "warn",
                 f"telemetry unreadable: {exc}",
                 "routing runs without VRAM/RAM constraints rather than with invented zeros",
@@ -488,12 +488,12 @@ def _telemetry() -> list[Finding]:
     if not snapshot.gpus:
         return [
             Finding(
-                "degraded:gpu_telemetry",
+                "degraded:telemetry",
                 "warn",
                 "no GPU reported: admission degrades to RAM-only or unconstrained, with a reason",
             )
         ]
-    return [Finding("degraded:gpu_telemetry", "ok", f"{len(snapshot.gpus)} GPU(s) readable")]
+    return [Finding("degraded:telemetry", "ok", f"{len(snapshot.gpus)} GPU(s) readable")]
 
 
 def diagnose(*, config_path: str | None = None) -> Diagnosis:

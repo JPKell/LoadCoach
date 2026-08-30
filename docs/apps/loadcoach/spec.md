@@ -316,7 +316,9 @@ disabled where the provider cannot report it.
 * Persisted job events with SSE replay.
 * Health components: `database`, `provider`, `evidence`, `queue`, `reliability` (degraded when a
   model's recent validated-success rate has regressed against its own baseline, naming the pair
-  and the numbers — [Routing §11](routing.md)), `gpu_telemetry`.
+  and the numbers — [Routing §11](routing.md)). GPU telemetry is deliberately not a health
+  component: a machine without a GPU is not unhealthy (ADR-0016 — absence is `UNSUPPORTED`,
+  never a failure), and the readings live on `GET /system/status` and the System page.
 * `GET /api/v1/system/status`: queue depth by state and priority, oldest queued age, active
   executions, residency, telemetry snapshot, dispatch latency, starvation counter.
 * Every routing decision persisted in full — 100 % of decisions, not a sample.
