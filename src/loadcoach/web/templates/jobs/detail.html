@@ -19,8 +19,13 @@
   {"label": "Provider time", "value": (job.timing.provider_ms ~ " ms") if job.timing.provider_ms is not none else "—"},
   {"label": "Overhead", "value": (job.timing.loadcoach_overhead_ms ~ " ms") if job.timing.loadcoach_overhead_ms is not none else "—"},
   {"label": "Error", "value": (job.error.code ~ ": " ~ (job.error.message or "")) if job.error else "none"},
-  {"label": "Explanation", "value": ('<a href="/api/v1/jobs/' ~ job.job_id ~ '/explanation">' ~ job.routing.explanation_url ~ '</a>') | safe},
+  {"label": "Explanation", "value": (('<a href="/routing/' ~ job.routing.decision_id ~ '">decision ' ~ job.routing.decision_id ~ '</a> · ') if job.routing.decision_id else '') ~ ('<a href="/api/v1/jobs/' ~ job.job_id ~ '/explanation">' ~ job.routing.explanation_url ~ '</a>') | safe},
 ]) }}
+
+{% if narrative %}
+{% include "routing/_narrative.html" %}
+<p class="muted"><a href="/routing/{{ job.routing.decision_id }}">Every candidate, every number, and the stored document</a></p>
+{% endif %}
 
 {% if job.output.text %}
 <h3>Output</h3>
@@ -45,6 +50,24 @@
          table_id="attempts", complete=true, row_count=job.attempts | length) }}
 {% else %}
 {{ empty_state("No attempt has been made yet.") }}
+{% endif %}
+
+<h3>Feedback</h3>
+{% if job.feedback %}
+{% set columns = [{"label": "Source"}, {"label": "Accepted"}, {"label": "Quality", "numeric": true}, {"label": "Edited"}, {"label": "Caller validation"}, {"label": "Notes"}, {"label": "Updated"}] %}
+{% set rows = [] %}
+{% for item in job.feedback %}
+{% set _ = rows.append([
+  item.source, "yes" if item.accepted else "no",
+  ("%.2f"|format(item.quality_score)) if item.quality_score is not none else "—",
+  "yes" if item.edited else "no",
+  ("passed" if item.validation.passed else "failed") if item.validation.passed is not none else "—",
+  item.notes or "", item.updated_at | timestamp
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="One record per source; a source's later verdict replaces its earlier one.", table_id="feedback", complete=true, row_count=job.feedback | length) }}
+{% else %}
+{{ empty_state("No caller has given feedback on this job. POST /api/v1/jobs/" ~ job.job_id ~ "/feedback, or `loadcoach job feedback " ~ job.job_id ~ " --accepted`.") }}
 {% endif %}
 
 <h3>Events</h3>

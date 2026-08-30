@@ -62,6 +62,15 @@ packaging and release standards §3.
   `GET /api/v1/system/telemetry/stream` (one `telemetry.sampled` frame per `[telemetry]
   interval_ms`, `"unsupported"` for what this machine cannot read). A page that fails renders an
   error state — code, request ID, what to do next — instead of the JSON envelope.
+- Phase 8, unit 2 (jobs and the explanation): the explanation is rendered as an explanation.
+  `domain/routing/narrative.py` turns the stored document into "why this model": the score
+  arithmetic, what separated the winner from the runner-up (a factor, or the capability that moved
+  it most), the capabilities that carried the score with their sources, what could not be scored
+  and the remedy for it, every flag in words, and every rejection in words with its numbers. It
+  leads `/routing/{decision_id}` and is embedded on `/jobs/{id}`; the JSON viewer stays at the
+  bottom as the raw source. The jobs list gains filters (state, class, task, source), the model
+  and source columns, and cursor pagination shared with the API; the job page lists every
+  source's feedback.
 
 ## [0.9.0b0] — 2026-08-30
 

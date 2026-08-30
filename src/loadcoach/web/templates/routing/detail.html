@@ -16,6 +16,8 @@
      ((explanation.evidence_summary.contributing_sources | join(", ")) or "no contributing source") ~ ")"},
 ]) }}
 
+{% include "routing/_narrative.html" %}
+
 {% if explanation.selected %}
 <h3>Selected</h3>
 {{ kv_list([
@@ -78,5 +80,5 @@
          table_id="rejected", complete=true) }}
 {% endif %}
 
-{{ json_viewer(explanation, "The complete stored explanation") }}
+{{ json_viewer(explanation, "The complete stored explanation (raw source)") }}
 {% endblock %}

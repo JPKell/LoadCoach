@@ -1,30 +1,46 @@
 {% extends "mirrorwall/base.html" %}
-{% from "mirrorwall/components.html" import badge, empty_state, table %}
+{% from "mirrorwall/components.html" import badge, empty_state, pagination, select, table %}
 {% block title %}Jobs — LoadCoach{% endblock %}
 {% block content %}
 <h2>Jobs</h2>
+<form class="filter-bar" method="get" action="/jobs">
+  {{ select("state", "State", [{"value": "", "label": "any"}] + states, selected=filters.state) }}
+  {{ select("class", "Class", [{"value": "", "label": "any"}] + classes, selected=filters["class"]) }}
+  <div class="field"><label for="jobs-task">Task</label><input id="jobs-task" name="task" value="{{ filters.task or '' }}" placeholder="general.chat"></div>
+  <div class="field"><label for="jobs-source">Source</label><input id="jobs-source" name="source" value="{{ filters.source or '' }}" placeholder="ideapress"></div>
+  <button type="submit" data-variant="primary">Filter</button>
+  {% if filters.state or filters["class"] or filters.task or filters.source %}<a href="/jobs">Clear</a>{% endif %}
+</form>
 {% if not jobs %}
+{% if filters.state or filters["class"] or filters.task or filters.source %}
+{{ empty_state("No job matches these filters.", action_label="Clear filters", action_href="/jobs") }}
+{% else %}
 {{ empty_state("No job has been submitted yet. POST /api/v1/jobs, or run
 `loadcoach job submit --task general.chat --prompt 'hello'`, creates one.") }}
+{% endif %}
 {% else %}
 {% set columns = [
-  {"label": "Job"}, {"label": "State"}, {"label": "Class"}, {"label": "Task"},
-  {"label": "Priority", "numeric": true}, {"label": "Attempts", "numeric": true},
+  {"label": "Job"}, {"label": "State"}, {"label": "Class"}, {"label": "Task"}, {"label": "Model"},
+  {"label": "Source"}, {"label": "Priority", "numeric": true}, {"label": "Attempts", "numeric": true},
   {"label": "Created"}
 ] %}
 {% set rows = [] %}
 {% for job in jobs %}
 {% set _ = rows.append([
   ('<a class="mono" href="/jobs/' ~ job.job_id ~ '">' ~ job.job_id ~ "</a>") | safe,
-  job.state.value ~ (" (" ~ job.state_reason ~ ")" if job.state_reason else ""),
+  badge(job.state.value, tone="success" if job.state.value == "completed" else "danger" if job.state.value == "failed" else "neutral")
+    ~ (" " ~ job.state_reason if job.state_reason else ""),
   job.job_class.value,
   job.task_profile_id ~ " " ~ job.task_profile_version,
+  models.get(job.selected_model_id) or "—",
+  job.source,
   job.effective_priority,
   job.attempt ~ "/" ~ job.max_attempts,
   job.created_at | timestamp
 ]) %}
 {% endfor %}
-{{ table(columns, rows, caption="Newest first. Every transition is persisted with a reason.",
-         table_id="jobs", sortable=true, complete=true, row_count=jobs | length) }}
+{{ table(columns, rows, caption="Newest first. Every transition is persisted with a reason. Sorting applies to this page only; the full history is one cursor at a time.",
+         table_id="jobs", sortable=false, complete=false, row_count=jobs | length) }}
+{{ pagination(previous_href=None, next_href=next_href, summary=(jobs | length) ~ " of the newest jobs shown" ~ (", more follow" if next_href else "")) }}
 {% endif %}
 {% endblock %}

@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from loadcoach.domain.routing.narrative import narrate
 from loadcoach.domain.routing.subject import RuntimeOverrides
 from loadcoach.domain.task_profile import TaskProfileConstraints
 from loadcoach.services.routing import (
@@ -167,4 +168,11 @@ async def routing_decision_page(request: Request, decision_id: str) -> HTMLRespo
     explanation = read_decision(request.app.state.database, decision_id)
     if explanation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such decision.")
-    return HTMLResponse(render("routing/detail.html", page="routing", explanation=explanation))
+    return HTMLResponse(
+        render(
+            "routing/detail.html",
+            page="routing",
+            explanation=explanation,
+            narrative=narrate(explanation),
+        )
+    )

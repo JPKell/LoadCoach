@@ -1,0 +1,67 @@
+{# routing/_narrative.html — "why did it pick that model?", answered before any table.
+   Expects `narrative` (domain.routing.narrative.Narrative) and `explanation` (the payload). #}
+{% from "mirrorwall/components.html" import badge, table %}
+<section aria-labelledby="why-heading">
+<h3 id="why-heading">Why this model</h3>
+<p><strong>{{ narrative.headline }}</strong></p>
+{% if narrative.arithmetic %}<p class="mono muted">{{ narrative.arithmetic }}</p>{% endif %}
+{% if narrative.decisive %}<p>{{ narrative.decisive }}</p>{% endif %}
+{% if narrative.reliability %}<p class="muted">Production reliability: {{ narrative.reliability }}</p>{% endif %}
+{% if narrative.evidence %}<p class="muted">Evidence: {{ narrative.evidence }}</p>{% endif %}
+
+{% if narrative.flags %}
+<ul>
+{% for flag, meaning in narrative.flags %}
+<li>{{ badge(flag, tone="warning") }} {{ meaning }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+
+{% if narrative.drivers %}
+<h4>What carried the score</h4>
+{% set columns = [
+  {"label": "Capability"}, {"label": "Weight", "numeric": true}, {"label": "Score", "numeric": true},
+  {"label": "Confidence", "numeric": true}, {"label": "Contribution", "numeric": true},
+  {"label": "Source"}, {"label": "vs runner-up", "numeric": true}
+] %}
+{% set rows = [] %}
+{% for driver in narrative.drivers %}
+{% set _ = rows.append([
+  driver.capability, "%.2f"|format(driver.weight), "%.3f"|format(driver.score),
+  "%.3f"|format(driver.confidence), "%.4f"|format(driver.contribution),
+  driver.source ~ (" · " ~ driver.sample_count ~ " samples" if driver.sample_count is not none else "")
+    ~ (" · " ~ driver.evidence_age_days ~ " d old" if driver.evidence_age_days is not none else "")
+    ~ (" · stale" if driver.stale else ""),
+  ("%+.4f"|format(driver.advantage)) if driver.advantage is not none else "—"
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Contribution is weight × score × confidence — the numerator of task fit. Largest first.", table_id="drivers", complete=true, row_count=narrative.drivers | length) }}
+{% endif %}
+
+{% if narrative.absences %}
+<h4>What could not be scored</h4>
+{% set columns = [{"label": "Capability"}, {"label": "Weight", "numeric": true}, {"label": "Why"}, {"label": "What would fix it"}] %}
+{% set rows = [] %}
+{% for absence in narrative.absences %}
+{% set _ = rows.append([
+  absence.capability, "%.2f"|format(absence.weight),
+  badge(absence.source, tone="neutral") ~ " " ~ absence.note,
+  ('<code>' ~ absence.remedy ~ '</code>') | safe if absence.remedy else "—"
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Absent is not zero: these capabilities were left out of both numerator and denominator.", table_id="absences", complete=true, row_count=narrative.absences | length) }}
+{% endif %}
+
+{% if narrative.rejections %}
+<h4>Why the others were set aside</h4>
+{% set columns = [{"label": "Model"}, {"label": "Reason"}, {"label": "In words"}, {"label": "Numbers"}] %}
+{% set rows = [] %}
+{% for rejection in narrative.rejections %}
+{% set _ = rows.append([
+  rejection.canonical_id, badge(rejection.reason, tone="danger"), rejection.meaning,
+  (rejection.numbers | json_pretty) if rejection.numbers else "—"
+]) %}
+{% endfor %}
+{{ table(columns, rows, table_id="rejections", complete=true, row_count=narrative.rejections | length) }}
+{% endif %}
+</section>

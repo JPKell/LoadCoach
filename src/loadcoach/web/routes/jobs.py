@@ -21,7 +21,8 @@ from sqlalchemy import select
 
 from loadcoach.domain.priority import JobClass
 from loadcoach.domain.queue_state import JobState
-from loadcoach.infrastructure.db.models import RoutingDecision
+from loadcoach.domain.routing.narrative import narrate
+from loadcoach.infrastructure.db.models import Model, RoutingDecision
 from loadcoach.services.feedback import FeedbackSubmission, record_feedback
 from loadcoach.services.job_events import TERMINAL_JOB_EVENTS
 from loadcoach.services.queue import (
@@ -33,6 +34,7 @@ from loadcoach.services.queue import (
     job_document,
     list_jobs,
 )
+from loadcoach.services.routing import read_decision
 from loadcoach.web.auth import require_scope
 from loadcoach.web.rendering import render
 from loadcoach.web.routes.generate import (
@@ -294,11 +296,69 @@ def post_feedback(
     return {**outcome.record.as_json(), "created": outcome.created}
 
 
+_PAGE_SIZE = 50
+
+
 @ui_router.get("/jobs", summary="Jobs page", response_class=HTMLResponse)
-def jobs_page(request: Request) -> HTMLResponse:
-    """Render the most recent jobs."""
-    records = list_jobs(request.app.state.database, limit=100)
-    return HTMLResponse(render("jobs/index.html", page="jobs", jobs=records))
+def jobs_page(
+    request: Request,
+    state: str | None = Query(default=None),
+    job_class: str | None = Query(default=None, alias="class"),
+    task: str | None = Query(default=None),
+    source: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+) -> HTMLResponse:
+    """Render the jobs newest first, filtered by state, class, task and source; one cursor a page.
+
+    The same filters and cursor ``GET /api/v1/jobs`` takes, so the page and the API agree on what
+    "the next page" is.
+    """
+    database = request.app.state.database
+    states = None
+    if state:
+        try:
+            states = [JobState(state)]
+        except ValueError:
+            states = []
+    records = list_jobs(
+        database,
+        states=states,
+        job_class=None if not job_class else JobClass(job_class),
+        task=task or None,
+        source=source or None,
+        limit=_PAGE_SIZE + 1,
+        before=_decode_cursor(cursor),
+    )
+    page = records[:_PAGE_SIZE]
+    next_href = None
+    if len(records) > _PAGE_SIZE:
+        query = {
+            "state": state or "",
+            "class": job_class or "",
+            "task": task or "",
+            "source": source or "",
+            "cursor": _encode_cursor(page[-1].created_at, page[-1].job_id),
+        }
+        next_href = "/jobs?" + "&".join(f"{k}={v}" for k, v in query.items() if v)
+    with database.read() as session:
+        models = {row.id: row.canonical_id for row in session.execute(select(Model)).scalars()}
+    return HTMLResponse(
+        render(
+            "jobs/index.html",
+            page="jobs",
+            jobs=page,
+            models=models,
+            next_href=next_href,
+            filters={
+                "state": state or "",
+                "class": job_class or "",
+                "task": task,
+                "source": source,
+            },
+            states=[{"value": item.value, "label": item.value} for item in JobState],
+            classes=[{"value": item.value, "label": item.value} for item in JobClass],
+        )
+    )
 
 
 @ui_router.get("/jobs/{job_id}", summary="Job page", response_class=HTMLResponse)
@@ -320,4 +380,15 @@ def job_page(request: Request, job_id: str) -> HTMLResponse:
                 select(JobEvent).where(JobEvent.job_id == job_id).order_by(JobEvent.sequence)
             ).scalars()
         ]
-    return HTMLResponse(render("jobs/detail.html", page="jobs", job=document, events=events))
+    decision_id = document["routing"]["decision_id"]
+    explanation = None if decision_id is None else read_decision(database, decision_id)
+    return HTMLResponse(
+        render(
+            "jobs/detail.html",
+            page="jobs",
+            job=document,
+            events=events,
+            explanation=explanation,
+            narrative=None if explanation is None else narrate(explanation),
+        )
+    )
