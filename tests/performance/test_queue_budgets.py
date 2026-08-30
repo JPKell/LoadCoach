@@ -131,3 +131,51 @@ def test_idle_poll_cpu_stays_within_its_budget(tmp_path: Path) -> None:
     fraction = cpu / wall
     print(f"idle poll CPU {fraction * 100:.3f}% of one core over {wall:.1f} s")  # noqa: T201 — the report
     assert fraction <= IDLE_CPU_BUDGET_FRACTION
+
+
+RECOVERY_BUDGET_SECONDS = 2.0
+
+
+def test_recovery_of_a_thousand_in_flight_jobs_stays_within_its_budget(tmp_path: Path) -> None:
+    from sqlalchemy import update
+
+    from loadcoach.infrastructure.db.models import Job
+    from loadcoach.services.recovery import recover
+
+    runtime = _runtime(tmp_path)
+    database = runtime.database
+    sink = runtime.sink
+    now = datetime.now(UTC)
+    job_ids = [
+        enqueue(
+            database,
+            JobSubmission(task="general.chat", prompt=f"job {index}", idempotent=index % 5 != 0),
+            now=now,
+            queue_settings=runtime.settings.queue,
+            execution_settings=runtime.settings.execution,
+            sink=sink,
+        ).job_id
+        for index in range(1000)
+    ]
+    # A dead process held every one of them, in a spread of in-flight states.
+    states = ["leased", "admitted", "executing", "validating", "retrying", "cancelling"]
+    with database.write() as session:
+        for index, job_id in enumerate(job_ids):
+            session.execute(
+                update(Job)
+                .where(Job.id == job_id)
+                .values(
+                    state=states[index % len(states)],
+                    lease_owner="dead/worker-0",
+                    lease_expires_at=now,
+                )
+            )
+    started = time.perf_counter()
+    summary = recover(
+        database, sink, now=now, owner_prefix="alive", queue_settings=runtime.settings.queue
+    )
+    elapsed = time.perf_counter() - started
+    print(f"recovery of 1000 in-flight jobs: {elapsed:.3f} s")  # noqa: T201 — the report
+    assert summary.touched == 1000
+    assert elapsed <= RECOVERY_BUDGET_SECONDS
+    database.close()

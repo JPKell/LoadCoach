@@ -76,6 +76,7 @@ from loadcoach.services.queue import (
     Wakeup,
     ageing_sweep,
     breaker_samples,
+    cancelling_since,
     claim,
     expire_max_wait,
     move,
@@ -84,6 +85,7 @@ from loadcoach.services.queue import (
     transition,
     waiting_deferrals,
 )
+from loadcoach.services.recovery import RecoverySummary, recover
 from loadcoach.services.residency import ResidencyService
 from loadcoach.services.routing import (
     NoEligibleModel,
@@ -137,6 +139,7 @@ _REEVALUATE_INTERVAL_SECONDS: Final = 5.0
 _EVICT_INTERVAL_SECONDS: Final = 10.0
 _SYNC_INTERVAL_SECONDS: Final = 60.0
 _BREAKER_INTERVAL_SECONDS: Final = 10.0
+_WATCHDOG_INTERVAL_SECONDS: Final = 5.0
 
 
 @dataclass
@@ -295,6 +298,7 @@ class QueueRuntime:
     breakers: CircuitBreakers = field(default_factory=CircuitBreakers)
     breaker_source: Callable[[datetime], Mapping[str, Sequence[AttemptSample]]] | None = None
     jitter: Callable[[], float] = random.random
+    last_recovery: RecoverySummary | None = None
     workers: list[Worker] = field(default_factory=list)
     scheduler: Scheduler | None = None
     _threads: list[threading.Thread] = field(default_factory=list)
@@ -349,12 +353,33 @@ class QueueRuntime:
             self.snapshot(), reserved=reserved_bytes_by_device(reservations), evictable=evictable
         )
 
+    def recover(self) -> RecoverySummary:
+        """Run queue §10's recovery pass now. Idempotent; the scheduler re-evaluates waiters."""
+        scheduler = self.scheduler
+        if self.residency is not None:
+            self.residency.sync(self.clock())
+        summary = recover(
+            self.database,
+            self.sink,
+            now=self.clock(),
+            owner_prefix=self.owner_prefix,
+            queue_settings=self.settings.queue,
+            reevaluate=None if scheduler is None else scheduler.reevaluate_waiting,
+        )
+        self.last_recovery = summary
+        return summary
+
     def start(self) -> None:
-        """Start the scheduler thread and every worker thread (production only)."""
+        """Recover, then start the scheduler thread and every worker thread (production only).
+
+        Recovery runs before any worker can claim (queue §10: "before accepting work"), so a job
+        a dead process held is requeued or failed before this process could ever race it.
+        """
         scheduler = self.scheduler
         if scheduler is None:  # pragma: no cover — build_runtime always sets it
             message = "runtime has no scheduler"
             raise RuntimeError(message)
+        self.recover()
         threads = [threading.Thread(target=scheduler.run, name="loadcoach-scheduler", daemon=True)]
         threads.extend(
             threading.Thread(target=worker.run, name=f"loadcoach-{worker.worker_id}", daemon=True)
@@ -374,6 +399,10 @@ class QueueRuntime:
         for thread in self._threads:
             thread.join(timeout_seconds)
         self._threads = []
+
+
+class _Cancelled(Exception):  # noqa: N818 — control flow inside one worker, never surfaced
+    """Raised inside the attempt loop once the job has been moved to ``cancelled``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -476,6 +505,8 @@ class Worker:
         runtime.in_flight.register(entry)
         try:
             self._run(job, entry)
+        except _Cancelled:
+            pass
         except (TransitionRefused, AttemptRefused) as exc:
             logger.warning(
                 "worker.lease_lost",
@@ -528,7 +559,9 @@ class Worker:
     def _run(self, job: ClaimedJob, entry: InFlightEntry) -> None:
         runtime = self.runtime
         started_perf = time.perf_counter()
-        if job.cancel_requested:
+        # A cancel that arrived between the claim and this instant is already in the row
+        # (``leased -> cancelling``): honour it before spending a routing pass.
+        if job.cancel_requested or self._cancel_requested(job.job_id):
             self._cancel_from(job, JobState.LEASED, records=())
             return
         routing = self._route(job)
@@ -766,6 +799,12 @@ class Worker:
                 attempt_number += 1
                 attempts_here += 1
                 residency = self._ensure_resident(job, candidate)
+                if entry.cancel.is_cancelled or entry.lost or self._cancel_requested(job.job_id):
+                    # Cancelled while the model was loading (state ``admitted``), or the lease
+                    # was lost: stop before the provider is ever called. The row is read too,
+                    # because a request from another process reaches the row before the token.
+                    self._cancel_from(job, state, records=tuple(records))
+                    return
                 state = self._start_executing(execution, state, attempt_number, residency)
                 on_chunk = self._on_chunk(job) if job.submission.stream else None
                 outcome = run_attempt(
@@ -1000,6 +1039,11 @@ class Worker:
             )
             if backoff > 0:
                 runtime.sleep(backoff)
+        entry = runtime.in_flight.get(job.job_id, self.owner)
+        if entry is not None and (entry.cancel.is_cancelled or entry.lost):
+            # ADR-0036 §2: a cancel during backoff takes effect now, ``retrying -> cancelling``.
+            self._cancel_from(job, JobState.RETRYING, records=())
+            raise _Cancelled
         now = runtime.clock()
         with runtime.sink.write(runtime.database) as (session, events):
             transition(
@@ -1192,10 +1236,28 @@ class Worker:
     def _cancel_from(
         self, job: ClaimedJob, state: JobState, *, records: tuple[AttemptRecord, ...]
     ) -> None:
-        """``<state> -> cancelling -> cancelled``, preserving a partial attempt on its record."""
+        """``<state> -> cancelling -> cancelled``, preserving a partial attempt on its record.
+
+        The row may already be ``cancelling``: a cancel request moves it there from outside
+        (queue §8) while the worker is inside its provider call, and the worker completes the
+        transition when it reaches its chunk boundary. Either way the lease fence applies.
+        """
         runtime = self.runtime
         now = runtime.clock()
         with runtime.sink.write(runtime.database) as (session, events):
+            from sqlalchemy import select
+
+            from loadcoach.infrastructure.db.models import Job
+
+            current = session.execute(
+                select(Job.state).where(Job.id == job.job_id, Job.lease_owner == self.owner)
+            ).scalar_one_or_none()
+            if current is None:
+                raise TransitionRefused(
+                    f"Job {job.job_id} is no longer leased to {self.owner!r}; nothing to cancel.",
+                    details={"job_id": job.job_id, "owner": self.owner},
+                )
+            state = JobState(current)
             if records and records[-1].outcome == "cancelled":
                 write_attempt(session, job.job_id, records[-1], now=now, owner=self.owner)
             if state is not JobState.CANCELLING:
@@ -1277,10 +1339,12 @@ class Scheduler:
             "evict": None,
             "sync": None,
             "breakers": None,
+            "watchdog": None,
         }
         self.renewals = 0
         self.sweeps = 0
         self.requeued = 0
+        self.forced_cancellations = 0
 
     def stop(self) -> None:
         """Ask :meth:`run` to exit."""
@@ -1331,8 +1395,46 @@ class Scheduler:
             self.runtime.residency.sync(now)
         if self._due("breakers", now, _BREAKER_INTERVAL_SECONDS):
             self.runtime.refresh_breakers(now)
+        if self._due("watchdog", now, _WATCHDOG_INTERVAL_SECONDS):
+            self.watchdog(now)
         if self._due("flags", now, _FLAGS_INTERVAL_SECONDS):
             self.refresh_flags()
+
+    def watchdog(self, now: datetime) -> tuple[str, ...]:
+        """Force ``cancelling -> cancelled`` after ``cancelling_watchdog_seconds`` (queue §8).
+
+        A worker that never reaches a chunk boundary — a provider that ignores its token, a
+        non-streaming call — would leave the job in ``cancelling`` for ever. The watchdog ends
+        it and records that it did; the worker's late write is refused by the state fence.
+        """
+        limit = self.runtime.settings.queue.cancelling_watchdog_seconds
+        forced: list[str] = []
+        for job_id, entered_at in cancelling_since(self.runtime.database):
+            if entered_at is not None and (now - entered_at).total_seconds() < limit:
+                continue
+            self.runtime.in_flight.request_cancel(job_id)
+            try:
+                move(
+                    self.runtime.database,
+                    self.runtime.sink,
+                    job_id,
+                    current=JobState.CANCELLING,
+                    target=JobState.CANCELLED,
+                    now=now,
+                    reason="cancelling_watchdog",
+                    message=(
+                        f"cancelling for more than {limit} s: terminal transition forced by "
+                        "the watchdog"
+                    ),
+                    data={"forced": True, "watchdog_seconds": limit},
+                    values={"error_code": "GENERATION_CANCELLED"},
+                )
+            except TransitionRefused:
+                continue
+            forced.append(job_id)
+            logger.warning("scheduler.cancelling_forced", extra={"job_id": job_id})
+        self.forced_cancellations += len(forced)
+        return tuple(forced)
 
     def reevaluate_waiting(self, now: datetime) -> tuple[str, ...]:
         """Re-queue every ``waiting_resources`` job that could be admitted now (queue §5).
@@ -1419,6 +1521,28 @@ class Scheduler:
                     "scheduler.lease_lost", extra={"job_id": job_id, "owner": worker.owner}
                 )
                 runtime.in_flight.mark_lost(job_id, worker.owner)
+        # A cancel requested from another process (the CLI) reaches the row, not this
+        # process's token; the keeper carries it across so the worker stops within a chunk.
+        held = [
+            job_id
+            for worker in runtime.workers
+            for job_id in runtime.in_flight.job_ids_for(worker.owner)
+        ]
+        if held:
+            from sqlalchemy import select
+
+            from loadcoach.infrastructure.db.models import Job
+
+            with runtime.database.read() as session:
+                flagged = (
+                    session.execute(
+                        select(Job.id).where(Job.id.in_(held), Job.cancel_requested.is_(True))
+                    )
+                    .scalars()
+                    .all()
+                )
+            for job_id in flagged:
+                runtime.in_flight.request_cancel(job_id)
 
     def refresh_flags(self) -> None:
         """Read the operator's pause/drain flags from the settings table."""

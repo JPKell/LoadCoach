@@ -44,6 +44,7 @@ from loadcoach.domain.queue_state import (
     TERMINAL_STATES,
     WAITING_STATES,
     JobState,
+    cancel_target,
     check_transition,
     event_type_for,
     recovery_target,
@@ -54,7 +55,7 @@ from loadcoach.services.execution import GenerateRequest
 from loadcoach.services.routing import load_task_profile
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
     from datetime import datetime
 
     from baseaicore import RuntimeProfile
@@ -68,8 +69,10 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AffinityHint",
+    "CancelOutcome",
     "ClaimedJob",
     "EnqueueOutcome",
+    "JobNotCancellable",
     "JobNotFound",
     "JobRecord",
     "JobSubmission",
@@ -89,7 +92,11 @@ __all__ = [
     "reap_expired_leases",
     "renew_leases",
     "breaker_samples",
+    "cancel_job",
+    "cancelling_since",
+    "queue_flags",
     "resolve_model_id",
+    "set_queue_flag",
     "transition",
     "waiting_deferrals",
 ]
@@ -132,6 +139,12 @@ class JobNotFound(SuiteError):
     """No job with that ID."""
 
     code: ClassVar[str] = "JOB_NOT_FOUND"
+
+
+class JobNotCancellable(SuiteError):
+    """The job is terminal; there is nothing to cancel (409, queue §8)."""
+
+    code: ClassVar[str] = "JOB_NOT_CANCELLABLE"
 
 
 class TransitionRefused(SuiteError):
@@ -339,6 +352,22 @@ class AffinityHint:
     resident_model_ids: frozenset[str]
     streak: int
     max_streak: int
+
+
+@dataclass(frozen=True, slots=True)
+class CancelOutcome:
+    """What a cancel request did.
+
+    Attributes:
+        job_id: The job.
+        state: The job's state after the request: ``cancelled`` at once for a waiting job,
+            ``cancelling`` for one a worker holds (it stops at its next chunk boundary).
+        already: Whether the job was already on its way — the request was idempotent.
+    """
+
+    job_id: str
+    state: JobState
+    already: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -803,6 +832,103 @@ def move(
         )
 
 
+# -------------------------------------------------------------------------------- cancellation
+
+
+def cancel_job(
+    database: Database,
+    sink: JobEventSink,
+    job_id: str,
+    *,
+    now: datetime,
+    on_request: Callable[[str], object] | None = None,
+) -> CancelOutcome:
+    """Request a job's cancellation, transactionally (queue §8).
+
+    A waiting job (``queued``, ``waiting_resources``) is cancelled at once. A job a worker holds
+    moves to ``cancelling`` with ``cancel_requested`` set; the worker stops at its next chunk
+    boundary and completes the transition, and the watchdog forces it if the worker does not.
+    Idempotent: a job already ``cancelling`` reports ``already``.
+
+    Args:
+        database: The application's database handle.
+        sink: Where the event goes.
+        job_id: The job.
+        now: The request instant.
+        on_request: Called with the job ID after the flag is committed, for the caller to cancel
+            the in-process provider call at once (the in-flight registry's ``request_cancel``).
+            A request from another process has no such hook; the lease keeper carries the flag
+            across within one renewal interval.
+
+    Returns:
+        The :class:`CancelOutcome`.
+
+    Raises:
+        JobNotFound: No such job.
+        JobNotCancellable: The job is terminal.
+    """
+    with sink.write(database) as (session, events):
+        row = session.execute(select(Job.state).where(Job.id == job_id)).scalar_one_or_none()
+        if row is None:
+            raise JobNotFound(f"No job {job_id!r}.", details={"job_id": job_id})
+        current = JobState(row)
+        if current in TERMINAL_STATES:
+            raise JobNotCancellable(
+                f"Job {job_id} is already {current.value}; nothing to cancel.",
+                details={"job_id": job_id, "state": current.value},
+            )
+        target = cancel_target(current)
+        if target is None:
+            if on_request is not None:
+                on_request(job_id)
+            return CancelOutcome(job_id=job_id, state=current, already=True)
+        transition(
+            session,
+            job_id,
+            current=current,
+            target=target,
+            now=now,
+            reason="cancel_requested" if target is JobState.CANCELLING else "GENERATION_CANCELLED",
+            values={"cancel_requested": True}
+            | ({"error_code": "GENERATION_CANCELLED"} if target is JobState.CANCELLED else {}),
+        )
+        events.append(
+            job_id,
+            event_type_for(target),
+            now=now,
+            message=f"cancel requested in {current.value}",
+            data={"previous_state": current.value, "reason": "cancel_requested"},
+        )
+    if on_request is not None:
+        on_request(job_id)
+    return CancelOutcome(job_id=job_id, state=target, already=False)
+
+
+def cancelling_since(database: Database) -> tuple[tuple[str, datetime | None], ...]:
+    """Every ``cancelling`` job with the instant it entered the state — the watchdog's input."""
+    from loadcoach.infrastructure.db.models import JobEvent
+
+    with database.read() as session:
+        job_ids = (
+            session.execute(select(Job.id).where(Job.state == JobState.CANCELLING.value))
+            .scalars()
+            .all()
+        )
+        found: list[tuple[str, datetime | None]] = []
+        for job_id in job_ids:
+            entered = session.execute(
+                select(JobEvent.timestamp)
+                .where(
+                    JobEvent.job_id == job_id,
+                    JobEvent.event_type == event_type_for(JobState.CANCELLING),
+                )
+                .order_by(JobEvent.sequence.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            found.append((job_id, entered))
+        return tuple(found)
+
+
 # -------------------------------------------------------------------------------------- leases
 
 
@@ -1193,6 +1319,45 @@ def breaker_samples(database: Database, *, since: datetime) -> dict[str, list[At
             AttemptSample(at=completed_at, succeeded=outcome in successes)
         )
     return samples
+
+
+QUEUE_FLAG_KEYS = ("queue.paused", "queue.draining")
+"""The operator's control flags, kept in the ``settings`` table so a ``loadcoach queue pause``
+from another process reaches the running scheduler and a restart honours it (api.md §8)."""
+
+
+def set_queue_flag(database: Database, name: str, value: bool, *, now: datetime) -> None:  # noqa: FBT001 — the flag's value is the argument
+    """Set ``queue.paused`` or ``queue.draining`` durably.
+
+    Raises:
+        ValueError: ``name`` is not one of the two flags.
+    """
+    from loadcoach.infrastructure.db.models import Setting
+
+    if name not in QUEUE_FLAG_KEYS:
+        message = f"unknown queue flag {name!r}"
+        raise ValueError(message)
+    with database.write() as session:
+        row = session.get(Setting, name)
+        if row is None:
+            session.add(Setting(key=name, value_json=value, updated_at=now))
+        else:
+            row.value_json = value
+            row.updated_at = now
+
+
+def queue_flags(database: Database) -> dict[str, bool]:
+    """Read both control flags (absent means ``False``)."""
+    from loadcoach.infrastructure.db.models import Setting
+
+    with database.read() as session:
+        rows = {
+            str(key): bool(value)
+            for key, value in session.execute(
+                select(Setting.key, Setting.value_json).where(Setting.key.in_(QUEUE_FLAG_KEYS))
+            ).all()
+        }
+    return {name: rows.get(name, False) for name in QUEUE_FLAG_KEYS}
 
 
 def resolve_model_id(database: Database, canonical_id: str) -> str | None:

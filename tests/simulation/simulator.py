@@ -539,6 +539,10 @@ class SimulatedProvider:
                 return message.content[len(_PROMPT_PREFIX) :]
         return ""
 
+    def rebind(self, driver: Driver) -> None:
+        """Point this provider at a new driver — the process restarted, the provider did not."""
+        self._driver = driver
+
     def resident_names(self) -> frozenset[str]:
         """Which catalogue names are currently loaded."""
         with self._lock:
@@ -888,6 +892,14 @@ class Simulation:
         """Read one job's record."""
         return get_job(self.database, job_id)
 
+    def pause(self, *, paused: bool = True) -> None:
+        """Pause (or resume) claiming through the durable flag the scheduler reads every second."""
+        from loadcoach.services.queue import set_queue_flag
+
+        set_queue_flag(self.database, "queue.paused", paused, now=self.clock.now())
+        if self.runtime is not None:
+            self.runtime.flags.paused = paused
+
     def canonical_id(self, name: str) -> str:
         """The registry's canonical ID for a catalogue name."""
         from loadcoach.services.models import list_registry
@@ -953,6 +965,45 @@ class Simulation:
         self.driver.schedule(
             self.start + timedelta(seconds=seconds_from_start), action, label=label
         )
+
+    def crash(self) -> None:
+        """Kill the process: every worker thread and the scheduler stop dead, mid-whatever.
+
+        The threads are unwound without running any of the worker's own handling — a
+        ``BaseException`` the worker never catches — so nothing they held is released, exactly
+        as after ``kill -9``. The database file, the provider (an external runtime keeps its
+        models loaded) and the clock survive; :meth:`restart` builds a new process over them.
+        """
+        self.driver.stop()
+        self.runtime = None
+
+    def restart(self, *, workers: int | None = None, tick_seconds: float = 0.25) -> QueueRuntime:
+        """Start a new process over the surviving database, provider and clock, and recover."""
+        self.driver = Driver(self.clock)
+        self.provider.rebind(self.driver)
+        self.wakeup = SimulatedWakeup(self.driver)
+        self.sink = JobEventSink()
+        self._restarts = getattr(self, "_restarts", 0) + 1
+        runtime = build_runtime(
+            self.settings,
+            database=self.database,
+            provider=self.provider,
+            sink=self.sink,
+            snapshot=self.snapshot,
+            clock=self.clock.now,
+            wakeup=self.wakeup,
+            sleep=self.driver.sleep,
+            workers=workers,
+            owner_prefix=f"sim-{self._restarts}",
+            jitter=random.Random(self._restarts).random,  # noqa: S311 — reproducible backoff
+        )
+        self.runtime = runtime
+        runtime.recover()
+        for worker in runtime.workers:
+            self.add_worker(worker.worker_id, worker.run)
+        assert runtime.scheduler is not None
+        self.attach_scheduler(runtime.scheduler.tick, interval_seconds=tick_seconds)
+        return runtime
 
     def close(self) -> None:
         """Unwind the workers and release the database."""

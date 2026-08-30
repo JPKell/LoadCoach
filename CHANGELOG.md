@@ -8,6 +8,32 @@ packaging and release standards §3.
 ## [Unreleased]
 
 ### Added
+- Phase 5, unit 7: cancellation and recovery (`services/recovery.py`; queue §8, §10).
+  - `cancel_job`: a waiting job is cancelled at once; a job a worker holds moves to `cancelling`
+    with `cancel_requested` set and the in-process token cancelled through an `on_request` hook,
+    so it stops within one chunk with the partial response preserved on the attempt; a request
+    from another process reaches the row and the lease keeper carries it to the token within one
+    renewal interval. Idempotent; a terminal job is `JOB_NOT_CANCELLABLE`. The worker also
+    honours a cancel between claim and routing (`leased → cancelling`), during a model load
+    (`admitted → cancelling`) and during a retry backoff (`retrying → cancelling`, ADR-0036 §2).
+  - The `cancelling` watchdog on the scheduler forces `cancelling → cancelled` after
+    `queue.cancelling_watchdog_seconds` and records that it did; the worker's late write is
+    refused by the state fence.
+  - `recover`: queue §10 in order — every lease not held by a worker of *this* process is
+    released whether or not it has expired (the process is gone), lease-holding jobs return to
+    `queued` or fail with `worker_lost` by their idempotency, `cancelling` jobs complete to
+    `cancelled`, waiting jobs are re-evaluated through the scheduler's own function, and the
+    same ageing sweep runs. Idempotent, logged as a reconciliation summary, run by
+    `QueueRuntime.start()` before any worker can claim, and reported on the runtime as
+    `last_recovery`.
+  - Proven: cancellation from every state by simulation, including between claim and execution
+    and during a load, with no orphaned resident model; the watchdog ending a job whose provider
+    never reaches a chunk boundary; restart recovery from seven lifecycle points (`queued`,
+    `leased`, `admitted`, `executing`, `retrying`, `cancelling`, `waiting_resources`) with every
+    job completed exactly once or, for non-idempotent work, failed with `worker_lost` and never
+    re-run; and a **real `kill -9`** of a child process mid-execution and mid-load, recovered in
+    the parent with the job completing exactly once. Recovery of 1 000 in-flight jobs is a
+    performance test against the 2 s budget.
 - Phase 5, unit 6: retries, fallback and the circuit breaker (`domain/retry_policy.py`,
   `domain/circuit_breaker.py`; queue §7).
   - `domain/retry_policy.py` is queue §7's failure table as a pure decision: a timeout retries

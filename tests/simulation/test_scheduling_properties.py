@@ -855,3 +855,322 @@ def test_the_circuit_breaker_opens_excludes_reprobes_and_shows_in_explanations(
         assert verdict.state is BreakerState.CLOSED
     finally:
         sim.close()
+
+
+# --- cancellation (queue §8) ----------------------------------------------------------------
+
+
+def _cancel(sim: Simulation, job_id: str) -> Any:
+    """What ``POST /jobs/{id}/cancel`` does: the durable flag, then the in-process token."""
+    from loadcoach.services.queue import cancel_job
+
+    assert sim.runtime is not None
+    return cancel_job(
+        sim.database,
+        sim.sink,
+        job_id,
+        now=sim.clock.now(),
+        on_request=sim.runtime.in_flight.request_cancel,
+    )
+
+
+def test_cancellation_from_every_state(tmp_path: Path) -> None:
+    """Queue §12: cancellation at every state, including between claim and execution."""
+    from loadcoach.services.queue import JobNotCancellable
+
+    sim = Simulation(
+        tmp_path,
+        models=(sim_model("alpha:8b", size_bytes=8 * GIB, load_seconds=10.0),),
+        execution=ExecutionSettings(attempt_backoff_seconds=20.0, max_attempts=6),
+    )
+    try:
+        sim.provider.script("long", GenerationSpec(duration_seconds=100.0, chunks=10))
+        sim.provider.script("quick", GenerationSpec(duration_seconds=1.0, chunks=1))
+        runtime = sim.start_queue()
+
+        # queued: claiming is paused, so the job stays queued and cancels at once.
+        sim.pause()
+        queued = sim.submit("quick").job_id
+        sim.run_for(1)
+        outcome = _cancel(sim, queued)
+        assert outcome.state is JobState.CANCELLED and not outcome.already
+        assert sim.job(queued).state is JobState.CANCELLED
+        assert [t for _, t in sim.events(queued)] == ["job.queued", "job.cancelled"]
+
+        # terminal: 409, and idempotent on the way.
+        try:
+            _cancel(sim, queued)
+        except JobNotCancellable as exc:
+            assert exc.details["state"] == "cancelled"
+        else:
+            pytest.fail("cancelling a terminal job must be refused")
+        sim.pause(paused=False)
+        sim.run_for(2)
+
+        # admitted: the cancel lands while the model is loading (10 s), before any provider call.
+        admitted = sim.submit("long").job_id
+        sim.run_for(3)
+        assert sim.job(admitted).state is JobState.ADMITTED
+        outcome = _cancel(sim, admitted)
+        assert outcome.state is JobState.CANCELLING
+        sim.run_for(20)
+        record = sim.job(admitted)
+        assert record.state is JobState.CANCELLED
+        assert len(sim.provider.calls) == 0  # never reached the provider
+        assert [t for _, t in sim.events(admitted)][-2:] == ["job.cancelling", "job.cancelled"]
+        assert (_seconds(sim, admitted, "completed_at") or 0) <= 3 + 10  # at the load's end
+
+        # executing: cancelled within one chunk (10 s), the partial response preserved.
+        executing = sim.submit("long").job_id
+        sim.run_for(25)  # loaded already; a few chunks in
+        assert sim.job(executing).state is JobState.EXECUTING
+        cancelled_at = sim.clock.now()
+        _cancel(sim, executing)
+        sim.run_for(15)
+        record = sim.job(executing)
+        assert record.state is JobState.CANCELLED
+        assert record.error_code == "GENERATION_CANCELLED"
+        assert (record.completed_at - cancelled_at).total_seconds() <= 10.0
+        assert sim.attempts(executing) == [(1, "cancelled")]
+        from sqlalchemy import select
+
+        from loadcoach.infrastructure.db.models import JobAttempt
+
+        with sim.database.read() as session:
+            attempt = session.execute(
+                select(JobAttempt).where(JobAttempt.job_id == executing)
+            ).scalar_one()
+        assert attempt.partial_response_hash is not None  # the partial output was kept
+        # No orphaned resident model: the table and the provider agree, and the model stays
+        # loaded because policy would have kept it (idle eviction is the only unload).
+        assert runtime.residency is not None
+        assert {e.provider_model_name for e in runtime.residency.resident()} == (
+            sim.provider.resident_names()
+        )
+        assert len(runtime.in_flight) == 0
+
+        # retrying: a timeout puts the job into a 20 s backoff; the cancel lands inside it.
+        sim.provider.model_failures["alpha:8b"] = FakeFailure(
+            FakeFailureMode.TIMEOUT, after_chunks=0
+        )
+        retrying = sim.submit("quick").job_id
+        sim.run_for(2)
+        assert sim.job(retrying).state is JobState.RETRYING
+        _cancel(sim, retrying)
+        sim.run_for(30)
+        record = sim.job(retrying)
+        assert record.state is JobState.CANCELLED
+        assert [t for _, t in sim.events(retrying)][-2:] == ["job.cancelling", "job.cancelled"]
+        del sim.provider.model_failures["alpha:8b"]
+
+        # waiting_resources: deferred for VRAM, cancelled at once. The model is evicted first —
+        # a resident model fits on its device whatever the free memory says (queue §5).
+        sim.provider.unload(sim.provider.resolve("alpha:8b"))
+        runtime.residency.sync(sim.clock.now())
+        sim.occupy(0, 15 * GIB)
+        waiting = sim.submit("quick").job_id
+        sim.run_for(5)
+        assert sim.job(waiting).state is JobState.WAITING_RESOURCES
+        outcome = _cancel(sim, waiting)
+        assert outcome.state is JobState.CANCELLED
+        assert sim.job(waiting).state is JobState.CANCELLED
+        sim.occupy(0, 0)
+    finally:
+        sim.close()
+
+
+def test_the_watchdog_forces_a_job_stuck_in_cancelling_and_records_it(tmp_path: Path) -> None:
+    """A provider that never reaches a chunk boundary cannot honour the token; the watchdog can."""
+    sim = Simulation(
+        tmp_path,
+        models=(sim_model("alpha:8b", load_seconds=0.0),),
+        queue=QueueSettings(cancelling_watchdog_seconds=30),
+    )
+    try:
+        sim.provider.script("stuck", GenerationSpec(duration_seconds=600.0, chunks=1))
+        runtime = sim.start_queue()
+        job_id = sim.submit("stuck").job_id
+        sim.run_for(5)
+        assert sim.job(job_id).state is JobState.EXECUTING
+        _cancel(sim, job_id)
+        sim.run_for(20)
+        assert sim.job(job_id).state is JobState.CANCELLING  # the worker is inside its one chunk
+        sim.run_for(20)
+        record = sim.job(job_id)
+        assert record.state is JobState.CANCELLED
+        assert record.state_reason == "cancelling_watchdog"
+        assert runtime.scheduler is not None and runtime.scheduler.forced_cancellations == 1
+        events = [t for _, t in sim.events(job_id)]
+        assert events[-2:] == ["job.cancelling", "job.cancelled"]
+        assert (record.completed_at - sim.start).total_seconds() <= 5 + 30 + 5 + 5
+        # The worker's own write, when its chunk finally ends, is refused, not applied.
+        sim.run_for(600)
+        assert sim.job(job_id).state is JobState.CANCELLED
+        assert sim.attempts(job_id) == []
+    finally:
+        sim.close()
+
+
+# --- restart recovery (queue §10) -------------------------------------------------------------
+
+
+def _recover_and_finish(sim: Simulation, job_id: str) -> Any:
+    runtime = sim.restart()
+    summary = runtime.last_recovery
+    assert summary is not None
+    sim.run_for(120)
+    return summary
+
+
+def test_restart_recovery_from_every_non_terminal_state_loses_and_duplicates_nothing(
+    tmp_path: Path,
+) -> None:
+    """Acceptance criterion 1 by simulation: kill -9 at seven lifecycle points.
+
+    Every job completes exactly once (or, for non-idempotent work caught in flight, fails with
+    ``worker_lost`` and never runs again); attempt numbers stay unique; nothing is left in a
+    lease-holding state; and running recovery twice changes nothing.
+    """
+    from loadcoach.services.queue import claim
+
+    sim = Simulation(
+        tmp_path,
+        models=(sim_model("alpha:8b", size_bytes=8 * GIB, load_seconds=10.0),),
+        execution=ExecutionSettings(attempt_backoff_seconds=20.0, max_attempts=6),
+    )
+    try:
+        sim.provider.script("long", GenerationSpec(duration_seconds=60.0, chunks=6, text="done"))
+        sim.provider.script("quick", GenerationSpec(duration_seconds=2.0, chunks=1, text="done"))
+
+        # 1. queued: killed before any claim.
+        sim.start_queue()
+        sim.pause()
+        queued = sim.submit("quick").job_id
+        sim.run_for(1)
+        sim.crash()
+        sim.pause(paused=False)
+        summary = _recover_and_finish(sim, queued)
+        assert summary.touched == 0
+        assert sim.job(queued).state is JobState.COMPLETED
+
+        # 2. leased: claimed by a worker of the dead process, never routed.
+        sim.pause()
+        sim.run_for(2)
+        leased = sim.submit("quick").job_id
+        sim.run_for(1)
+        assert sim.runtime is not None
+        claimed = claim(
+            sim.database,
+            owner=f"{sim.runtime.owner_prefix}/worker-9",
+            now=sim.clock.now(),
+            lease_seconds=60,
+            sink=sim.sink,
+        )
+        assert claimed is not None and claimed.job_id == leased
+        sim.crash()
+        sim.pause(paused=False)
+        summary = _recover_and_finish(sim, leased)
+        assert summary.requeued == (leased,)
+        assert sim.job(leased).state is JobState.COMPLETED
+
+        # 3. admitted: killed while the model was loading (evicted first, so it must load).
+        assert sim.runtime is not None and sim.runtime.residency is not None
+        sim.provider.unload(sim.provider.resolve("alpha:8b"))
+        sim.runtime.residency.sync(sim.clock.now())
+        admitted = sim.submit("long").job_id
+        sim.run_for(3)
+        assert sim.job(admitted).state is JobState.ADMITTED
+        sim.crash()
+        summary = _recover_and_finish(sim, admitted)
+        assert summary.requeued == (admitted,)
+        assert sim.job(admitted).state is JobState.COMPLETED
+        assert sim.attempts(admitted) == [(1, "completed")]
+
+        # 4. executing: killed mid-generation; the job runs again, once.
+        calls_before = len(sim.provider.calls)
+        executing = sim.submit("long").job_id
+        sim.run_for(25)
+        assert sim.job(executing).state is JobState.EXECUTING
+        sim.crash()
+        summary = _recover_and_finish(sim, executing)
+        assert summary.requeued == (executing,)
+        record = sim.job(executing)
+        assert record.state is JobState.COMPLETED and record.response_text == "done"
+        assert sim.attempts(executing) == [(1, "completed")]  # the dead attempt was never written
+        assert len(sim.provider.calls) - calls_before == 2  # ran twice, completed once
+        assert [t for _, t in sim.events(executing)].count("job.completed") == 1
+
+        # 5. retrying: killed during the backoff after a timeout.
+        sim.provider.model_failures["alpha:8b"] = FakeFailure(
+            FakeFailureMode.TIMEOUT, after_chunks=0
+        )
+        retrying = sim.submit("quick").job_id
+        sim.run_for(2)
+        assert sim.job(retrying).state is JobState.RETRYING
+        assert sim.attempts(retrying) == [(1, "timeout")]
+        del sim.provider.model_failures["alpha:8b"]
+        sim.crash()
+        summary = _recover_and_finish(sim, retrying)
+        assert summary.requeued == (retrying,)
+        assert sim.job(retrying).state is JobState.COMPLETED
+        assert sim.attempts(retrying) == [
+            (1, "timeout"),
+            (2, "completed"),
+        ]  # the sequence continues
+
+        # 6. cancelling: cancelled mid-generation, killed before the chunk boundary.
+        cancelling = sim.submit("long").job_id
+        sim.run_for(15)
+        _cancel(sim, cancelling)
+        assert sim.job(cancelling).state is JobState.CANCELLING
+        sim.crash()
+        summary = _recover_and_finish(sim, cancelling)
+        assert summary.cancelled == (cancelling,)
+        assert sim.job(cancelling).state is JobState.CANCELLED
+
+        # 7. waiting_resources: deferred, killed, still deferred after recovery, then admitted.
+        # Evicted first: a resident model would be admitted whatever the free memory says.
+        assert sim.runtime is not None and sim.runtime.residency is not None
+        sim.provider.unload(sim.provider.resolve("alpha:8b"))
+        sim.runtime.residency.sync(sim.clock.now())
+        sim.occupy(0, 15 * GIB)
+        waiting = sim.submit("quick").job_id
+        sim.run_for(5)
+        assert sim.job(waiting).state is JobState.WAITING_RESOURCES
+        sim.crash()
+        runtime = sim.restart()
+        assert runtime.last_recovery is not None
+        assert (
+            runtime.last_recovery.reevaluated == ()
+        )  # still short of VRAM: honestly still waiting
+        sim.run_for(10)
+        assert sim.job(waiting).state is JobState.WAITING_RESOURCES
+        sim.occupy(0, 0)
+        sim.run_for(30)
+        assert sim.job(waiting).state is JobState.COMPLETED
+
+        # Non-idempotent work caught in flight fails rather than running again.
+        fragile = sim.submit("long", idempotent=False).job_id
+        sim.run_for(25)
+        assert sim.job(fragile).state is JobState.EXECUTING
+        calls_before = len(sim.provider.calls)
+        sim.crash()
+        summary = _recover_and_finish(sim, fragile)
+        assert summary.failed == (fragile,)
+        record = sim.job(fragile)
+        assert record.state is JobState.FAILED and record.state_reason == "worker_lost"
+        assert len(sim.provider.calls) == calls_before
+
+        # Recovery is idempotent: a second pass with nothing dead touches nothing.
+        assert sim.runtime is not None
+        again = sim.runtime.recover()
+        assert again.touched == 0
+        # And nothing is left holding a lease.
+        from sqlalchemy import select
+
+        from loadcoach.infrastructure.db.models import Job
+
+        with sim.database.read() as session:
+            assert session.execute(select(Job.id).where(Job.lease_owner.is_not(None))).all() == []
+    finally:
+        sim.close()
