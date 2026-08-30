@@ -46,3 +46,14 @@ async def task_profiles_page(request: Request, principal: CurrentPrincipal) -> H
     return HTMLResponse(
         render("task_profiles/index.html", page="task-profiles", task_profiles=profiles)
     )
+
+
+@router.get("/task-profiles/{profile_id}", summary="One task profile definition")
+def get_task_profile(
+    request: Request, principal: CurrentPrincipal, profile_id: str
+) -> dict[str, object]:
+    """The definition with its version, weights, constraints, execution and validation policy."""
+    from loadcoach.services.routing import load_task_profile
+
+    authorize(principal, "read")
+    return _profile_to_json(load_task_profile(request.app.state.database, profile_id))

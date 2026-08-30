@@ -1405,6 +1405,75 @@
         ]
       }
     },
+    "/api/v1/models/discover": {
+      "post": {
+        "description": "Run discovery now (api.md \u00a72); ``admin``. Returns the added/updated/unavailable counts.",
+        "operationId": "discover_api_v1_models_discover_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Discover Api V1 Models Discover Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Re-discover models through the provider",
+        "tags": [
+          "models"
+        ]
+      }
+    },
+    "/api/v1/models/{model_ref}": {
+      "get": {
+        "description": "Identity, descriptor, evidence per capability, reliability and breaker state (api.md \u00a72).\n\n``model_ref`` is the registry ULID or an unambiguous prefix of it \u2014 never the canonical ID,\nwhich does not survive a path segment (ADR-0024).",
+        "operationId": "get_model_api_v1_models__model_ref__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model_ref",
+            "required": true,
+            "schema": {
+              "title": "Model Ref",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Model Api V1 Models  Model Ref  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One model in full",
+        "tags": [
+          "models"
+        ]
+      }
+    },
     "/api/v1/queue": {
       "get": {
         "description": "Queue \u00a711's report.",
@@ -1837,6 +1906,51 @@
           }
         },
         "summary": "Task profile definitions",
+        "tags": [
+          "task-profiles"
+        ]
+      }
+    },
+    "/api/v1/task-profiles/{profile_id}": {
+      "get": {
+        "description": "The definition with its version, weights, constraints, execution and validation policy.",
+        "operationId": "get_task_profile_api_v1_task_profiles__profile_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "title": "Profile Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Task Profile Api V1 Task Profiles  Profile Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One task profile definition",
         "tags": [
           "task-profiles"
         ]
