@@ -60,8 +60,9 @@ from loadcoach.domain.priority import JobClass
 from loadcoach.services.database import Database, ensure_ready
 from loadcoach.services.job_events import JobEventSink
 from loadcoach.services.models import discover_models
-from loadcoach.services.queue import EnqueueOutcome, JobSubmission, Wakeup, enqueue
+from loadcoach.services.queue import EnqueueOutcome, JobSubmission, Wakeup, enqueue, get_job
 from loadcoach.services.task_profiles import import_task_profiles, read_task_profiles_file
+from loadcoach.services.worker import QueueRuntime, build_runtime
 
 __all__ = [
     "DEFAULT_START",
@@ -719,6 +720,7 @@ class Simulation:
             placement: Which device each model lands on when loaded (default: 0). Placement is
                 a simulation input because ModelRack's ``load`` names no device (ADR-0027).
         """
+        self.start = start
         self.clock = FakeClock(start)
         self.driver = Driver(self.clock)
         self.models = tuple(models) if models is not None else (sim_model("alpha:8b"),)
@@ -741,6 +743,7 @@ class Simulation:
         self.provider.on_unload = self._on_unload
         self.wakeup = SimulatedWakeup(self.driver)
         self.sink = JobEventSink()
+        self.runtime: QueueRuntime | None = None
         url = self.settings.storage.database_url
         assert url is not None
         self.database = Database.from_url(url)
@@ -827,6 +830,71 @@ class Simulation:
             wakeup=self.wakeup,
         )
 
+    # ------------------------------------------------------------------------- the real queue
+
+    def start_queue(
+        self, *, workers: int | None = None, tick_seconds: float = 0.25
+    ) -> QueueRuntime:
+        """Build the real runtime over this simulation's primitives and start driving it.
+
+        The workers run the real :class:`~loadcoach.services.worker.Worker` loop on simulated
+        threads; the real :class:`~loadcoach.services.worker.Scheduler`'s ``tick`` is called
+        every ``tick_seconds`` of simulated time, exactly as the production thread calls it on a
+        real timer.
+        """
+        runtime = build_runtime(
+            self.settings,
+            database=self.database,
+            provider=self.provider,
+            sink=self.sink,
+            snapshot=self.snapshot,
+            clock=self.clock.now,
+            wakeup=self.wakeup,
+            sleep=self.driver.sleep,
+            workers=workers,
+            owner_prefix="sim",
+        )
+        self.runtime = runtime
+        for worker in runtime.workers:
+            self.add_worker(worker.worker_id, worker.run)
+        assert runtime.scheduler is not None
+        self.attach_scheduler(runtime.scheduler.tick, interval_seconds=tick_seconds)
+        return runtime
+
+    def job(self, job_id: str) -> Any:
+        """Read one job's record."""
+        return get_job(self.database, job_id)
+
+    def events(self, job_id: str) -> list[tuple[int, str]]:
+        """The persisted event stream of one job as ``(sequence, type)`` pairs."""
+        from sqlalchemy import select
+
+        from loadcoach.infrastructure.db.models import JobEvent
+
+        with self.database.read() as session:
+            return [
+                (row.sequence, row.event_type)
+                for row in session.execute(
+                    select(JobEvent).where(JobEvent.job_id == job_id).order_by(JobEvent.sequence)
+                ).scalars()
+            ]
+
+    def attempts(self, job_id: str) -> list[tuple[int, str]]:
+        """The persisted attempts of one job as ``(attempt, outcome)`` pairs."""
+        from sqlalchemy import select
+
+        from loadcoach.infrastructure.db.models import JobAttempt
+
+        with self.database.read() as session:
+            return [
+                (row.attempt, row.outcome)
+                for row in session.execute(
+                    select(JobAttempt)
+                    .where(JobAttempt.job_id == job_id)
+                    .order_by(JobAttempt.attempt)
+                ).scalars()
+            ]
+
     # ------------------------------------------------------------------------------- driving
 
     def attach_scheduler(
@@ -848,16 +916,15 @@ class Simulation:
         self.driver.run_until(until)
 
     def at(self, seconds_from_start: float, action: Callable[[], None], *, label: str = "") -> None:
-        """Schedule ``action`` at ``start + seconds_from_start``."""
+        """Schedule ``action`` at ``start + seconds_from_start``; a past instant means now."""
         self.driver.schedule(
-            DEFAULT_START + timedelta(seconds=seconds_from_start)
-            if self.clock.now() <= DEFAULT_START
-            else self.clock.now() + timedelta(seconds=seconds_from_start),
-            action,
-            label=label,
+            self.start + timedelta(seconds=seconds_from_start), action, label=label
         )
 
     def close(self) -> None:
         """Unwind the workers and release the database."""
+        if self.runtime is not None:
+            for worker in self.runtime.workers:
+                worker.stop()
         self.driver.stop()
         self.database.close()

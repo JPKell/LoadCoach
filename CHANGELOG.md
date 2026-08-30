@@ -8,6 +8,32 @@ packaging and release standards §3.
 ## [Unreleased]
 
 ### Added
+- Phase 5, unit 4: workers, the scheduler thread and the lease keeper (`services/worker.py`,
+  queue §3, §9, ADR-0029 §4).
+  - `Worker`: claims atomically, then runs one job through `leased → admitted → executing →
+    validating → completed`, with corrective retries and fallback through `retrying → admitted`.
+    Every step is fenced on the lease, so a worker whose lease was reclaimed has its next
+    transition or attempt write refused and stops; it never overwrites the reclaimer's work.
+    Polling is adaptive (50 ms after a claim, doubling to 1 s idle) plus the enqueue wake-up.
+  - `Scheduler`: one thread, never blocking on a provider, that runs whatever is due each
+    `poll_interval_ms`: the **lease keeper** renews every in-flight lease this process holds
+    every `lease_renewal_interval_seconds`; the reaper, max-wait expiry and the ageing sweep run
+    on their own cadences; pause/drain flags are read from the settings table.
+  - `InFlightRegistry`, keyed by `(owner, job_id)`: after a lease race the stale holder and the
+    reclaimer both appear, the keeper renews for the owner and marks the other lost.
+  - The executor now exposes `run_attempt` (one provider call plus validation), `corrective_turns`
+    and `write_attempt` — the **only** place `jobs.attempt` is incremented, in the transaction
+    that writes the `job_attempts` row (ADR-0029 §2). `provider_facts_for` moved into services so
+    the worker can use it. Attempt outcomes use the data model's own vocabulary (`timeout`,
+    `context_exceeded`) rather than folding everything into `provider_error`.
+  - The runtime starts in the application lifespan and stops with it; the simulator drives the
+    same `Worker.run` and `Scheduler.tick` over its fake clock.
+  - Properties proven by simulation: the pipeline end to end; dispatch on the enqueue wake-up
+    rather than the next poll; priority ordering across classes; the concurrency limit under a
+    burst; a lease renewed across a 300 s attempt under a 60 s lease, and — with the keeper
+    stalled — expiry, reclaim and exactly one completion; attempt numbering 1, 2, 3 across an
+    in-lease corrective retry and a lost lease; provider failure falling back; non-idempotent
+    work failing with `worker_lost` instead of re-running.
 - Phase 5, unit 3: enqueue, the atomic claim, leases and the ageing sweep (`services/queue.py`,
   queue §3–§4, ADR-0029 §1–§2, ADR-0010).
   - `enqueue`: durable idempotency on `(source, idempotency_key)` with `idempotency_expires_at`

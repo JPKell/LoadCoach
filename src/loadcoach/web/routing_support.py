@@ -15,51 +15,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from modelrack import ProviderError, ProviderStatus
-
-from loadcoach.domain.routing.subject import ProviderFacts
+from loadcoach.services.execution import provider_facts_for
 from loadcoach.services.routing import RoutingPolicy
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
-    from modelrack.provider import Provider
     from sweatmeter import TelemetrySnapshot
 
     from loadcoach.config import Settings
 
 __all__ = ["current_snapshot", "provider_facts_for", "routing_policy_for"]
-
-
-def provider_facts_for(provider: Provider | None) -> ProviderFacts:
-    """Read the provider's declared capabilities into routing's own value type.
-
-    A provider that cannot be reached at all reports ``healthy=False`` rather than raising: with
-    no healthy provider every candidate is rejected by ``model_unavailable``, which is a routing
-    answer with reasons attached, not a server error.
-
-    Args:
-        provider: The application's provider handle, or ``None`` when none is configured.
-
-    Returns:
-        The facts routing's constraint filter reads.
-    """
-    if provider is None:
-        return ProviderFacts(healthy=False)
-    try:
-        capabilities = provider.capabilities()
-        health = provider.health()
-    except ProviderError:
-        return ProviderFacts(healthy=False)
-    return ProviderFacts(
-        # DEGRADED still serves requests, so it is not "unavailable"; only UNAVAILABLE removes
-        # every candidate from routing.
-        healthy=health.status is not ProviderStatus.UNAVAILABLE,
-        context_configurable=capabilities.context_configurable,
-        supports_tool_use=capabilities.tool_calling,
-        supports_structured_output=capabilities.structured_output,
-        supports_streaming=capabilities.streaming,
-        is_remote=health.is_remote,
-    )
 
 
 def routing_policy_for(settings: Settings) -> RoutingPolicy:

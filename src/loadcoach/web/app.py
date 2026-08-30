@@ -37,12 +37,15 @@ from loadcoach.__about__ import __version__
 from loadcoach.config import LOOPBACK_HOSTS, Settings
 from loadcoach.infrastructure.providers.factory import build_provider
 from loadcoach.services.database import Database
+from loadcoach.services.job_events import JobEventSink
+from loadcoach.services.worker import build_runtime
 from loadcoach.web.rendering import templates
 from loadcoach.web.routes import generate as generate_routes
 from loadcoach.web.routes import models as models_routes
 from loadcoach.web.routes import routing as routing_routes
 from loadcoach.web.routes import system as system_routes
 from loadcoach.web.routes import task_profiles as task_profiles_routes
+from loadcoach.web.routing_support import current_snapshot
 
 __all__ = ["create_app"]
 
@@ -218,10 +221,25 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.database = database
     app.state.provider = build_provider(settings.provider)
+    app.state.event_sink = JobEventSink()
+    # The queue runtime: max_concurrent_jobs worker threads and the scheduler thread with the
+    # lease keeper (queue §3, ADR-0029 §4). Started here because the lifespan is where the
+    # process commits to serving; tests that enter TestClient get the real threads too.
+    runtime = build_runtime(
+        settings,
+        database=database,
+        provider=app.state.provider,
+        sink=app.state.event_sink,
+        snapshot=lambda: current_snapshot(app),
+    )
+    app.state.queue_runtime = runtime
+    runtime.start()
     try:
         yield
     finally:
+        runtime.stop()
         database.close()
+        app.state.queue_runtime = None
         app.state.database = None
         app.state.provider = None
 
@@ -249,6 +267,8 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.database = None
     app.state.provider = None
     app.state.telemetry_collector = None
+    app.state.event_sink = None
+    app.state.queue_runtime = None
 
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(HostValidationMiddleware, allowed_hosts=_resolve_allowed_hosts(settings))

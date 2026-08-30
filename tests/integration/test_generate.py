@@ -354,7 +354,7 @@ def test_a_timeout_is_recorded_as_a_provider_error_and_falls_back(tmp_path: Path
         database.close()
     assert outcome.text == "the fallback answered"
     assert len(outcome.attempts) >= 2
-    assert outcome.attempts[0].outcome == "provider_error"
+    assert outcome.attempts[0].outcome == "timeout"  # data model §2's own outcome vocabulary
     assert outcome.attempts[-1].outcome == "completed"
     # A fallback is never silent: both attempts are on the record, on different models.
     assert outcome.attempts[0].canonical_id != outcome.attempts[-1].canonical_id

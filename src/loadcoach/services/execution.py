@@ -41,6 +41,7 @@ from modelrack import (
     GenerationResult,
     Message,
     ProviderError,
+    ProviderStatus,
     ResponseFormat,
     ResponseFormatKind,
     Role,
@@ -51,9 +52,10 @@ from modelrack import (
     TokenDelta,
     ToolCallDelta,
 )
+from sqlalchemy import update
 
 from loadcoach.domain.routing.context_budget import estimate_input_tokens
-from loadcoach.domain.routing.subject import RuntimeOverrides
+from loadcoach.domain.routing.subject import ProviderFacts, RuntimeOverrides
 from loadcoach.domain.validation import (
     ValidationOutcome,
     validate_output,
@@ -82,14 +84,22 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AllCandidatesFailed",
+    "AttemptOutcome",
     "AttemptRecord",
+    "AttemptRefused",
     "ExecutionOutcome",
     "GenerateRequest",
     "ProviderFailed",
     "StreamChunk",
+    "corrective_turns",
     "execute",
+    "link_decision",
     "load_task_schema",
+    "provider_facts_for",
+    "run_attempt",
+    "sampling_for",
     "stream_execute",
+    "write_attempt",
 ]
 
 logger = logging.getLogger(__name__)
@@ -111,6 +121,18 @@ class AllCandidatesFailed(SuiteError):
     """
 
     code: ClassVar[str] = "ALL_CANDIDATES_FAILED"
+
+
+class AttemptRefused(SuiteError):
+    """The attempt row could not be written because the job is no longer this worker's.
+
+    Raised by :func:`write_attempt` when the compare-and-set on ``lease_owner`` finds another
+    owner (the lease expired and was reclaimed) — the attempt's result is discarded rather than
+    written over the reclaimer's, which is the fence that turns a lease race into a lost attempt
+    instead of a corrupted history.
+    """
+
+    code: ClassVar[str] = "ATTEMPT_REFUSED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +244,7 @@ class ExecutionOutcome:
     input_tokens: int | None
     output_tokens: int | None
     thinking_tokens: int | None
+    queue_wait_ms: int = 0
 
     def as_json(self) -> dict[str, Any]:
         """Return the ``POST /generate`` response body (api.md §4)."""
@@ -266,7 +289,7 @@ class ExecutionOutcome:
                 "provider_ms": self.provider_ms,
                 "loadcoach_overhead_ms": self.overhead_ms,
                 "ttft_ms": self.ttft_ms,
-                "queue_wait_ms": 0,
+                "queue_wait_ms": self.queue_wait_ms,
             },
             "validation": {
                 "performed": self.validation.performed,
@@ -448,6 +471,202 @@ def _problems_text(outcome: ValidationOutcome) -> str:
     return "\n".join(lines) or "the output did not satisfy the required format"
 
 
+def sampling_for(
+    request: GenerateRequest, execution_policy: Mapping[str, Any]
+) -> SamplingParameters:
+    """The sampling parameters an attempt uses: the request's overrides over the profile's."""
+    return SamplingParameters(
+        temperature=cast(
+            "float | None",
+            request.sampling.get("temperature", execution_policy.get("temperature")),
+        ),
+        max_output_tokens=cast(
+            "int | None",
+            request.sampling.get("max_output_tokens", execution_policy.get("max_output_tokens")),
+        ),
+        top_p=cast("float | None", request.sampling.get("top_p")),
+        seed=cast("int | None", request.sampling.get("seed")),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptOutcome:
+    """What one attempt produced: its record, and what the caller needs to decide the next step.
+
+    Attributes:
+        record: The attempt exactly as it will be stored and reported.
+        failure: The provider error, or ``None`` when the provider answered.
+        cancelled: Whether ``failure`` is the caller's own cancellation — terminal, never retried.
+        validation: The validation outcome, or ``None`` when the provider failed.
+        text: The full text produced (partial, on failure).
+        result: The provider's result, or ``None`` on failure.
+        thinking: Reasoning content the provider returned, or ``""``.
+        tool_calls: The tool calls the provider requested.
+    """
+
+    record: AttemptRecord
+    failure: ProviderError | None
+    cancelled: bool
+    validation: ValidationOutcome | None
+    text: str
+    result: GenerationResult | None
+    thinking: str
+    tool_calls: tuple[dict[str, Any], ...]
+
+    @property
+    def passed(self) -> bool:
+        """Whether the provider answered and validation did not fail."""
+        return self.failure is None and (
+            self.validation is None or self.validation.passed is not False
+        )
+
+
+def run_attempt(
+    provider: Provider,
+    *,
+    request: GenerateRequest,
+    candidate: RankedCandidate,
+    turns: tuple[Message, ...],
+    attempt_number: int,
+    schema: Mapping[str, Any] | None,
+    execution_policy: Mapping[str, Any],
+    validation_policy: Mapping[str, Any],
+    timeout_seconds: float | None,
+    cancel: CancellationToken | None,
+    on_chunk: Callable[[StreamChunk], None] | None,
+    now: Callable[[], datetime],
+    correction: Any = None,
+) -> AttemptOutcome:
+    """Make exactly one provider call on one candidate and validate what came back.
+
+    The unit the queue worker composes: it decides nothing about retries or fallback — that is
+    the caller's policy (queue §7) — and writes nothing; :func:`write_attempt` does that in the
+    caller's transaction so the attempt row and the state transition it belongs to commit
+    together.
+
+    Args:
+        provider: The provider to call.
+        request: The caller's request (sampling and response format come from it).
+        candidate: The ranked candidate to run.
+        turns: The transcript to send — the caller's, or the caller's plus a corrective turn.
+        attempt_number: The number this attempt will carry.
+        schema: The profile's JSON Schema, or ``None``.
+        execution_policy: The profile's ``execution`` block.
+        validation_policy: The profile's ``validation`` block.
+        timeout_seconds: The per-call provider timeout.
+        cancel: The cancellation token, honoured within one chunk.
+        on_chunk: Receives each token and tool call as it happens, or ``None``.
+        now: The clock.
+        correction: The corrective prompt record applied to ``turns``, if any, for the record.
+
+    Returns:
+        The :class:`AttemptOutcome`.
+    """
+    subject = candidate.subject
+    base_format = request.response_format or str(execution_policy.get("response_format", "text"))
+    started_at = now()
+    call = GenerationRequest(
+        identity=_identity_of(subject.facts),
+        messages=turns,
+        runtime_profile=subject.runtime_profile,
+        sampling=sampling_for(request, execution_policy),
+        response_format=_response_format(base_format, schema),
+        timeout_seconds=timeout_seconds,
+        cancel=cancel,
+    )
+    collected = _run_stream(provider, call, on_chunk=on_chunk)
+    if collected.failure is not None:
+        cancelled = isinstance(collected.failure, GenerationCancelled)
+        record = _record(
+            attempt_number,
+            candidate,
+            started_at,
+            now(),
+            collected,
+            outcome="cancelled" if cancelled else _failure_outcome(collected.failure),
+            error=collected.failure,
+            correction=correction,
+        )
+        return AttemptOutcome(
+            record=record,
+            failure=collected.failure,
+            cancelled=cancelled,
+            validation=None,
+            text=collected.text,
+            result=None,
+            thinking=collected.thinking,
+            tool_calls=tuple(collected.tool_calls),
+        )
+    validation = _validate(collected.text, validation_policy=validation_policy, schema=schema)
+    passed = validation.passed is not False
+    record = _record(
+        attempt_number,
+        candidate,
+        started_at,
+        now(),
+        collected,
+        outcome="completed" if passed else "validation_failed",
+        validation=validation,
+        correction=correction,
+    )
+    return AttemptOutcome(
+        record=record,
+        failure=None,
+        cancelled=False,
+        validation=validation,
+        text=collected.text,
+        result=collected.result,
+        thinking=collected.thinking,
+        tool_calls=tuple(collected.tool_calls),
+    )
+
+
+def _failure_outcome(error: ProviderError) -> str:
+    """Map a provider error onto ``job_attempts.outcome``'s vocabulary (data model §2)."""
+    from modelrack import ContextLimitExceeded, ProviderTimeout
+
+    if isinstance(error, ProviderTimeout):
+        return "timeout"
+    if isinstance(error, ContextLimitExceeded):
+        return "context_exceeded"
+    return "provider_error"
+
+
+def corrective_turns(
+    transcript: tuple[Message, ...],
+    *,
+    previous_text: str,
+    outcome: ValidationOutcome,
+    schema: Mapping[str, Any] | None,
+) -> tuple[tuple[Message, ...], Any]:
+    """Build the transcript for a corrective retry, and the prompt record it applied.
+
+    A corrective retry is a NEW attempt with LoadCoach's own prompt appended to the caller's
+    transcript. The caller's turns are never rewritten, only followed (spec §9).
+
+    Args:
+        transcript: The caller's turns.
+        previous_text: What the failed attempt produced.
+        outcome: Why it failed validation.
+        schema: The schema the output must satisfy, for the prompt.
+
+    Returns:
+        ``(turns, correction)`` — the transcript to send and the rendered prompt record.
+    """
+    correction = render_corrective_retry(
+        problems=_problems_text(outcome),
+        schema=json.dumps(schema, indent=2, sort_keys=True) if schema else "{}",
+        previous_output=previous_text,
+    )
+    turns = (
+        *transcript,
+        Message(role=Role.ASSISTANT, content=previous_text),
+        *((Message(role=Role.SYSTEM, content=correction.system),) if correction.system else ()),
+        Message(role=Role.USER, content=correction.user),
+    )
+    return turns, correction
+
+
 def _execute_attempts(
     provider: Provider,
     request: GenerateRequest,
@@ -461,107 +680,64 @@ def _execute_attempts(
     on_chunk: Callable[[StreamChunk], None] | None,
     now: Callable[[], datetime],
 ) -> tuple[list[AttemptRecord], RankedCandidate | None, _Collected | None, ValidationOutcome]:
-    """Try each ranked candidate, retrying correctively where the profile permits."""
+    """The synchronous endpoints' loop: try each ranked candidate, retrying correctively."""
     ranking = routing.explanation.ranking
     candidates = [ranking.primary, *ranking.fallbacks]
     max_attempts = int(cast("int", execution_policy.get("max_attempts", 1)))
-    base_format = request.response_format or str(execution_policy.get("response_format", "text"))
-    sampling = SamplingParameters(
-        temperature=cast(
-            "float | None",
-            request.sampling.get("temperature", execution_policy.get("temperature")),
-        ),
-        max_output_tokens=cast(
-            "int | None",
-            request.sampling.get("max_output_tokens", execution_policy.get("max_output_tokens")),
-        ),
-        top_p=cast("float | None", request.sampling.get("top_p")),
-        seed=cast("int | None", request.sampling.get("seed")),
-    )
     transcript = request.transcript()
 
     records: list[AttemptRecord] = []
-    outcome = ValidationOutcome(performed=False, passed=None, checks=())
+    validation = ValidationOutcome(performed=False, passed=None, checks=())
     attempt_number = 0
 
     for candidate in candidates:
         if candidate is None:
             continue
-        subject = candidate.subject
         turns = transcript
         correction: Any = None
 
         for _ in range(max_attempts):
             attempt_number += 1
-            started_at = now()
-            call = GenerationRequest(
-                identity=_identity_of(subject.facts),
-                messages=turns,
-                runtime_profile=subject.runtime_profile,
-                sampling=sampling,
-                response_format=_response_format(base_format, schema),
+            outcome = run_attempt(
+                provider,
+                request=request,
+                candidate=candidate,
+                turns=turns,
+                attempt_number=attempt_number,
+                schema=schema,
+                execution_policy=execution_policy,
+                validation_policy=validation_policy,
                 timeout_seconds=timeout_seconds,
                 cancel=cancel,
+                on_chunk=on_chunk,
+                now=now,
+                correction=correction,
             )
-            collected = _run_stream(provider, call, on_chunk=on_chunk)
-
-            if collected.failure is not None:
-                records.append(
-                    _record(
-                        attempt_number,
-                        candidate,
-                        started_at,
-                        now(),
-                        collected,
-                        outcome="cancelled"
-                        if isinstance(collected.failure, GenerationCancelled)
-                        else "provider_error",
-                        error=collected.failure,
-                        correction=correction,
-                    )
-                )
-                if isinstance(collected.failure, GenerationCancelled):
-                    return records, candidate, collected, outcome
+            records.append(outcome.record)
+            collected = _Collected(
+                text=outcome.text,
+                thinking=outcome.thinking,
+                tool_calls=list(outcome.tool_calls),
+                result=outcome.result,
+                failure=outcome.failure,
+                ttft_ms=outcome.record.ttft_ms,
+                provider_ms=outcome.record.provider_ms or 0,
+            )
+            if outcome.failure is not None:
+                if outcome.cancelled:
+                    return records, candidate, collected, validation
                 break  # this candidate is not working; fall back
-
-            outcome = _validate(collected.text, validation_policy=validation_policy, schema=schema)
-            passed = outcome.passed is not False
-            records.append(
-                _record(
-                    attempt_number,
-                    candidate,
-                    started_at,
-                    now(),
-                    collected,
-                    outcome="completed" if passed else "validation_failed",
-                    validation=outcome,
-                    correction=correction,
-                )
-            )
-            if passed:
-                return records, candidate, collected, outcome
-
+            assert outcome.validation is not None  # noqa: S101 — set whenever the provider answered
+            validation = outcome.validation
+            if outcome.passed:
+                return records, candidate, collected, validation
             if attempt_number >= max_attempts * len(candidates):
                 break
-            # A corrective retry: a NEW attempt with LoadCoach's own prompt appended to the
-            # caller's transcript. The caller's turns are never rewritten, only followed.
-            correction = render_corrective_retry(
-                problems=_problems_text(outcome),
-                schema=json.dumps(schema, indent=2, sort_keys=True) if schema else "{}",
-                previous_output=collected.text,
-            )
-            turns = (
-                *transcript,
-                Message(role=Role.ASSISTANT, content=collected.text),
-                *(
-                    (Message(role=Role.SYSTEM, content=correction.system),)
-                    if correction.system
-                    else ()
-                ),
-                Message(role=Role.USER, content=correction.user),
+            turns, correction = corrective_turns(
+                transcript, previous_text=outcome.text, outcome=validation, schema=schema
             )
 
-    return records, None, None, outcome
+    return records, None, None, validation
 
 
 def _identity_of(facts: ModelFacts) -> ModelIdentity:
@@ -700,7 +876,7 @@ def _persist(
                     None if selected is None else selected.subject.served_context.source
                 ),
                 target_gpu_index=None if selected is None else selected.target_gpu_index,
-                attempt=len(records),
+                attempt=0,
                 max_attempts=max(len(records), 1),
                 created_at=now,
                 started_at=now,
@@ -719,14 +895,18 @@ def _persist(
             )
         )
         session.flush()
-        _link_decision(session, routing.explanation.decision_id, job_id)
+        link_decision(session, routing.explanation.decision_id, job_id)
         for record in records:
-            _write_attempt(session, job_id, record, now=now)
+            write_attempt(session, job_id, record, now=now)
         _write_events(session, job_id, records, outcome=outcome, now=now)
 
 
-def _link_decision(session: Session, decision_id: str, job_id: str) -> None:
-    """Point the routing decision at the job it routed, now that the job row exists."""
+def link_decision(session: Session, decision_id: str, job_id: str) -> None:
+    """Point the routing decision at the job it routed, now that the job row exists.
+
+    The explanation lives on the decision row and nowhere else; ``GET /jobs/{id}/explanation``
+    is a lookup of the decision whose ``job_id`` matches, never a copy.
+    """
     from loadcoach.infrastructure.db.models import RoutingDecision
 
     decision = session.get(RoutingDecision, decision_id)
@@ -734,10 +914,58 @@ def _link_decision(session: Session, decision_id: str, job_id: str) -> None:
         decision.job_id = job_id
 
 
-def _write_attempt(session: Session, job_id: str, record: AttemptRecord, *, now: datetime) -> None:
+def write_attempt(
+    session: Session,
+    job_id: str,
+    record: AttemptRecord,
+    *,
+    now: datetime,
+    owner: str | None = None,
+) -> int:
+    """Write one attempt row — **the only place ``jobs.attempt`` is ever incremented**.
+
+    ``UPDATE jobs SET attempt = attempt + 1 … RETURNING attempt`` and the ``job_attempts`` insert
+    happen in the caller's transaction, so every attempt — first, in-lease corrective retry,
+    fallback, or post-requeue — draws the next number from one monotonic sequence and
+    ``UNIQUE (job_id, attempt)`` holds (ADR-0029 §2). The claim never touches the counter.
+
+    Args:
+        session: The open write session.
+        job_id: The job.
+        record: The attempt. Its own ``attempt`` number must equal the number the counter
+            yields — the caller tracked it from the claim's snapshot — or the single-writer
+            invariant has been broken somewhere and the write is refused.
+        now: The ``validations.created_at`` instant.
+        owner: When given, the job must still be leased to this owner (a worker's fence).
+
+    Returns:
+        The attempt number written.
+
+    Raises:
+        AttemptRefused: The job is not leased to ``owner`` any more, or the counter and the
+            record disagree.
+    """
+    conditions = [Job.id == job_id]
+    if owner is not None:
+        conditions.append(Job.lease_owner == owner)
+    number = session.execute(
+        update(Job).where(*conditions).values(attempt=Job.attempt + 1).returning(Job.attempt)
+    ).scalar_one_or_none()
+    if number is None:
+        raise AttemptRefused(
+            f"Attempt {record.attempt} of job {job_id} was not written: the job is no longer "
+            f"leased to {owner!r}.",
+            details={"job_id": job_id, "attempt": record.attempt, "owner": owner},
+        )
+    if number != record.attempt:
+        raise AttemptRefused(
+            f"Attempt numbering diverged on job {job_id}: the counter yielded {number} but the "
+            f"attempt was recorded as {record.attempt}.",
+            details={"job_id": job_id, "attempt": record.attempt, "counter": number},
+        )
     attempt_row = JobAttempt(
         job_id=job_id,
-        attempt=record.attempt,
+        attempt=number,
         model_id=record.model_id,
         runtime_profile_hash=record.runtime_profile_hash,
         rank=record.rank,
@@ -758,18 +986,18 @@ def _write_attempt(session: Session, job_id: str, record: AttemptRecord, *, now:
     )
     session.add(attempt_row)
     session.flush()
-    if record.validation is None:
-        return
-    for check in record.validation.checks:
-        session.add(
-            ValidationRow(
-                job_attempt_id=attempt_row.id,
-                kind=check.kind,
-                passed=check.passed,
-                detail_json=check.detail,
-                created_at=now,
+    if record.validation is not None:
+        for check in record.validation.checks:
+            session.add(
+                ValidationRow(
+                    job_attempt_id=attempt_row.id,
+                    kind=check.kind,
+                    passed=check.passed,
+                    detail_json=check.detail,
+                    created_at=now,
+                )
             )
-        )
+    return int(number)
 
 
 def _write_events(
@@ -978,3 +1206,36 @@ def stream_execute(
         execute(database, request, context, cancel=cancel, on_chunk=on_chunk)
     except SuiteError as exc:
         on_chunk(StreamChunk("error", {"code": exc.code, "message": exc.message, **exc.details}))
+
+
+def provider_facts_for(provider: Provider | None) -> ProviderFacts:
+    """Read the provider's declared capabilities into routing's own value type.
+
+    A provider that cannot be reached at all reports ``healthy=False`` rather than raising: with
+    no healthy provider every candidate is rejected by ``model_unavailable``, which is a routing
+    answer with reasons attached, not a server error. Lives here rather than in the web layer
+    because the queue worker needs it too, and ``services`` cannot import ``web``.
+
+    Args:
+        provider: The application's provider handle, or ``None`` when none is configured.
+
+    Returns:
+        The facts routing's constraint filter reads.
+    """
+    if provider is None:
+        return ProviderFacts(healthy=False)
+    try:
+        capabilities = provider.capabilities()
+        health = provider.health()
+    except ProviderError:
+        return ProviderFacts(healthy=False)
+    return ProviderFacts(
+        # DEGRADED still serves requests, so it is not "unavailable"; only UNAVAILABLE removes
+        # every candidate from routing.
+        healthy=health.status is not ProviderStatus.UNAVAILABLE,
+        context_configurable=capabilities.context_configurable,
+        supports_tool_use=capabilities.tool_calling,
+        supports_structured_output=capabilities.structured_output,
+        supports_streaming=capabilities.streaming,
+        is_remote=health.is_remote,
+    )
