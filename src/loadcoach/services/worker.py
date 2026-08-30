@@ -76,7 +76,6 @@ from loadcoach.services.queue import (
     TransitionRefused,
     Wakeup,
     ageing_sweep,
-    breaker_samples,
     cancelling_since,
     claim,
     expire_max_wait,
@@ -87,6 +86,11 @@ from loadcoach.services.queue import (
     waiting_deferrals,
 )
 from loadcoach.services.recovery import RecoverySummary, recover
+from loadcoach.services.reliability import (
+    breaker_samples,
+    recompute_pair,
+    record_breaker_verdicts,
+)
 from loadcoach.services.residency import ResidencyService
 from loadcoach.services.routing import (
     NoEligibleModel,
@@ -311,8 +315,10 @@ class QueueRuntime:
             scheduler re-evaluates ``waiting_resources`` jobs at once rather than on its cadence.
         resident_model_ids: Which registry models are resident, for the affinity claim.
         breakers: The circuit breakers (queue §7), refreshed from ``breaker_source``.
-        breaker_source: Attempt samples per model since an instant — ``job_attempts`` in
-            Phase 5, swappable for ``reliability_stats`` in Phase 7.
+        breaker_source: Attempt samples per model since an instant; ``None`` reads
+            ``services.reliability.breaker_samples`` (P7), the statistics' own classification.
+        persisted_verdicts: The last ``(state, reason)`` written per model, so an unchanged
+            breaker verdict costs no write.
         jitter: A uniform draw in ``[0, 1)`` for backoff; injected so the simulator is
             reproducible.
         evidence_refresh: The scheduled FreeWeight pull (P6), or ``None`` when
@@ -339,6 +345,7 @@ class QueueRuntime:
     breakers: CircuitBreakers = field(default_factory=CircuitBreakers)
     evidence_refresh: Callable[[datetime], None] | None = None
     breaker_source: Callable[[datetime], Mapping[str, Sequence[AttemptSample]]] | None = None
+    persisted_verdicts: dict[str, tuple[str, str]] = field(default_factory=dict)
     jitter: Callable[[], float] = random.random
     last_recovery: RecoverySummary | None = None
     dispatch_samples_ms: deque[float] = field(default_factory=lambda: deque(maxlen=100))
@@ -363,11 +370,32 @@ class QueueRuntime:
         self.resident_model_ids = self.residency.resident_model_ids
 
     def refresh_breakers(self, now: datetime) -> None:
-        """Re-evaluate every breaker from the sample source's last window."""
+        """Re-evaluate every breaker from the sample source's last window, and persist changes.
+
+        The samples come from ``services.reliability`` (P5-9's seam, filled by P7) so the
+        breaker's idea of a failure is the statistics' idea. A verdict whose state or reason
+        changed is written onto the model's ``reliability_stats`` rows, so the Reliability page
+        and ``GET /reliability`` show it without the serving process; an unchanged verdict costs
+        no write.
+        """
         source = self.breaker_source
         since = now - timedelta(seconds=self.breakers.window_seconds)
         samples = breaker_samples(self.database, since=since) if source is None else source(since)
-        self.breakers.update(samples, now=now)
+        verdicts = self.breakers.update(samples, now=now)
+        changed = [
+            verdict
+            for canonical_id, verdict in verdicts.items()
+            if self.persisted_verdicts.get(canonical_id) != (verdict.state.value, verdict.reason)
+        ]
+        if not changed:
+            return
+        try:
+            record_breaker_verdicts(self.database, changed, now=now)
+        except Exception:  # noqa: BLE001 — the breaker itself is in memory; persistence is a mirror
+            logger.warning("breaker.persist_failed", exc_info=True)
+            return
+        for verdict in changed:
+            self.persisted_verdicts[verdict.canonical_id] = (verdict.state.value, verdict.reason)
 
     def in_use_model_ids(self, *, excluding_job: str | None = None) -> frozenset[str]:
         """Registry models in-flight jobs are executing on — never evicted, never reserved twice."""
@@ -647,10 +675,10 @@ class Worker:
         caller_text = "".join(message.content for message in request.transcript())
         now = runtime.clock()
         runtime.refresh_breakers(now)
-        # A half-open breaker lets exactly one job through as its probe (queue §7): the exclusion
-        # set is read *before* any probe is marked, so this job may route to the model; once it
-        # has, the probe is marked in flight and later jobs exclude the model until the attempt
-        # reports. P7 adds the dedicated low-priority probe job with its own prompt record.
+        # A half-open breaker lets exactly one job through as its probe (queue §7). The probe is
+        # marked in ``_attempts``, at the moment this worker starts executing on the model — not
+        # here, where a fallback that never runs would have been marked too and would have
+        # excluded the model until nothing ever reported (P7's named failure mode).
         try:
             result = route(
                 runtime.database,
@@ -682,10 +710,6 @@ class Worker:
             else:
                 self._fail_admission(job, exc)
             return None
-        ranking = result.explanation.ranking
-        for candidate in (ranking.primary, *ranking.fallbacks):
-            if candidate is not None:
-                runtime.breakers.allow_probe(candidate.subject.facts.canonical_id)
         return result
 
     def _resident_canonical_ids(self) -> frozenset[str]:
@@ -865,6 +889,8 @@ class Worker:
                     self._cancel_from(job, state, records=tuple(records))
                     return
                 state = self._start_executing(execution, state, attempt_number, residency)
+                canonical_id = candidate.subject.facts.canonical_id
+                probing = runtime.breakers.allow_probe(canonical_id, now=runtime.clock())
                 on_chunk = self._on_chunk(job) if job.submission.stream else None
                 outcome = run_attempt(
                     runtime.provider,
@@ -884,6 +910,10 @@ class Worker:
                 records.append(outcome.record)
                 self._record_use(candidate)
                 if outcome.cancelled or entry.cancel.is_cancelled:
+                    if probing:
+                        # A cancelled probe says nothing about the model: hand it back so the
+                        # next job may probe, rather than excluding the model until never.
+                        runtime.breakers.release_probe(canonical_id)
                     self._cancel_from(job, JobState.EXECUTING, records=tuple(records))
                     return
                 if outcome.failure is not None:
@@ -1026,6 +1056,7 @@ class Worker:
                 data=record.as_json(),
             )
         runtime.in_flight.update(job.job_id, self.owner, state=JobState.RETRYING.value)
+        self._refresh_reliability(job, record)
         return JobState.RETRYING
 
     def _validate_attempt(self, execution: _Execution, record: AttemptRecord) -> JobState:
@@ -1051,6 +1082,7 @@ class Worker:
                 data=record.as_json(),
             )
         runtime.in_flight.update(job.job_id, self.owner, state=JobState.VALIDATING.value)
+        self._refresh_reliability(job, record)
         return JobState.VALIDATING
 
     def _readmit(
@@ -1246,6 +1278,31 @@ class Worker:
                 select(Job.queue_wait_ms).where(Job.id == job.job_id)
             ).scalar_one_or_none()
         return int(value or 0)
+
+    def _refresh_reliability(self, job: ClaimedJob, record: AttemptRecord) -> None:
+        """Fold one written attempt into ``reliability_stats`` (the incremental path, P7).
+
+        Called after the attempt's own transaction has committed — never inside it, because the
+        recomputation opens its own write and SQLite has one writer. A failure here is logged
+        and does not touch the job: the statistics are a mirror of ``job_attempts``, and the next
+        attempt on the pair recomputes them from the same rows.
+        """
+        if record.model_id is None or record.completed_at is None:
+            return
+        runtime = self.runtime
+        try:
+            recompute_pair(
+                runtime.database,
+                model_id=record.model_id,
+                task_profile_id=job.submission.task,
+                now=runtime.clock(),
+            )
+        except Exception:  # noqa: BLE001 — a statistics mirror must never fail a job
+            logger.warning(
+                "reliability.recompute_failed",
+                extra={"job_id": job.job_id, "model_id": record.model_id},
+                exc_info=True,
+            )
 
     def _fail(
         self,

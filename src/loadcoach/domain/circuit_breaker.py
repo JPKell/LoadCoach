@@ -15,7 +15,7 @@ here. Thresholds are named constants with a reason each, the same way routing's 
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final
@@ -81,6 +81,10 @@ class BreakerVerdict:
         probe_in_flight: Whether a half-open probe has been allowed through and not yet reported.
         closed_at: When a successful probe last closed the breaker, or ``None``. Samples before
             it no longer count — otherwise the failures that opened it would re-open it at once.
+        probe_started_at: When the probe was let through, or ``None``. A probe that has not
+            reported within one cool-down is presumed lost (a crashed worker, a lease that
+            expired) and released, so a model is never excluded for ever by a probe nobody will
+            finish — the phase's own named failure mode, in its quietest form.
     """
 
     canonical_id: str
@@ -92,6 +96,7 @@ class BreakerVerdict:
     reason: str
     probe_in_flight: bool = False
     closed_at: datetime | None = None
+    probe_started_at: datetime | None = None
 
     @property
     def excludes(self) -> bool:
@@ -113,6 +118,9 @@ class BreakerVerdict:
             "expires_at": None if self.expires_at is None else to_rfc3339(self.expires_at),
             "reason": self.reason,
             "probe_in_flight": self.probe_in_flight,
+            "probe_started_at": (
+                None if self.probe_started_at is None else to_rfc3339(self.probe_started_at)
+            ),
         }
 
 
@@ -132,7 +140,9 @@ def evaluate(
     ``closed -> open`` when the window holds at least ``min_samples`` attempts and their failure
     rate reaches the threshold. ``open -> half_open`` when the cool-down has elapsed. In
     ``half_open`` the first attempt after the opening decides: success closes, failure re-opens
-    with a fresh cool-down. Samples older than the window are ignored.
+    with a fresh cool-down. A probe let through more than ``cooldown_seconds`` ago without an
+    attempt reporting is released, so the next job may probe instead. Samples older than the
+    window are ignored.
 
     Args:
         canonical_id: The model.
@@ -158,10 +168,21 @@ def evaluate(
     opened_at = None if previous is None else previous.opened_at
     expires_at = None if previous is None else previous.expires_at
     probe = False if previous is None else previous.probe_in_flight
+    probe_started_at = None if previous is None else previous.probe_started_at
 
     if state is BreakerState.OPEN and expires_at is not None and now >= expires_at:
         state = BreakerState.HALF_OPEN
         probe = False
+        probe_started_at = None
+
+    if (
+        state is BreakerState.HALF_OPEN
+        and probe
+        and probe_started_at is not None
+        and now >= probe_started_at + timedelta(seconds=cooldown_seconds)
+    ):
+        probe = False
+        probe_started_at = None
 
     if state is BreakerState.HALF_OPEN and opened_at is not None:
         after = [s for s in recent if s.at > opened_at]
@@ -176,11 +197,13 @@ def evaluate(
                 opened_at = None
                 expires_at = None
                 probe = False
+                probe_started_at = None
             else:
                 state = BreakerState.OPEN
                 opened_at = after[-1].at
                 expires_at = opened_at + timedelta(seconds=cooldown_seconds)
                 probe = False
+                probe_started_at = None
 
     if (
         state is BreakerState.CLOSED
@@ -199,7 +222,11 @@ def evaluate(
             f" ({rate:.0%}); excluded until {expires_at}"
         )
     elif state is BreakerState.HALF_OPEN:
-        reason = "cool-down elapsed; one probe allowed"
+        reason = (
+            "cool-down elapsed; probe in flight"
+            if probe
+            else "cool-down elapsed; one probe allowed"
+        )
     else:
         reason = "closed" if rate is None else f"{failures} of {count} attempts failed ({rate:.0%})"
     return BreakerVerdict(
@@ -212,6 +239,7 @@ def evaluate(
         reason=reason,
         probe_in_flight=probe,
         closed_at=closed_at,
+        probe_started_at=probe_started_at,
     )
 
 
@@ -262,24 +290,42 @@ class CircuitBreakers:
         with self._lock:
             return frozenset(cid for cid, v in self._verdicts.items() if v.excludes)
 
-    def allow_probe(self, canonical_id: str) -> bool:
-        """Let one job through a half-open breaker; ``False`` if it is not half-open or busy."""
+    def allow_probe(self, canonical_id: str, *, now: datetime) -> bool:
+        """Let one job through a half-open breaker; ``False`` if it is not half-open or busy.
+
+        Called by the worker at the moment it starts executing on the model — not when routing
+        merely ranked it — because a probe marked for a fallback that never runs would exclude
+        the model until nothing ever reported.
+        """
         with self._lock:
             verdict = self._verdicts.get(canonical_id)
             if verdict is None or verdict.state is not BreakerState.HALF_OPEN:
                 return False
             if verdict.probe_in_flight:
                 return False
-            self._verdicts[canonical_id] = BreakerVerdict(
-                canonical_id=verdict.canonical_id,
-                state=verdict.state,
-                failure_rate=verdict.failure_rate,
-                samples=verdict.samples,
-                opened_at=verdict.opened_at,
-                expires_at=verdict.expires_at,
-                reason=verdict.reason,
+            self._verdicts[canonical_id] = replace(
+                verdict,
                 probe_in_flight=True,
-                closed_at=verdict.closed_at,
+                probe_started_at=now,
+                reason="cool-down elapsed; probe in flight",
+            )
+            return True
+
+    def release_probe(self, canonical_id: str) -> bool:
+        """Give a probe back without a verdict — the attempt was cancelled before it reported.
+
+        Returns:
+            ``True`` if a probe was in flight and is now released.
+        """
+        with self._lock:
+            verdict = self._verdicts.get(canonical_id)
+            if verdict is None or not verdict.probe_in_flight:
+                return False
+            self._verdicts[canonical_id] = replace(
+                verdict,
+                probe_in_flight=False,
+                probe_started_at=None,
+                reason="cool-down elapsed; one probe allowed",
             )
             return True
 

@@ -955,6 +955,32 @@ def reserve_sync_job(
     return ReservedJob(job_id=job_id, created=True, state="executing")
 
 
+def _refresh_reliability(
+    database: Database,
+    records: Sequence[AttemptRecord],
+    *,
+    task_profile_id: str,
+    now: datetime,
+) -> None:
+    """Fold the written attempts into ``reliability_stats`` (P7's incremental path).
+
+    After the terminal transaction has committed, never inside it, and at a *fresh* clock
+    reading: the request's own ``now`` is its start, and an attempt that completed after it would
+    be a sample from the future, which the window rule rightly refuses. One recomputation per
+    model the attempts touched; a failure is logged and never reaches the caller, because the
+    statistics mirror ``job_attempts`` and the next attempt recomputes them from the same rows.
+    """
+    from loadcoach.services.reliability import recompute_pair
+
+    for model_id in {record.model_id for record in records if record.model_id is not None}:
+        try:
+            recompute_pair(database, model_id=model_id, task_profile_id=task_profile_id, now=now)
+        except Exception:  # noqa: BLE001 — a statistics mirror must never fail a request
+            logger.warning(
+                "reliability.recompute_failed", extra={"model_id": model_id}, exc_info=True
+            )
+
+
 def _persist(
     database: Database,
     *,
@@ -1357,6 +1383,9 @@ def execute(
             sink=context.sink,
             existing=existing,
         )
+        _refresh_reliability(
+            database, records, task_profile_id=routing.task_profile.profile_id, now=context.now()
+        )
         raise failure
 
     result = collected.result
@@ -1393,6 +1422,9 @@ def execute(
         now=now,
         sink=context.sink,
         existing=existing,
+    )
+    _refresh_reliability(
+        database, records, task_profile_id=routing.task_profile.profile_id, now=context.now()
     )
     if on_chunk is not None:
         on_chunk(StreamChunk("result", outcome.as_json()))

@@ -31,6 +31,7 @@ from sqlalchemy import select
 from weightsdb import upsert
 
 from loadcoach.domain.registry import geometry_from_json
+from loadcoach.domain.reliability import neutral_factor
 from loadcoach.domain.routing.constraints import (
     ConstraintInputs,
     Rejection,
@@ -70,6 +71,7 @@ from loadcoach.infrastructure.db.models import (
 )
 from loadcoach.infrastructure.db.models import RuntimeProfile as RuntimeProfileModel
 from loadcoach.services.evidence import bound_signals_for_routing, evidence_overview
+from loadcoach.services.reliability import factors_for_task
 from loadcoach.services.task_profiles import StoredTaskProfile, list_stored_task_profiles
 
 if TYPE_CHECKING:
@@ -491,6 +493,10 @@ def route(
         machine_fingerprint=policy.machine_fingerprint,
     )
     overview = evidence_overview(database, configured_url=policy.evidence_url)
+    # Production evidence enters here and only here (routing §6, §11): one lookup per decision
+    # on data model §4's index, then the pure factor per candidate. A model with no rows is
+    # neutral, and the neutral record still says how many attempts it has seen.
+    reliability = factors_for_task(database, task_profile_id=profile.profile_id)
     priors = parameter_band_priors(
         {facts.canonical_id: facts.parameter_count for facts, _ in candidates}
     )
@@ -584,6 +590,7 @@ def route(
                     resident_models=resident_models,
                     prefer_resident_bonus=policy.prefer_resident_bonus,
                     remote_cost_factor=policy.remote_cost_factor,
+                    reliability=reliability.get(facts.model_id, neutral_factor()),
                 ),
                 estimated_vram_bytes=estimate.total_bytes,
                 target_gpu_index=target_gpu_index,

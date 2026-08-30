@@ -37,6 +37,7 @@ __all__ = [
     "REGRESSION_Z_THRESHOLD",
     "RELIABILITY_FACTOR_FLOOR",
     "SUCCESS_OUTCOMES",
+    "FACTOR_WINDOWS",
     "WINDOWS",
     "WINDOW_7D",
     "WINDOW_30D",
@@ -143,8 +144,13 @@ WINDOW_7D: Final = Window("7d", 7 * 86_400.0)
 WINDOW_30D: Final = Window("30d", 30 * 86_400.0)
 WINDOW_ALL: Final = Window("all", None)
 WINDOWS: Final[tuple[Window, ...]] = (WINDOW_7D, WINDOW_30D, WINDOW_ALL)
-"""Freshest first: the order :func:`reliability_factor` searches for a window with enough
-samples."""
+"""Every window ``reliability_stats`` stores, freshest first."""
+
+FACTOR_WINDOWS: Final[tuple[Window, ...]] = (WINDOW_7D, WINDOW_30D)
+"""The windows :func:`reliability_factor` may use, freshest first. ``all`` is deliberately not one
+of them: a lightly used model would otherwise carry one bad day in its factor for ever, which is
+the phase's named failure mode wearing arithmetic instead of a breaker. Thirty days is the bound
+on adaptation; ``all`` remains for the page and as the regression baseline."""
 
 
 def window_named(name: str) -> Window:
@@ -639,8 +645,8 @@ def neutral_factor(attempts_by_window: Mapping[str, int] | None = None) -> Relia
         window=None,
         attempts=0 if not attempts_by_window else max(attempts_by_window.values(), default=0),
         reason=(
-            f"neutral: fewer than {PRODUCTION_MINIMUM_SAMPLES} counted attempts in every window"
-            f"{seen}"
+            f"neutral: fewer than {PRODUCTION_MINIMUM_SAMPLES} counted attempts in the last "
+            f"{' and '.join(w.name for w in FACTOR_WINDOWS)}{seen}"
         ),
     )
 
@@ -654,9 +660,10 @@ def reliability_factor(stats_by_window: Mapping[str, WindowStats]) -> Reliabilit
     ``[0, 1]``, so the product is, and the factor lands in ``[floor, 1]`` without clamping — a
     clamp would hide an input that had escaped its range.
 
-    The windows are searched freshest first (``7d``, ``30d``, ``all``) and the first with at least
-    :data:`PRODUCTION_MINIMUM_SAMPLES` counted attempts decides; a model that was busy last month
-    and idle this week is judged on last month rather than on nothing.
+    The windows are searched freshest first (``7d``, then ``30d`` — never ``all``, see
+    :data:`FACTOR_WINDOWS`) and the first with at least :data:`PRODUCTION_MINIMUM_SAMPLES` counted
+    attempts decides; a model that was busy last month and idle this week is judged on last month
+    rather than on nothing, and one that was bad two months ago is judged on nothing.
 
     Args:
         stats_by_window: The pair's rows keyed by window name; a missing window is an empty one.
@@ -664,8 +671,10 @@ def reliability_factor(stats_by_window: Mapping[str, WindowStats]) -> Reliabilit
     Returns:
         The :class:`ReliabilityFactor`, neutral when no window qualifies.
     """
-    counts = {w.name: stats_by_window[w.name].counted for w in WINDOWS if w.name in stats_by_window}
-    for window in WINDOWS:
+    counts = {
+        w.name: stats_by_window[w.name].counted for w in FACTOR_WINDOWS if w.name in stats_by_window
+    }
+    for window in FACTOR_WINDOWS:
         stats = stats_by_window.get(window.name)
         if stats is None or stats.counted < PRODUCTION_MINIMUM_SAMPLES:
             continue

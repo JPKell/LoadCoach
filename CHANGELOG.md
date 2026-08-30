@@ -33,6 +33,16 @@ packaging and release standards §3.
     windows from `job_attempts` and `feedback` (the incremental path), `recompute_all` (the full
     path it must equal), the breaker's sample source classified by the statistics' own success
     rule, and persistence of breaker verdicts onto the rows.
+- Phase 7, unit 3: production evidence live in routing (routing §6, §11; queue §7).
+  - `reliability_factor` is applied on every decision from the freshest `reliability_stats` window
+    with at least twenty counted attempts; the explanation carries `factors.reliability_detail`
+    (window, attempts, rates, acceptance, one line saying why) whether the factor is live or
+    neutral.
+  - Every attempt row the worker writes, and every feedback record, recomputes the one
+    `(model, task_profile)` pair it touched; `recompute_all` is the full path it is tested to
+    equal over random sequences.
+  - The circuit breaker's samples come from `services.reliability`, classified by the statistics'
+    own success rule, and a changed verdict is persisted onto the model's rows.
 
 ## [0.9.0b0] — 2026-08-30
 

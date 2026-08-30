@@ -93,14 +93,46 @@ def test_the_registry_tracks_models_and_lets_one_probe_through_at_a_time() -> No
     breakers.update(samples, now=T0 + timedelta(minutes=1))
     assert breakers.excluded() == frozenset({"bad"})
     assert set(breakers.details()) == {"bad"}
-    assert breakers.allow_probe("bad") is False  # still open, not half-open
+    assert breakers.allow_probe("bad", now=T0 + timedelta(minutes=1)) is False  # still open
     breakers.update(samples, now=T0 + timedelta(minutes=3))
     assert breakers.excluded() == frozenset()  # half-open: a probe may route to it
-    assert breakers.allow_probe("bad") is True
-    assert breakers.allow_probe("bad") is False  # one at a time
+    assert breakers.allow_probe("bad", now=T0 + timedelta(minutes=3)) is True
+    assert breakers.allow_probe("bad", now=T0 + timedelta(minutes=3)) is False  # one at a time
     assert breakers.excluded() == frozenset({"bad"})  # excluded while the probe is out
-    assert breakers.allow_probe("good") is False
+    assert breakers.allow_probe("good", now=T0 + timedelta(minutes=3)) is False
     assert {v.canonical_id: v.state for v in breakers.verdicts()} == {
         "bad": BreakerState.HALF_OPEN,
         "good": BreakerState.CLOSED,
     }
+
+
+def test_a_cancelled_probe_is_handed_back_so_the_next_job_may_probe() -> None:
+    """A probe that never reported must not exclude the model until never (P7's failure mode)."""
+    breakers = CircuitBreakers(cooldown_seconds=60)
+    samples = {"bad": _samples(False, False, False, False, False)}
+    breakers.update(samples, now=T0 + timedelta(minutes=1))
+    breakers.update(samples, now=T0 + timedelta(minutes=3))
+    at = T0 + timedelta(minutes=3)
+    assert breakers.allow_probe("bad", now=at) is True
+    assert breakers.excluded() == frozenset({"bad"})
+    verdict = next(v for v in breakers.verdicts() if v.canonical_id == "bad")
+    assert verdict.probe_started_at == at and verdict.reason == "cool-down elapsed; probe in flight"
+    assert verdict.as_json()["probe_started_at"] is not None
+    assert breakers.release_probe("bad") is True
+    assert breakers.release_probe("bad") is False
+    assert breakers.excluded() == frozenset()
+    assert breakers.allow_probe("bad", now=at) is True  # the next job probes instead
+
+
+def test_a_probe_that_never_reports_is_released_after_one_cooldown() -> None:
+    """A crashed probe worker cannot leave the breaker half-open-and-busy for ever."""
+    breakers = CircuitBreakers(cooldown_seconds=60)
+    samples = {"bad": _samples(False, False, False, False, False)}
+    breakers.update(samples, now=T0 + timedelta(minutes=1))
+    breakers.update(samples, now=T0 + timedelta(minutes=3))
+    assert breakers.allow_probe("bad", now=T0 + timedelta(minutes=3)) is True
+    breakers.update(samples, now=T0 + timedelta(minutes=3, seconds=59))
+    assert breakers.excluded() == frozenset({"bad"})  # still waiting on the probe
+    breakers.update(samples, now=T0 + timedelta(minutes=4))
+    assert breakers.excluded() == frozenset()  # presumed lost; another probe may go
+    assert next(v for v in breakers.verdicts()).state is BreakerState.HALF_OPEN

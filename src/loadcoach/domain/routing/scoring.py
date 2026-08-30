@@ -17,7 +17,7 @@ the same inputs always produce the same numbers (routing §12).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from loadcoach.domain.evidence_policy import (
     freeweight_remedy,
@@ -25,7 +25,7 @@ from loadcoach.domain.evidence_policy import (
     machine_admits,
     user_capability_note,
 )
-from loadcoach.domain.reliability import PRODUCTION_MINIMUM_SAMPLES
+from loadcoach.domain.reliability import PRODUCTION_MINIMUM_SAMPLES, ReliabilityFactor
 from loadcoach.domain.routing.subject import signals_by_capability
 
 if TYPE_CHECKING:
@@ -474,26 +474,37 @@ def score_subject(subject: ExecutionSubject, inputs: ScoringInputs) -> TaskFit:
 
 @dataclass(frozen=True, slots=True)
 class AdjustmentFactors:
-    """The four multipliers applied to ``task_fit`` (routing §6)."""
+    """The four multipliers applied to ``task_fit`` (routing §6), and the reliability inputs.
+
+    ``reliability_detail`` is the :class:`~loadcoach.domain.reliability.ReliabilityFactor`
+    record behind ``reliability``: which window, how many attempts, the rates, the acceptance,
+    and one line saying why — present whether the factor is live or neutral, because routing §6
+    says each factor's value *and inputs* are recorded, and a neutral factor's input is the
+    sample count that kept it neutral.
+    """
 
     reliability: float = 1.0
     availability: float = 1.0
     residency: float = 1.0
     cost: float = 1.0
+    reliability_detail: Mapping[str, Any] | None = None
 
     @property
     def product(self) -> float:
         """The combined multiplier."""
         return self.reliability * self.availability * self.residency * self.cost
 
-    def as_json(self) -> dict[str, float]:
+    def as_json(self) -> dict[str, Any]:
         """Return the ``factors`` object routing §8's explanation carries."""
-        return {
+        document: dict[str, Any] = {
             "reliability": self.reliability,
             "availability": self.availability,
             "residency": self.residency,
             "cost": self.cost,
         }
+        if self.reliability_detail is not None:
+            document["reliability_detail"] = dict(self.reliability_detail)
+        return document
 
 
 def adjustment_factors(
@@ -502,15 +513,15 @@ def adjustment_factors(
     resident_models: frozenset[str] = frozenset(),
     prefer_resident_bonus: float = 0.05,
     remote_cost_factor: float = 0.9,
-    reliability: float = 1.0,
+    reliability: float | ReliabilityFactor = 1.0,
     availability: float = 1.0,
 ) -> AdjustmentFactors:
     """Build one candidate's adjustment factors (routing §6).
 
-    ``reliability`` and ``availability`` are parameters rather than computations because neither
-    input exists yet: production statistics arrive with P7 and queue load with P5. They default to
-    the documented neutral 1.0, so this phase's decisions are honest about ranking on capability
-    alone, and neither later phase has to restructure the arithmetic to join in.
+    ``reliability`` is a :class:`~loadcoach.domain.reliability.ReliabilityFactor` when production
+    statistics exist for the candidate and this task profile (P7), and the documented neutral
+    ``1.0`` otherwise; ``availability`` stays a plain parameter until queue load feeds it. Either
+    way the arithmetic is the same, which is why P3 shaped it this way.
 
     Args:
         subject: The candidate.
@@ -525,9 +536,14 @@ def adjustment_factors(
         The four factors, each within routing §6's documented range.
     """
     resident = subject.facts.canonical_id in resident_models
+    if isinstance(reliability, ReliabilityFactor):
+        value, detail = reliability.value, reliability.as_json()
+    else:
+        value, detail = reliability, None
     return AdjustmentFactors(
-        reliability=reliability,
+        reliability=value,
         availability=availability,
         residency=1.0 + prefer_resident_bonus if resident else 1.0,
         cost=remote_cost_factor if subject.facts.is_remote else 1.0,
+        reliability_detail=detail,
     )

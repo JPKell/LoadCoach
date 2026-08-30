@@ -202,6 +202,17 @@ final_score = task_fit
 Each factor's value and inputs are recorded. The residency bonus is deliberately small: it breaks
 ties, it does not override capability.
 
+`reliability_factor` is `0.5 + 0.5 × success_rate × validation_pass_rate × feedback_term`, computed
+from the freshest of the `7d` and `30d` windows holding at least the minimum sample count
+(`PRODUCTION_MINIMUM_SAMPLES`, 20 counted attempts; cancellations never count) — never from `all`,
+so a bad day ages out of the factor within thirty days rather than following a lightly used model for
+ever. `success_rate` is
+answered over counted attempts, `validation_pass_rate` validated over answered, and `feedback_term`
+is `1 − 0.5 × (1 − acceptance_rate)` once at least five caller verdicts exist in the window and `1`
+before. Every term is in `[0, 1]`, so the factor lands in `[0.5, 1]` without a clamp; the window,
+the rates and one sentence saying why travel with the decision as `factors.reliability_detail`,
+whether the factor is live or neutral.
+
 ## 7. Step 5 — Ranking and fallbacks
 
 Candidates are ordered by `final_score` descending, ties broken by (higher confidence, then resident,
@@ -305,6 +316,17 @@ Uses: the `reliability_factor`; the circuit breaker (a model failing more than a
 a window is deprioritized and eventually excluded with `recently_failing`, then re-probed after a
 cool-down); and regression detection (a significant drop against a model's own baseline raises a
 warning in the UI and in health).
+
+The breaker's samples are the same attempt rows the statistics are computed from, classified by the
+same rule — a validation failure is an *answer*, an error or timeout is not — over its own ten-minute
+window (queue §7); its verdict is persisted onto `reliability_stats` so the page and `GET /reliability`
+show it without the serving process. Regression detection compares the `7d` window's validated-success
+rate with the model's own history *before* that window and fires only when the drop is at least 15
+points **and** its two-proportion z-score is at least 2.0, with at least 20 counted attempts on each
+side; noise with the same underlying rate clears neither test. Production evidence never enters
+capability scoring: it acts through the factor, the breaker and regression detection, and the
+explanation shows it under `factors.reliability_detail` with `source: production` beside the
+benchmark entries in `capabilities` with `source: benchmark`.
 
 Production evidence never overwrites benchmark evidence — the two are separate sources with separate
 confidence, and both are shown.

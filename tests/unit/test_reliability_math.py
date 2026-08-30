@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from loadcoach.domain.reliability import (
+    FACTOR_WINDOWS,
     MINIMUM_PERCENTILE_SAMPLES,
     PRODUCTION_MINIMUM_SAMPLES,
     REGRESSION_MINIMUM_SAMPLES,
@@ -464,7 +465,7 @@ def test_factor_uses_the_freshest_window_with_enough_samples() -> None:
     assert factor.window == "30d" and factor.attempts == 25
     assert factor.value == pytest.approx(0.5 + 0.5 * 0.8)
     assert reliability_factor({}).neutral
-    assert neutral_factor().reason.startswith("neutral: fewer than 20")
+    assert neutral_factor().reason.startswith("neutral: fewer than 20 counted attempts in the last")
     document = factor.as_json()
     assert document["source"] == "production" and document["minimum_samples"] == 20
     assert document["neutral"] is False
@@ -575,3 +576,11 @@ def test_regression_over_random_series_fires_on_degradation_and_not_on_stationar
     )
     assert loud.status == "regressed", loud.reason
     assert loud.recent_samples == 80 and loud.baseline_samples == 400
+
+
+def test_the_all_window_never_drives_the_factor() -> None:
+    """A bad day must age out of the factor: ``all`` is for the page and the regression baseline."""
+    assert [w.name for w in FACTOR_WINDOWS] == ["7d", "30d"]
+    only_all = reliability_factor({"all": _stats("all", errors=200)})
+    assert only_all.neutral and only_all.value == 1.0
+    assert "7d and 30d" in only_all.reason and "all=" not in only_all.reason
