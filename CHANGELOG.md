@@ -28,6 +28,18 @@ packaging and release standards §3.
     models were discovered binds with no re-import.
   - `[evidence] accept_schema_majors` may narrow what this build reads and never widen it — a
     major with no payload models cannot be handed to a v1 reader.
+- Phase 6, unit 3: the fetch path (ADR-0026 §3 and §4, ADR-0022 §5).
+  - `loadcoach.infrastructure.freeweight_client`: scheme, host allowlist, literal and resolved
+    link-local addresses, same-host-only redirects capped at three, `Content-Type` verified
+    before parsing, and a **streaming** size cap — every one of them decided before a byte of
+    the body is interpreted, and each with `EVIDENCE_SOURCE_REFUSED`.
+  - `freeweight_api_key_env` / `freeweight_api_key_file` resolve through the ordinary secret
+    chain, and `credential_for` refuses to send a token to any origin but the one it was
+    configured for.
+  - `refresh_from_freeweight` sends the producer's own `generated_at` back as `?since=` and
+    never LoadCoach's clock; the scheduler runs it on `import_interval_hours`.
+  - Degradation: an unreachable source retains its last import and badges those rows
+    `source_unreachable`; `freeweight_url = ""` is *not configured*, which attempts nothing.
 - Phase 5, unit 8: the surface (api.md §5, §8; spec §7.2).
   - `POST /jobs` (202; a repeated key returns the original job with `X-Idempotent-Replay`),
     `GET /jobs` (filters by state, class, task and source; opaque cursor pagination),

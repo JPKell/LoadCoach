@@ -314,6 +314,9 @@ class QueueRuntime:
             Phase 5, swappable for ``reliability_stats`` in Phase 7.
         jitter: A uniform draw in ``[0, 1)`` for backoff; injected so the simulator is
             reproducible.
+        evidence_refresh: The scheduled FreeWeight pull (P6), or ``None`` when
+            ``[evidence] freeweight_url`` is empty — *not configured*, which is a different
+            state from unavailable and must not silently become a failing refresh.
     """
 
     settings: Settings
@@ -333,6 +336,7 @@ class QueueRuntime:
     resources_changed: threading.Event = field(default_factory=threading.Event)
     resident_model_ids: Callable[[], frozenset[str]] = lambda: frozenset()
     breakers: CircuitBreakers = field(default_factory=CircuitBreakers)
+    evidence_refresh: Callable[[datetime], None] | None = None
     breaker_source: Callable[[datetime], Mapping[str, Sequence[AttemptSample]]] | None = None
     jitter: Callable[[], float] = random.random
     last_recovery: RecoverySummary | None = None
@@ -1394,6 +1398,7 @@ class Scheduler:
             "sync": None,
             "breakers": None,
             "watchdog": None,
+            "evidence": None,
         }
         self.renewals = 0
         self.sweeps = 0
@@ -1453,6 +1458,25 @@ class Scheduler:
             self.watchdog(now)
         if self._due("flags", now, _FLAGS_INTERVAL_SECONDS):
             self.refresh_flags()
+        if self.runtime.evidence_refresh is not None and self._due(
+            "evidence", now, self.runtime.settings.evidence.import_interval_hours * 3600.0
+        ):
+            self.refresh_evidence(now)
+
+    def refresh_evidence(self, now: datetime) -> None:
+        """Pull from FreeWeight on the configured cadence, never failing the scheduler.
+
+        A refresh that cannot reach its source is a degradation, not an error: the previous
+        import is retained and badged, and the tick goes on. Raising here would take the queue's
+        keeper and reaper down with it.
+        """
+        refresh = self.runtime.evidence_refresh
+        if refresh is None:
+            return
+        try:
+            refresh(now)
+        except Exception:
+            logger.exception("scheduler.evidence_refresh_failed")
 
     def watchdog(self, now: datetime) -> tuple[str, ...]:
         """Force ``cancelling -> cancelled`` after ``cancelling_watchdog_seconds`` (queue §8).
@@ -1660,6 +1684,14 @@ def build_runtime(
         owner_prefix=owner_prefix if owner_prefix is not None else new_id(),
         jitter=jitter if jitter is not None else random.random,
     )
+    if settings.evidence.freeweight_url.strip():
+
+        def _refresh(now: datetime) -> None:
+            from loadcoach.services.evidence import refresh_from_freeweight
+
+            refresh_from_freeweight(database, settings.evidence, now=now)
+
+        runtime.evidence_refresh = _refresh
     residency = ResidencyService(
         database, provider, settings=settings.residency, clock=runtime.clock
     )

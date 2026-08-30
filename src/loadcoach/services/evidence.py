@@ -44,6 +44,14 @@ from loadcoach.domain.evidence_policy import (
     evaluate_staleness,
 )
 from loadcoach.infrastructure.db.models import CapabilityEvidence, EvidenceSource, Model
+from loadcoach.infrastructure.freeweight_client import (
+    MAX_IMPORT_BYTES,
+    EvidenceSourceRefused,
+    EvidenceSourceUnreachable,
+    FreeWeightClient,
+    policy_from_settings,
+    resolve_credential,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -51,32 +59,30 @@ if TYPE_CHECKING:
 
     from sqlalchemy.orm import Session
 
+    from loadcoach.config import EvidenceSettings
     from loadcoach.services.database import Database
 
 __all__ = [
     "BUNDLE_SCHEMA",
-    "MAX_IMPORT_BYTES",
     "MAX_PARSE_BYTES",
     "EvidenceImportFailed",
     "EvidenceSchemaVersionUnsupported",
     "ImportOutcome",
     "RejectedRecord",
     "RebindOutcome",
+    "SourceStatus",
+    "credential_for",
     "import_bundle",
+    "last_generated_at",
+    "list_sources",
+    "mark_source_unreachable",
     "rebind_evidence",
     "rebind_evidence_in",
+    "refresh_from_freeweight",
 ]
 
 BUNDLE_SCHEMA: Final[str] = "benchmark.evidence_bundle"
 """The one payload type ``POST /evidence/import`` accepts."""
-
-MAX_IMPORT_BYTES: Final[int] = 128 * 1024 * 1024
-"""ADR-0026 §3's import limit, enforced **during streaming** by the fetch client.
-
-This is a transfer cap: it bounds what LoadCoach will pull over the network before it has any
-idea what the body is. It is deliberately larger than :data:`MAX_PARSE_BYTES`, and the two mean
-different things — see that constant.
-"""
 
 MAX_PARSE_BYTES: Final[int] = setspec.MAX_PAYLOAD_BYTES
 """What may actually be parsed: SetSpec's own envelope guard, not raised.
@@ -737,3 +743,313 @@ def rebind_evidence(database: Database) -> RebindOutcome:
     """
     with database.write() as session:
         return rebind_evidence_in(session)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceStatus:
+    """One configured or observed evidence source, as ``GET /evidence/sources`` reports it.
+
+    Attributes:
+        source_key: The producer's own ``source_id``, or ``"freeweight"`` for a configured source
+            nothing has yet been imported from.
+        kind: ``freeweight_api``, ``file`` or ``manual``.
+        url: Where it was pulled from, when it was pulled.
+        last_import_at: When LoadCoach last imported from it.
+        last_status: ``ok``, ``unreachable``, ``refused`` or ``failed``.
+        schema_version: The bundle version last seen.
+        record_count: How many records that import carried.
+        error_text: The last failure's message, cleared by a success.
+        generated_at: The producer's own timestamp for that bundle — what the next ``?since=``
+            sends back (ADR-0022 §5).
+        rows: How many evidence rows this source currently owns.
+        stale_rows: How many of them are marked stale.
+        newest_measured_at: The freshest measurement this source supplied.
+        configured: Whether ``[evidence] freeweight_url`` names this source.
+    """
+
+    source_key: str
+    kind: str
+    url: str | None
+    last_import_at: datetime | None
+    last_status: str | None
+    schema_version: str | None
+    record_count: int
+    error_text: str | None
+    generated_at: datetime | None
+    rows: int
+    stale_rows: int
+    newest_measured_at: datetime | None
+    configured: bool = False
+
+    def as_json(self) -> dict[str, Any]:
+        """Return this source as the API reports it."""
+        from baseaicore.timeutil import to_rfc3339
+
+        def when(value: datetime | None) -> str | None:
+            return None if value is None else to_rfc3339(value)
+
+        return {
+            "source_id": self.source_key,
+            "kind": self.kind,
+            "url": self.url,
+            "last_import_at": when(self.last_import_at),
+            "last_status": self.last_status,
+            "schema_version": self.schema_version,
+            "record_count": self.record_count,
+            "error_text": self.error_text,
+            "generated_at": when(self.generated_at),
+            "rows": self.rows,
+            "stale_rows": self.stale_rows,
+            "newest_measured_at": when(self.newest_measured_at),
+            "configured": self.configured,
+        }
+
+
+def list_sources(database: Database, *, configured_url: str = "") -> tuple[SourceStatus, ...]:
+    """Return every evidence source, with the row counts that make its status meaningful.
+
+    Args:
+        database: The application's database handle.
+        configured_url: ``[evidence] freeweight_url``. An empty string means **not configured**,
+            which is a different state from unavailable and is reported as such.
+
+    Returns:
+        One :class:`SourceStatus` per row in ``evidence_sources``, ordered by key.
+    """
+    from sqlalchemy import func, select
+
+    with database.read() as session:
+        sources = session.query(EvidenceSource).order_by(EvidenceSource.source_key).all()
+        counts: dict[str, int] = {
+            row[0]: int(row[1])
+            for row in session.execute(
+                select(CapabilityEvidence.source_id, func.count(CapabilityEvidence.id)).group_by(
+                    CapabilityEvidence.source_id
+                )
+            ).all()
+        }
+        stale_counts: dict[str, int] = {
+            row[0]: int(row[1])
+            for row in session.execute(
+                select(CapabilityEvidence.source_id, func.count(CapabilityEvidence.id))
+                .where(CapabilityEvidence.stale.is_(True))
+                .group_by(CapabilityEvidence.source_id)
+            ).all()
+        }
+        newest: dict[str, object] = {
+            row[0]: row[1]
+            for row in session.execute(
+                select(
+                    CapabilityEvidence.source_id, func.max(CapabilityEvidence.measured_at)
+                ).group_by(CapabilityEvidence.source_id)
+            ).all()
+        }
+        return tuple(
+            SourceStatus(
+                source_key=row.source_key,
+                kind=row.kind,
+                url=row.url,
+                last_import_at=row.last_import_at,
+                last_status=row.last_status,
+                schema_version=row.schema_version,
+                record_count=row.record_count,
+                error_text=row.error_text,
+                generated_at=row.generated_at,
+                rows=int(counts.get(row.id, 0)),
+                stale_rows=int(stale_counts.get(row.id, 0)),
+                newest_measured_at=_as_datetime(newest.get(row.id)),
+                configured=bool(configured_url) and row.url == configured_url,
+            )
+            for row in sources
+        )
+
+
+def _as_datetime(value: object) -> datetime | None:
+    """Coerce a ``MAX()`` result, which SQLite returns as text, to a datetime."""
+    from datetime import UTC
+    from datetime import datetime as _datetime
+
+    if value is None:
+        return None
+    if isinstance(value, _datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if isinstance(value, str):
+        try:
+            parsed = _datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+    return None
+
+
+def mark_source_unreachable(database: Database, *, url: str, reason: str, now: datetime) -> int:
+    """Record that a source could not be reached, and badge the evidence it supplied.
+
+    The degradation contract, made durable: the last import is **retained**, its rows are marked
+    stale with the reason ``source_unreachable``, and routing goes on using them and its priors.
+    Nothing is deleted, because an unreachable FreeWeight has said nothing about whether its
+    measurements are still true.
+
+    Args:
+        database: The application's database handle.
+        url: The source URL that failed.
+        reason: The failure, for ``error_text``.
+        now: The instant to record.
+
+    Returns:
+        How many evidence rows were newly badged.
+    """
+    badged = 0
+    with database.write() as session:
+        source = session.query(EvidenceSource).filter_by(url=url).one_or_none()
+        if source is None:
+            return 0
+        source.last_status = "unreachable"
+        source.error_text = reason
+        source.last_import_at = source.last_import_at
+        for row in session.query(CapabilityEvidence).filter_by(source_id=source.id).all():
+            if row.stale_reason == "superseded":
+                continue
+            if not row.stale or row.stale_reason != "source_unreachable":
+                badged += 1
+            row.stale = True
+            row.stale_reason = "source_unreachable"
+        session.flush()
+    return badged
+
+
+def last_generated_at(database: Database, *, url: str) -> datetime | None:
+    """Return the producer's ``generated_at`` for the last bundle pulled from ``url``.
+
+    ADR-0022 §5: *a client never supplies its own clock.* It stores the ``generated_at`` of the
+    previous bundle envelope and sends that value back as ``?since=``, which makes the comparison
+    single-clock and correct across machines.
+
+    Args:
+        database: The application's database handle.
+        url: The source URL.
+
+    Returns:
+        The stored timestamp, or ``None`` when this source has never been imported from — in
+        which case ADR-0022 §5 requires a **complete** pull.
+    """
+    with database.read() as session:
+        source = session.query(EvidenceSource).filter_by(url=url).one_or_none()
+        return None if source is None else source.generated_at
+
+
+def refresh_from_freeweight(
+    database: Database,
+    settings: EvidenceSettings,
+    *,
+    now: datetime,
+    client: FreeWeightClient | None = None,
+    current_environment: Mapping[str, Any] | None = None,
+) -> ImportOutcome | None:
+    """Pull from the configured FreeWeight and import what comes back.
+
+    Degradation is the point of this function, not an afterthought:
+
+    * ``freeweight_url = ""`` is **not configured**. Nothing is attempted and ``None`` is
+      returned — a different state from unavailable, and the two must not be conflated in the UI
+      or in ``/health``.
+    * A source that refuses or cannot be reached leaves the previous import in place, badges its
+      rows ``source_unreachable``, and returns ``None``. Routing continues on that evidence and
+      on its priors, and says so.
+
+    Args:
+        database: The application's database handle.
+        settings: The ``[evidence]`` block.
+        now: The refresh instant.
+        client: A client to use. Built from ``settings`` when not supplied.
+        current_environment: This machine's provider/driver facts, for drift detection.
+
+    Returns:
+        The :class:`ImportOutcome`, or ``None`` when the source is unconfigured or unavailable.
+    """
+    url = settings.freeweight_url.strip()
+    if not url:
+        return None
+
+    owned = client is None
+    fetch_client = (
+        client if client is not None else FreeWeightClient(policy_from_settings(settings))
+    )
+    try:
+        credential = credential_for(settings, url)
+        fetched = fetch_client.fetch(
+            url, since=last_generated_at(database, url=url), credential=credential
+        )
+    except EvidenceSourceRefused as exc:
+        _record_source_failure(database, url=url, status="refused", reason=str(exc), now=now)
+        return None
+    except EvidenceSourceUnreachable as exc:
+        mark_source_unreachable(database, url=url, reason=str(exc), now=now)
+        _record_source_failure(database, url=url, status="unreachable", reason=str(exc), now=now)
+        return None
+    finally:
+        if owned:
+            fetch_client.close()
+
+    try:
+        return import_bundle(
+            database,
+            fetched.document,
+            now=now,
+            accept_schema_majors=settings.accept_schema_majors,
+            source_kind="freeweight_api",
+            url=url,
+            current_environment=current_environment,
+        )
+    except SuiteError as exc:
+        _record_source_failure(database, url=url, status="failed", reason=str(exc), now=now)
+        raise
+
+
+def credential_for(settings: EvidenceSettings, url: str) -> str | None:
+    """Return the bearer token for ``url``, or ``None`` when it belongs to another host.
+
+    Spec §14: *a credential configured for one evidence source is never sent to any other host.*
+    The configured credential belongs to ``evidence.freeweight_url``'s origin; an ad-hoc import
+    from a different allowlisted host is unauthenticated rather than credentialed with someone
+    else's token.
+
+    Args:
+        settings: The ``[evidence]`` block.
+        url: The URL about to be fetched.
+
+    Returns:
+        The token, or ``None``.
+    """
+    import httpx
+
+    configured = settings.freeweight_url.strip()
+    if not configured:
+        return None
+    try:
+        target, owner = httpx.URL(url), httpx.URL(configured)
+    except (httpx.InvalidURL, ValueError):
+        return None
+    if (target.scheme, target.host, target.port) != (owner.scheme, owner.host, owner.port):
+        return None
+    return resolve_credential(settings)
+
+
+def _record_source_failure(
+    database: Database, *, url: str, status: str, reason: str, now: datetime
+) -> None:
+    """Record a failed refresh on the source row, creating it if this is the first attempt."""
+    with database.write() as session:
+        source = session.query(EvidenceSource).filter_by(url=url).one_or_none()
+        if source is None:
+            source = EvidenceSource(
+                source_key=url,
+                kind="freeweight_api",
+                url=url,
+                record_count=0,
+                created_at=now,
+            )
+            session.add(source)
+        source.last_status = status
+        source.error_text = reason
+        session.flush()
