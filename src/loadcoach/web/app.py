@@ -53,6 +53,7 @@ from loadcoach.web.routes import models as models_routes
 from loadcoach.web.routes import queue as queue_routes
 from loadcoach.web.routes import reliability as reliability_routes
 from loadcoach.web.routes import routing as routing_routes
+from loadcoach.web.routes import settings as settings_routes
 from loadcoach.web.routes import system as system_routes
 from loadcoach.web.routes import task_profiles as task_profiles_routes
 from loadcoach.web.routing_support import current_snapshot
@@ -363,6 +364,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(queue_routes.router, prefix="/api/v1")
     app.include_router(evidence_routes.router, prefix="/api/v1")
     app.include_router(reliability_routes.router, prefix="/api/v1")
+    app.include_router(settings_routes.router, prefix="/api/v1")
     app.include_router(dashboard_routes.ui_router)
     app.include_router(models_routes.ui_router)
     app.include_router(task_profiles_routes.ui_router)
@@ -372,6 +374,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(evidence_routes.ui_router)
     app.include_router(reliability_routes.ui_router)
     app.include_router(system_routes.ui_router)
+    app.include_router(settings_routes.ui_router)
 
     # MirrorWall's own assets, served from the installed package: no CDN, no network request at
     # page load. Passing the environment swaps the plain `asset_url` filter for the hashing one,

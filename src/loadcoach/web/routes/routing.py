@@ -116,7 +116,7 @@ async def post_route(request: Request, body: RouteBody) -> dict[str, Any]:
         app.state.database,
         _to_request(body),
         provider=provider_facts_for(app.state.provider),
-        policy=routing_policy_for(app.state.settings),
+        policy=routing_policy_for(app.state.settings, database=app.state.database),
         snapshot=current_snapshot(app),
         now=datetime.now(UTC),
     )

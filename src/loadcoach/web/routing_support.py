@@ -24,23 +24,40 @@ if TYPE_CHECKING:
     from sweatmeter import TelemetrySnapshot
 
     from loadcoach.config import Settings
+    from loadcoach.services.database import Database
 
 __all__ = ["current_snapshot", "provider_facts_for", "routing_policy_for"]
 
 
-def routing_policy_for(settings: Settings) -> RoutingPolicy:
-    """Build the configured routing policy from settings.
+def routing_policy_for(settings: Settings, *, database: Database | None = None) -> RoutingPolicy:
+    """Build the routing policy from settings, with the runtime-changeable overrides applied.
 
     The machine fingerprint is read here rather than passed in because it is a property of the
     process, not of a request: SweatMeter profiles the host once and every decision compares
-    imported evidence against that one value (spec §10).
+    imported evidence against that one value (spec §10). With ``database`` given, the routing
+    keys a ``PUT /settings`` may have changed are read from the ``settings`` table (api.md §9),
+    so ``POST /route`` and the queue's workers apply the same values.
     """
-    return RoutingPolicy.from_settings(
+    policy = RoutingPolicy.from_settings(
         routing=settings.routing,
         runtime=settings.runtime,
         telemetry=settings.telemetry,
         evidence=settings.evidence,
         machine_fingerprint=machine_fingerprint(),
+    )
+    if database is None:
+        return policy
+    from dataclasses import replace
+
+    from loadcoach.services.settings import read_runtime_settings
+
+    effective = read_runtime_settings(database, settings=settings)
+    return replace(
+        policy,
+        prefer_resident_bonus=float(effective["routing.prefer_resident_bonus"]),
+        min_present_weight=float(effective["routing.min_present_weight"]),
+        min_confidence=float(effective["routing.min_confidence"]),
+        remote_cost_factor=float(effective["routing.remote_cost_factor"]),
     )
 
 

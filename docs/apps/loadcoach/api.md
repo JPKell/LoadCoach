@@ -220,6 +220,14 @@ and it never contributes to a routing score until it is
 `GET /settings`, `PUT /settings` — runtime-changeable settings only. Security-relevant keys are
 config-only and return 403 `FORBIDDEN` naming the key.
 
+The runtime-changeable set is a registry (`loadcoach.services.settings.RUNTIME_SETTINGS`), shared by
+the API, the Settings page and the scheduler that applies a change within a second: `queue.paused`,
+`queue.draining`, `routing.prefer_resident_bonus`, `routing.min_present_weight`,
+`routing.min_confidence`, `routing.remote_cost_factor`, `storage.content_retention_hours`. `GET`
+returns every key's effective value, its definition and bounds, the configured value it overrides,
+and the list of config-only keys. A key that is neither runtime-changeable nor security-relevant is
+`400 VALIDATION_ERROR` naming it and listing the set. `PUT` is `admin`-scoped.
+
 ## 10. Errors
 
 Standard envelope. Codes as listed in the [spec §13](spec.md), with these presentation rules:

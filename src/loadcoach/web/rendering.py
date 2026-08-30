@@ -38,6 +38,7 @@ NAV_ITEMS: tuple[dict[str, str], ...] = (
     {"key": "evidence", "href": "/evidence", "label": "Benchmarks"},
     {"key": "reliability", "href": "/reliability", "label": "Reliability"},
     {"key": "system", "href": "/system", "label": "System"},
+    {"key": "settings", "href": "/settings", "label": "Settings"},
 )
 
 

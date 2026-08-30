@@ -176,7 +176,7 @@ def _context(request: Request) -> ExecutionContext:
     return ExecutionContext(
         provider=app.state.provider,
         provider_facts=provider_facts_for(app.state.provider),
-        policy=routing_policy_for(app.state.settings),
+        policy=routing_policy_for(app.state.settings, database=app.state.database),
         schemas_dir=DEFAULT_SCHEMAS_DIR,
         snapshot=current_snapshot(app),
         timeout_seconds=app.state.settings.execution.default_timeout_seconds,

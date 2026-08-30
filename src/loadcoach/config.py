@@ -156,6 +156,25 @@ class StorageSettings(BaseModel):
         ),
         examples=[30000],
     )
+    content_retention_hours: int = Field(
+        default=24,
+        ge=0,
+        description=(
+            "How long a finished job keeps its prompt and response text before the retention "
+            "sweep replaces them with their hashes (spec §14: content is stored as hashes by "
+            "default; data model §3). 0 scrubs at the first sweep after completion. A queued "
+            "job always keeps its transcript until it has run. Runtime-changeable."
+        ),
+        examples=[24],
+    )
+    retain_content: bool = Field(
+        default=False,
+        description=(
+            "Keep prompt and response text for ever, disabling the retention sweep. A privacy "
+            "decision, so config-only: it cannot be changed through PUT /settings."
+        ),
+        examples=[False],
+    )
 
     @model_validator(mode="after")
     def _apply_data_dir_defaults(self) -> StorageSettings:

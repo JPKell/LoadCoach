@@ -187,6 +187,8 @@ environment, then CLI, field by field. Principal sections:
 ```toml
 [server]      host = "127.0.0.1"  port = 8766  allow_lan_exposure = false
 [storage]     database_url = "sqlite:///<data>/loadcoach.sqlite3"  auto_migrate = true
+              content_retention_hours = 24   # finished jobs keep text this long; runtime-changeable
+              retain_content = false         # keep text for ever; config-only (§14)
 [provider]    kind = "ollama"  base_url = "http://127.0.0.1:11434"  timeout_seconds = 300
 [providers]   allow_remote = false
 [server]      allowed_hosts = []           # required when host is not loopback (ADR-0026)

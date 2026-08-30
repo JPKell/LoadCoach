@@ -1,0 +1,39 @@
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import empty_state, kv_list, table %}
+{% block title %}Settings — LoadCoach{% endblock %}
+{% block content %}
+<h2>Settings</h2>
+<p class="muted">Only what can change while the server runs. Everything else — the bind, allowed
+hosts, providers, credentials, what is retained — lives in <span class="mono">config.toml</span> or
+the environment and is refused here by name (api.md §9). A change is applied by the scheduler
+within a second, and reaches every process sharing this database.</p>
+{% if saved %}<p class="notice" role="status">Saved. The running scheduler applies the change within a second.</p>{% endif %}
+
+<form method="post" action="/settings">
+  <input type="hidden" name="{{ csrf_field_name }}" value="{{ csrf_token }}">
+  {% for key in keys %}
+  {% set definition = document.definitions[key] %}
+  {% set value = document.settings[key] %}
+  <div class="field">
+    {% if definition.type == "bool" %}
+    <label for="setting-{{ key }}"><input type="checkbox" id="setting-{{ key }}" name="{{ key }}" value="on"{% if value %} checked{% endif %}> {{ key }}</label>
+    {% else %}
+    <label for="setting-{{ key }}">{{ key }}</label>
+    <input type="number" id="setting-{{ key }}" name="{{ key }}" value="{{ value }}"
+           {% if definition.type == "int" %}step="1"{% else %}step="0.01"{% endif %}
+           {% if definition.minimum is not none %}min="{{ definition.minimum }}"{% endif %}
+           {% if definition.maximum is not none %}max="{{ definition.maximum }}"{% endif %}
+           aria-describedby="setting-{{ key }}-hint">
+    {% endif %}
+    <p class="field-hint" id="setting-{{ key }}-hint">{{ definition.description }} Configured: <span class="mono">{{ definition.configured }}</span>{% if definition.minimum is not none %} · range {{ definition.minimum }}–{{ definition.maximum }}{% endif %}.</p>
+  </div>
+  {% endfor %}
+  <button type="submit" data-variant="primary">Save settings</button>
+</form>
+
+<h3>Config-only keys</h3>
+<p class="muted">Refused with <span class="mono">FORBIDDEN</span> naming the key when sent to <span class="mono">PUT /api/v1/settings</span>:</p>
+<ul>
+{% for key in document.config_only %}<li><span class="mono">{{ key }}</span></li>{% endfor %}
+</ul>
+{% endblock %}

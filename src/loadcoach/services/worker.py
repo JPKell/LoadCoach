@@ -146,6 +146,7 @@ _EVICT_INTERVAL_SECONDS: Final = 10.0
 _SYNC_INTERVAL_SECONDS: Final = 60.0
 _BREAKER_INTERVAL_SECONDS: Final = 10.0
 _WATCHDOG_INTERVAL_SECONDS: Final = 5.0
+_RETENTION_INTERVAL_SECONDS: Final = 60.0
 
 
 @dataclass
@@ -346,6 +347,7 @@ class QueueRuntime:
     evidence_refresh: Callable[[datetime], None] | None = None
     breaker_source: Callable[[datetime], Mapping[str, Sequence[AttemptSample]]] | None = None
     persisted_verdicts: dict[str, tuple[str, str]] = field(default_factory=dict)
+    content_retention_hours: int = 24
     jitter: Callable[[], float] = random.random
     last_recovery: RecoverySummary | None = None
     dispatch_samples_ms: deque[float] = field(default_factory=lambda: deque(maxlen=100))
@@ -368,6 +370,42 @@ class QueueRuntime:
             self.database, provider, settings=self.settings.residency, clock=self.clock
         )
         self.resident_model_ids = self.residency.resident_model_ids
+
+    def apply_runtime_settings(self) -> dict[str, Any]:
+        """Re-read the runtime-changeable settings and apply the routing ones to ``policy``.
+
+        The scheduler calls this at the flags cadence (api.md §9): a ``PUT /settings`` from
+        another process reaches this one within a second. Returns the effective values.
+        """
+        from dataclasses import replace
+
+        from loadcoach.services.settings import read_runtime_settings
+
+        effective = read_runtime_settings(self.database, settings=self.settings)
+        self.policy = replace(
+            self.policy,
+            prefer_resident_bonus=float(effective["routing.prefer_resident_bonus"]),
+            min_present_weight=float(effective["routing.min_present_weight"]),
+            min_confidence=float(effective["routing.min_confidence"]),
+            remote_cost_factor=float(effective["routing.remote_cost_factor"]),
+        )
+        self.content_retention_hours = int(effective["storage.content_retention_hours"])
+        return effective
+
+    def sweep_retention(self, now: datetime) -> None:
+        """Scrub finished jobs' text past the retention (spec §14), unless content is retained."""
+        from loadcoach.services.retention import scrub_content
+
+        if self.settings.storage.retain_content:
+            return
+        outcome = scrub_content(
+            self.database, now=now, retention_hours=self.content_retention_hours
+        )
+        if outcome.scrubbed_jobs:
+            logger.info(
+                "retention.scrubbed",
+                extra={"jobs": outcome.scrubbed_jobs, "events": outcome.scrubbed_events},
+            )
 
     def refresh_breakers(self, now: datetime) -> None:
         """Re-evaluate every breaker from the sample source's last window, and persist changes.
@@ -1457,6 +1495,7 @@ class Scheduler:
             "breakers": None,
             "watchdog": None,
             "evidence": None,
+            "retention": None,
         }
         self.renewals = 0
         self.sweeps = 0
@@ -1516,6 +1555,9 @@ class Scheduler:
             self.watchdog(now)
         if self._due("flags", now, _FLAGS_INTERVAL_SECONDS):
             self.refresh_flags()
+            self.apply_runtime_settings()
+        if self._due("retention", now, _RETENTION_INTERVAL_SECONDS):
+            self.sweep_retention(now)
         if self.runtime.evidence_refresh is not None and self._due(
             "evidence", now, self.runtime.settings.evidence.import_interval_hours * 3600.0
         ):
@@ -1684,6 +1726,20 @@ class Scheduler:
         """Read the operator's pause/drain flags from the settings table."""
         self.runtime.flags.refresh(self.runtime.database)
 
+    def apply_runtime_settings(self) -> None:
+        """Apply the runtime-changeable settings to the running process (api.md §9)."""
+        try:
+            self.runtime.apply_runtime_settings()
+        except Exception:  # noqa: BLE001 — an unreadable table keeps the last applied values
+            logger.warning("settings.apply_failed", exc_info=True)
+
+    def sweep_retention(self, now: datetime) -> None:
+        """Run the content retention sweep (spec §14)."""
+        try:
+            self.runtime.sweep_retention(now)
+        except Exception:  # noqa: BLE001 — a failed sweep runs again next minute
+            logger.warning("retention.sweep_failed", exc_info=True)
+
 
 def build_runtime(
     settings: Settings,
@@ -1726,6 +1782,7 @@ def build_runtime(
         stop_flag.wait(seconds)
 
     runtime = QueueRuntime(
+        content_retention_hours=settings.storage.content_retention_hours,
         settings=settings,
         database=database,
         provider=provider,

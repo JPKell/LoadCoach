@@ -79,6 +79,16 @@ packaging and release standards §3.
   the evidence summary, reliability and residency api.md §2 names, and `model_ref`. The System
   page (`/system`): telemetry with dashes for what cannot be measured, residency, the thread
   pool, dispatch latency, starvation, health components and breakers.
+- Phase 8, unit 4 (settings, tokens, retention, the checklist): `GET`/`PUT /api/v1/settings`
+  and the Settings page over one registry of runtime-changeable keys — the two queue flags, four
+  routing knobs and `storage.content_retention_hours` — applied by the scheduler within a second;
+  a security-relevant key is `403 FORBIDDEN` naming it, an unknown one `400` listing the set.
+  `loadcoach token create|list|revoke` (the token shown once; only its SHA-256 stored). Content
+  retention (spec §14, P5-15): a finished job's prompt and response text is removed after
+  `[storage] content_retention_hours` (default 24) leaving hashes, tokens, timings and routing;
+  a queued job keeps its transcript until it has run; `retain_content = true` (config-only)
+  keeps everything. `tests/accessibility/test_ui_checklist.py` holds every page to the UI/UX
+  §13 items a test can hold, and names what a person must still check.
 
 ## [0.9.0b0] — 2026-08-30
 

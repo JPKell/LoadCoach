@@ -22,6 +22,7 @@ from loadcoach.cli.commands import reliability as reliability_commands
 from loadcoach.cli.commands import route as route_commands
 from loadcoach.cli.commands import system as system_commands
 from loadcoach.cli.commands import tasks as tasks_commands
+from loadcoach.cli.commands import token as token_commands
 
 __all__ = ["app"]
 
@@ -78,3 +79,4 @@ app.add_typer(
     name="reliability",
     help="Production reliability per model and task profile.",
 )
+app.add_typer(token_commands.app, name="token", help="API tokens: create, list, revoke.")
