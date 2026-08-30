@@ -15,6 +15,11 @@ packaging and release standards §3.
   put the repository root on `sys.path`. `[tool.pytest.ini_options]` now sets
   `pythonpath = ["."]`, so both invocations agree; every CI run before this fix failed at its
   pytest step for this reason.
+- Candidate capability tables on `/routing/{decision_id}` now carry a row-count, as UI
+  standards §5 requires of every table; before, a decision with two or more candidates rendered
+  them bare. The accessibility checklist's server fixture also pins the deterministic telemetry
+  snapshot itself — it is built before the autouse pin applies, and its pages used to depend on
+  the developer's real GPU (passing on a busy card, failing on a machine with none).
 
 ## [1.0.0] — 2026-08-30
 

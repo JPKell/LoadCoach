@@ -35,12 +35,34 @@ def client(tmp_path_factory: pytest.TempPathFactory) -> Iterator[TestClient]:
     Module-scoped, so it is created *before* the function-scoped XDG isolation in
     ``tests/conftest.py`` runs — which is why it isolates itself the same way first. A fixture
     that booted against the developer's real data directory would be a testing standards §9
-    violation, and the first draft of this one was.
+    violation, and the first draft of this one was. The same ordering skips the autouse
+    ``_deterministic_telemetry`` pin, so this fixture pins the identical snapshot itself:
+    without it, the routing decision rendered on ``/routing/{decision_id}`` was made against
+    the *developer's real GPU* — on this workstation (card mostly full) the hostile model was
+    rejected ``insufficient_vram``, on a GPU-less machine (the CI runner, Docker) it was a
+    second candidate, and the pages under test differed by machine.
     """
     import os
 
+    from sweatmeter import GpuSample, TelemetryCollector, TelemetrySnapshot
+
     root = tmp_path_factory.mktemp("checklist")
     patch = pytest.MonkeyPatch()
+
+    def snapshot(_self: TelemetryCollector) -> TelemetrySnapshot:
+        return TelemetrySnapshot(
+            timestamp=datetime(2026, 8, 26, 12, 0, 0, tzinfo=UTC),
+            ram_available_bytes=64 * 1024**3,
+            gpus=(
+                GpuSample(
+                    index=0,
+                    vram_total_bytes=48 * 1024**3,
+                    vram_used_bytes=1 * 1024**3,
+                ),
+            ),
+        )
+
+    patch.setattr(TelemetryCollector, "snapshot", snapshot)
     for name, directory in (("CONFIG", "config"), ("DATA", "data"), ("STATE", "state")):
         (root / directory).mkdir()
         patch.setenv(f"XDG_{name}_HOME", str(root / directory))

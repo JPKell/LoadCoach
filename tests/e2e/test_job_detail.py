@@ -8,6 +8,7 @@ source (P8's named failure mode is a page that dumps JSON).
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Iterator
 
@@ -99,6 +100,16 @@ def test_explanation_page_shows_every_candidate_score_factor_and_rejection_with_
         for entry in candidate["capabilities"]:
             assert entry["capability"] in text
             assert entry["source"] in text
+        # UI standards §5: *each* candidate's capability table carries its own row-count. The
+        # accessibility checklist's page-wide balance held by accident while candidate tables
+        # had none (one candidate, and the narrative's tables paid for it), so anchor the
+        # row-count to the candidate table itself.
+        assert re.search(
+            rf'data-table="candidate-{candidate["model_id"]}".*?</table>\s*</div>\s*'
+            rf"<p class=\"row-count\">{len(candidate['capabilities'])} rows?</p>",
+            text,
+            flags=re.S,
+        ), candidate["canonical_id"]
     assert "What carried the score" in text
     assert "Contribution is weight × score × confidence" in text
 

@@ -61,7 +61,8 @@
   (capability.get("note") or "") ~ (" " ~ capability.remedy if capability.get("remedy") else "")
 ]) %}
 {% endfor %}
-{{ table(columns, rows, table_id="candidate-" ~ candidate.model_id, complete=true) }}
+{{ table(columns, rows, table_id="candidate-" ~ candidate.model_id, complete=true,
+         row_count=rows | length) }}
 {% endfor %}
 {% else %}
 {{ empty_state("No candidate survived the hard constraints.") }}
