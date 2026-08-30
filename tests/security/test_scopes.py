@@ -142,6 +142,12 @@ def test_every_mutating_service_refuses_a_read_scoped_principal_before_touching_
         "import_bundle",
         lambda: import_bundle(database, "{}", now=NOW, accept_schema_majors=[1], principal=WRITER),
     )
+    refused(
+        "discover_models",  # F8 (M5C-8): the one writer that used to skip the inner check
+        lambda: discover_models(
+            database, FakeProvider(FakeScript(models=(_model(),))), now=NOW, principal=WRITER
+        ),
+    )
     from tests.integration.test_evidence_routing_change import _facts
 
     from loadcoach.services.routing import RouteRequest, RoutingPolicy, route
@@ -181,6 +187,7 @@ def test_every_mutating_service_refuses_a_read_scoped_principal_before_touching_
         "set_queue_flag": "admin",
         "write_runtime_settings": "admin",
         "import_bundle": "admin",
+        "discover_models": "admin",
         "route": "write",
         "execute": "write",
     }

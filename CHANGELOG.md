@@ -48,6 +48,9 @@ packaging and release standards §3.
   synchronous executor marks and releases the half-open probe exactly as the queue worker does.
   A decision made where no breaker registry exists — the CLI's one-shot process — now carries a
   `breaker_state_unavailable` flag instead of silently assuming no breakers are open.
+- `discover_models` was the one mutating service without the inner scope check: it now takes a
+  `principal` and requires `admin` in the service layer as well as at `POST /models/discover`,
+  closing P9's named failure mode for the last writer.
 - `/jobs/{id}` rendered its explanation links as escaped text (`&lt;a href=…&gt;`) — the only
   navigation from a job to its full explanation when the narrative is absent, and the unbroken
   blob that made the page scroll at 375 px. The links are now a plain paragraph of real anchors

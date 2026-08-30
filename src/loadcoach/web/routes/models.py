@@ -77,7 +77,9 @@ def discover(request: Request, principal: CurrentPrincipal) -> dict[str, Any]:
     """Run discovery now (api.md §2); ``admin``. Returns the added/updated/unavailable counts."""
     authorize(principal, "admin")
     app = request.app
-    outcome = discover_models(app.state.database, app.state.provider, now=datetime.now(UTC))
+    outcome = discover_models(
+        app.state.database, app.state.provider, now=datetime.now(UTC), principal=principal
+    )
     return {
         "added": outcome.added,
         "updated": outcome.updated,

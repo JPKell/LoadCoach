@@ -17,6 +17,7 @@ from baseaicore import is_supported
 from modelrack import ProviderError
 from weightsdb import upsert
 
+from loadcoach.domain.authorization import Principal, authorize
 from loadcoach.domain.registry import (
     declared_capabilities_for,
     descriptor_geometry,
@@ -160,7 +161,13 @@ def _sync_declared_capabilities(
         )
 
 
-def discover_models(database: Database, provider: Provider, *, now: datetime) -> DiscoveryOutcome:
+def discover_models(
+    database: Database,
+    provider: Provider,
+    *,
+    now: datetime,
+    principal: Principal | None = None,
+) -> DiscoveryOutcome:
     """Run one discovery pass: list every model the provider serves and persist it.
 
     A model previously discovered but absent from this pass is marked ``available=False`` with a
@@ -173,14 +180,20 @@ def discover_models(database: Database, provider: Provider, *, now: datetime) ->
         database: The application's database handle.
         provider: The provider to discover through.
         now: The instant to record every upsert against. Injected for deterministic tests.
+        principal: Who asks. ``admin`` is required (M5-17's rule — the scope is checked in the
+            service as well as at the route; F8/M5C-8 closed the one writer that skipped it);
+            ``None`` is an internal call with no request behind it (startup, a scheduled
+            refresh) and is allowed.
 
     Returns:
         The counts this run produced.
 
     Raises:
+        InsufficientScope: ``principal`` is present and below ``admin``; nothing was written.
         ProviderError: The provider could not be listed at all (unreachable, timed out, or
             answered with something ModelRack could not parse).
     """
+    authorize(principal, "admin")
     descriptors: Sequence[ModelDescriptor] = provider.list_models(refresh=True)
     seen_canonical_ids: set[str] = set()
 
