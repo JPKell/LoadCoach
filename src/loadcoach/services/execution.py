@@ -88,6 +88,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
     from sweatmeter import TelemetrySnapshot
 
+    from loadcoach.domain.circuit_breaker import CircuitBreakers
     from loadcoach.domain.routing.ranking import RankedCandidate
     from loadcoach.domain.routing.subject import ModelFacts, ProviderFacts
     from loadcoach.services.database import Database
@@ -704,8 +705,15 @@ def _execute_attempts(
     cancel: CancellationToken | None,
     on_chunk: Callable[[StreamChunk], None] | None,
     now: Callable[[], datetime],
+    breakers: CircuitBreakers | None = None,
 ) -> tuple[list[AttemptRecord], RankedCandidate | None, _Collected | None, ValidationOutcome]:
-    """The synchronous endpoints' loop: try each ranked candidate, retrying correctively."""
+    """The synchronous endpoints' loop: try each ranked candidate, retrying correctively.
+
+    With a ``breakers`` registry, the loop marks and releases a half-open model's probe exactly
+    as the worker's does (F3/M5C-3): ``allow_probe`` is asked once per candidate before its
+    first attempt, a refusal while another probe is out skips the candidate, and a probe whose
+    attempt is cancelled before the provider reports is handed back.
+    """
     ranking = routing.explanation.ranking
     candidates = [ranking.primary, *ranking.fallbacks]
     max_attempts = int(cast("int", execution_policy.get("max_attempts", 1)))
@@ -718,6 +726,15 @@ def _execute_attempts(
     for candidate in candidates:
         if candidate is None:
             continue
+        canonical_id = candidate.subject.facts.canonical_id
+        holds_probe = False
+        if breakers is not None:
+            holds_probe = breakers.allow_probe(canonical_id, now=now())
+            if not holds_probe and breakers.probe_busy(canonical_id):
+                # Queue §7 admits a single probe, and routing's exclusion check can lose the
+                # race to a worker marking it in the gap (the worker-side half is F2/M5C-2):
+                # a synchronous request must not become a second, unmarked probe.
+                continue
         turns = transcript
         correction: Any = None
 
@@ -750,6 +767,10 @@ def _execute_attempts(
             )
             if outcome.failure is not None:
                 if outcome.cancelled:
+                    if holds_probe and breakers is not None:
+                        # A cancelled probe says nothing about the model: hand it back so the
+                        # next job may probe, rather than excluding the model until never.
+                        breakers.release_probe(canonical_id)
                     return records, candidate, collected, validation
                 break  # this candidate is not working; fall back
             assert outcome.validation is not None  # noqa: S101 — set whenever the provider answered
@@ -841,6 +862,14 @@ class ExecutionContext:
             ``result`` or ``error`` — are persisted as job events and published after commit,
             which is what lets a reconnecting client replay them from the table (LCX19). Without
             one, the events are written in P4's shape at the end and nothing is published.
+        breakers: The serving process's circuit-breaker registry, so the synchronous path routes
+            around open breakers and marks a half-open model's probe exactly as the worker does
+            (F3/M5C-3). ``None`` — a one-shot process such as the CLI — raises the
+            ``breaker_state_unavailable`` flag on the decision instead of silently passing an
+            empty exclusion set.
+        resident_models: Canonical IDs currently loaded, for the residency tie-break, or
+            ``None`` when no residency tracker exists.
+        resident_devices: Canonical ID -> devices the model is resident on, or ``None``.
     """
 
     provider: Provider
@@ -851,6 +880,9 @@ class ExecutionContext:
     timeout_seconds: float | None = None
     now: Callable[[], datetime] = field(default=lambda: datetime.now(tz=UTC))
     sink: JobEventSink | None = None
+    breakers: CircuitBreakers | None = None
+    resident_models: frozenset[str] | None = None
+    resident_devices: Mapping[str, frozenset[int]] | None = None
 
 
 def existing_job_for_key(
@@ -1342,6 +1374,14 @@ def execute(
             provider=context.provider_facts,
             policy=context.policy,
             snapshot=context.snapshot,
+            resident_models=context.resident_models or frozenset(),
+            open_circuit_breakers=(
+                None if context.breakers is None else context.breakers.excluded()
+            ),
+            circuit_breaker_details=(
+                None if context.breakers is None else context.breakers.details()
+            ),
+            resident_devices=context.resident_devices,
             now=now,
         )
     except SuiteError as exc:
@@ -1377,6 +1417,7 @@ def execute(
         cancel=cancel,
         on_chunk=on_chunk,
         now=context.now,
+        breakers=context.breakers,
     )
 
     total_ms = int((time.perf_counter() - started) * 1000)
@@ -1384,7 +1425,10 @@ def execute(
 
     if selected is None or collected is None or collected.result is None:
         failure = AllCandidatesFailed(
-            "Every candidate was tried and every attempt failed.",
+            "Every ranked candidate was skipped: a circuit-breaker probe is already in flight "
+            "on each."
+            if not records
+            else "Every candidate was tried and every attempt failed.",
             details={
                 "job_id": job_id,
                 "decision_id": routing.explanation.decision_id,

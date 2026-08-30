@@ -443,7 +443,7 @@ def route(
     policy: RoutingPolicy,
     snapshot: TelemetrySnapshot | None = None,
     resident_models: frozenset[str] = frozenset(),
-    open_circuit_breakers: frozenset[str] = frozenset(),
+    open_circuit_breakers: frozenset[str] | None = None,
     resident_devices: Mapping[str, frozenset[int]] | None = None,
     circuit_breaker_details: Mapping[str, Mapping[str, object]] | None = None,
     now: datetime,
@@ -461,7 +461,11 @@ def route(
         snapshot: The telemetry the resource constraints read. ``None`` skips them, which is what
             a machine with no telemetry reader honestly supports — not a fabricated zero.
         resident_models: Canonical IDs currently loaded, for the residency tie-break.
-        open_circuit_breakers: Canonical IDs the breaker currently excludes.
+        open_circuit_breakers: Canonical IDs the breaker currently excludes. ``None`` — the
+            default — means *no breaker registry existed to consult* (a one-shot process such
+            as the CLI), which raises the ``breaker_state_unavailable`` flag on the explanation
+            rather than silently assuming an empty set (F3/M5C-3). A caller with a runtime
+            passes its real set, even when that set is empty.
         resident_devices: Canonical ID -> devices the model is resident on; a resident model
             fits on its device whatever the estimate says (queue §5, admission).
         circuit_breaker_details: The open breakers' records, for the rejection detail.
@@ -478,6 +482,8 @@ def route(
         NoEligibleModel: Every candidate was rejected. ``details`` names each one and why.
     """
     authorize(principal, "write")
+    breaker_state_unavailable = open_circuit_breakers is None
+    open_circuit_breakers = open_circuit_breakers or frozenset()
     started = datetime.now(tz=now.tzinfo)
     profile = load_task_profile(database, request.task)
     constraints = _merged_constraints(profile, request.constraints)
@@ -630,6 +636,7 @@ def route(
         overrides=_overrides_json(request.overrides),
         min_present_weight=policy.min_present_weight,
         evidence=overview,
+        breaker_state_unavailable=breaker_state_unavailable,
     )
 
     if persist:

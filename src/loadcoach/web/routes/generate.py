@@ -174,6 +174,11 @@ def _to_request(body: GenerateBody, *, source: str, stream: bool) -> GenerateReq
 
 def _context(request: Request) -> ExecutionContext:
     app = request.app
+    # The queue runtime's breaker registry and residency tracker, so a synchronous request obeys
+    # the same circuit breakers and probe discipline as a queued job (F3/M5C-3). The runtime is
+    # always present in a served application; ``None`` only outside the lifespan.
+    runtime = app.state.queue_runtime
+    residency = None if runtime is None else runtime.residency
     return ExecutionContext(
         provider=app.state.provider,
         provider_facts=provider_facts_for(app.state.provider),
@@ -182,6 +187,9 @@ def _context(request: Request) -> ExecutionContext:
         snapshot=current_snapshot(app),
         timeout_seconds=app.state.settings.execution.default_timeout_seconds,
         sink=app.state.event_sink,
+        breakers=None if runtime is None else runtime.breakers,
+        resident_models=None if residency is None else residency.resident_canonical_ids(),
+        resident_devices=None if residency is None else residency.resident_devices(),
     )
 
 

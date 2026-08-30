@@ -168,6 +168,25 @@ def test_route_explain_json_flag_produces_the_whole_explanation() -> None:
     assert payload["selected"]["served_context_source"] in {"configured", "reported", "assumed"}
 
 
+def test_route_explain_discloses_that_breaker_state_was_unavailable() -> None:
+    """F3 (M5C-3): a one-shot process has no breaker registry — the explanation says so.
+
+    The CLI cannot see the serving process's circuit breakers, and silently passing an empty
+    exclusion set would present "no breakers open" as a fact nobody checked. The flag is the
+    disclosure, in the JSON payload and on the human flags line alike.
+    """
+    import json
+
+    _prepared_database()
+    result = runner.invoke(app, ["route", "explain", "--task", "general.chat", "--json"])
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert "breaker_state_unavailable" in payload["flags"]
+    human = runner.invoke(app, ["route", "explain", "--task", "general.chat"])
+    assert human.exit_code == 0, human.stdout
+    assert "breaker_state_unavailable" in human.stdout
+
+
 def test_route_explain_exits_five_for_an_unknown_task() -> None:
     _prepared_database()
     result = runner.invoke(app, ["route", "explain", "--task", "no.such.task"])
@@ -323,6 +342,8 @@ def test_generate_routes_executes_and_prints_the_output(
     document = json.loads(as_json.stdout)
     assert document["status"] == "completed" and document["routing"]["decision_id"]
     assert document["output"]["text"]  # the fake's default text differs per call
+    # F3 (M5C-3): the CLI's one-shot process has no breaker registry, and the decision says so.
+    assert "breaker_state_unavailable" in document["routing"]["flags"]
     prompt_file = tmp_path / "p.txt"
     prompt_file.write_text("from a file")
     streamed = runner.invoke(

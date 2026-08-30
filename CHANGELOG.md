@@ -22,6 +22,14 @@ packaging and release standards §3.
   to the next candidate; with none left the job is requeued and deferred (`PROBE_IN_FLIGHT`,
   `waiting_resources`) until the probe reports, then woken by the breaker's verdict. An open
   breaker's rejection still fails admission as before.
+- The synchronous path — `POST /generate`, `POST /route`, `loadcoach generate`,
+  `loadcoach route explain` — ignored the circuit breaker and residency: it could select a
+  model the queue had opened the breaker on, and a synchronous request on a half-open model was
+  a second, unmarked probe. The web entry points now pass the runtime's breaker state and
+  residency into routing (rejections show `recently_failing` with the breaker record), and the
+  synchronous executor marks and releases the half-open probe exactly as the queue worker does.
+  A decision made where no breaker registry exists — the CLI's one-shot process — now carries a
+  `breaker_state_unavailable` flag instead of silently assuming no breakers are open.
 - Candidate capability tables on `/routing/{decision_id}` now carry a row-count, as UI
   standards §5 requires of every table; before, a decision with two or more candidates rendered
   them bare. The accessibility checklist's server fixture also pins the deterministic telemetry

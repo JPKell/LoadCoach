@@ -283,5 +283,9 @@ a source past it is refused with `QUEUE_FULL` naming the source, its active coun
 7. Read `routing.flags`: `low_evidence` means the decision was made with little measured evidence, and
    is worth surfacing to a user who is wondering why a model was chosen. `assumed_context` means the
    served context could not be established and was taken from the model's advertised maximum.
+   `breaker_state_unavailable` means the decision was made without the serving process's
+   circuit-breaker state — a one-shot process such as the CLI has none — so it may name a model
+   the running queue is currently excluding as `recently_failing`; decisions from `POST /route`,
+   `POST /generate` and queued jobs never carry it.
 8. Send `system` and `prompt` (or `messages`) as the text you want the model to see. LoadCoach does
    not modify it, so your own prompt-version provenance stays true.

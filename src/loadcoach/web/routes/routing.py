@@ -117,12 +117,21 @@ async def post_route(
     """
     authorize(principal, "write")
     app = request.app
+    # The runtime's breaker state and residency, so the explanation this endpoint returns is
+    # the decision a job would actually get — including `recently_failing` rejections — rather
+    # than one that ignores the breaker (F3/M5C-3).
+    runtime = app.state.queue_runtime
+    residency = None if runtime is None else runtime.residency
     result = route(
         app.state.database,
         _to_request(body),
         provider=provider_facts_for(app.state.provider),
         policy=routing_policy_for(app.state.settings, database=app.state.database),
         snapshot=current_snapshot(app),
+        resident_models=(frozenset() if residency is None else residency.resident_canonical_ids()),
+        open_circuit_breakers=None if runtime is None else runtime.breakers.excluded(),
+        circuit_breaker_details=None if runtime is None else runtime.breakers.details(),
+        resident_devices=None if residency is None else residency.resident_devices(),
         now=datetime.now(UTC),
         principal=principal,
     )

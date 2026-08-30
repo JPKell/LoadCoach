@@ -213,6 +213,7 @@ def build_explanation(
     overrides: dict[str, Any] | None,
     min_present_weight: float,
     evidence: EvidenceOverview | None = None,
+    breaker_state_unavailable: bool = False,
 ) -> Explanation:
     """Assemble routing §8's explanation from the pipeline's outputs.
 
@@ -224,6 +225,9 @@ def build_explanation(
       routing §5.1 promises: routing without measurement is reasonable, and clearly labelled.
     * ``assumed_context`` when the selected candidate's served context could only be assumed
       (ADR-0023 §4).
+    * ``breaker_state_unavailable`` when the caller had no circuit-breaker registry to consult —
+      a one-shot process such as the CLI (F3/M5C-3). The decision may therefore select a model
+      the serving process has excluded; an empty exclusion set is never silently assumed.
 
     Args:
         decision_id: The decision's ULID.
@@ -240,6 +244,8 @@ def build_explanation(
         overrides: The request's overrides, or ``None``.
         min_present_weight: The floor below which ``low_evidence`` is raised.
         evidence: What the evidence store holds, or ``None`` when the caller did not read it.
+        breaker_state_unavailable: ``True`` when no breaker registry existed to consult, which
+            raises the flag of the same name.
 
     Returns:
         The :class:`Explanation`.
@@ -253,6 +259,8 @@ def build_explanation(
             flags.append("assumed_context")
     if budget is not None and budget.reduced:
         flags.append("output_tokens_reduced")
+    if breaker_state_unavailable:
+        flags.append("breaker_state_unavailable")
 
     payload: dict[str, Any] = {
         "decision_id": decision_id,

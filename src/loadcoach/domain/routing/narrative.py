@@ -39,6 +39,11 @@ _FLAG_MEANINGS: dict[str, str] = {
         "The requested output length did not fit beside the estimated input, so the output "
         "budget was reduced to what the served context allows."
     ),
+    "breaker_state_unavailable": (
+        "This decision was made without the serving process's circuit-breaker state — a "
+        "one-shot process has none — so it may name a model the running queue is currently "
+        "excluding as recently failing."
+    ),
 }
 
 _REJECTION_MEANINGS: dict[str, str] = {
