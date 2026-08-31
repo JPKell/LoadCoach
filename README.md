@@ -3,7 +3,7 @@
 Turns FreeWeight's measurements (or declared capabilities) into routed, queued, validated inference
 execution with a fully explainable decision for every job.
 
-**Status:** `1.0.0` — the M5 release, **prepared and not yet published**. Every phase of the
+**Status:** `1.0.0` — the M5 release, **tagged and published on PyPI** (2026-08-31). Every phase of the
 [development plan](docs/apps/loadcoach/development-plan.md) is built: the registry and task
 profiles; evidence-weighted routing with a readable explanation for every decision; synchronous and
 streaming generation with validation and corrective retries; a durable priority queue with leases,
@@ -13,17 +13,16 @@ queue, models, reliability, system, settings); and the hardening a LAN bind need
 at the route and in the service, per-token rate limits, per-source queue caps, CSRF, Host
 validation, body limits, content retention.
 
-**Installable once tagged.** Every runtime dependency is on PyPI (`weightsdb 0.2.0` and
-`mirrorwall 0.2.0` landed on 2026-08-30); `pip install .` in a clean virtualenv resolves entirely
-from the index, `requirements/ci.lock` is hash-pinned against it, and every CI job installs from
-that lock. `pip install loadcoach` itself waits on the `v1.0.0` tag — a human decision.
+Every runtime dependency is on PyPI (`weightsdb 0.2.0` and `mirrorwall 0.2.0` landed on
+2026-08-30); `pip install loadcoach` resolves entirely from the index, `requirements/ci.lock` is
+hash-pinned against it, and every CI job installs from that lock.
 
 Part of the **Local AI Suite**.
 
 ## Install
 
 ```bash
-pip install loadcoach          # once v1.0.0 is tagged and released
+pip install loadcoach
 loadcoach serve                # web UI + API on http://127.0.0.1:8766, zero configuration
 loadcoach doctor               # every documented failure mode, ✓ / ! / ✗, with what to do
 ```
