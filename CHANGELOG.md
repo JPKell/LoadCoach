@@ -7,6 +7,16 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Changed
+- **The M5C-6/M5C-11 stopgaps are gone, closed by `mirrorwall 0.2.1`.** The job page's
+  explanation links live in the definition list itself — `kv_list`'s new `href` item shape
+  renders the value as a real anchor with label and value still escaped text — so the
+  "Explanation" paragraph folded back into the list as two linked rows, and both page-level
+  `overflow-wrap` stopgaps (`/system`, `/jobs/{id}`) are deleted: `.kv-list dd` wrapping now
+  comes from MirrorWall's own `components.css`. The e2e tests assert the stopgaps *absent* and
+  the decision link rendered inside a `<dd>`; `requirements/ci.lock` moves to `mirrorwall 0.2.1`
+  and `weightsdb 0.2.1` (both resolve under the unchanged `>=0.2,<0.3` pins).
+
 ## [1.0.0] — 2026-08-30
 
 LoadCoach 1.0: the M5 exit — an explainable, durable, secure routing service. Phases 7 through 9

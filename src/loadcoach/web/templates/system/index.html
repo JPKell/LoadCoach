@@ -1,12 +1,6 @@
 {% extends "mirrorwall/base.html" %}
 {% from "mirrorwall/components.html" import badge, empty_state, kv_list, table %}
 {% block title %}System — LoadCoach{% endblock %}
-{% block head %}
-{# Stopgap until MirrorWall 0.2.1 (M5C-11): the 64-character machine fingerprint in a
-   .kv-list dd is unbreakable and scrolled the whole page at 375 px. Structural only,
-   no colour (UI standards §13). Remove when components.css carries it. #}
-<style>.kv-list dd { overflow-wrap: anywhere; }</style>
-{% endblock %}
 {% macro reading(value, unit=None) -%}
 {% if value is none or value == "unsupported" %}{{ none | measurement("not measurable in this environment") }}{% else %}{{ value | measurement(none, unit) }}{% endif %}
 {%- endmacro %}
