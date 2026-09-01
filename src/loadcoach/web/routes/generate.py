@@ -190,6 +190,14 @@ def _context(request: Request) -> ExecutionContext:
         breakers=None if runtime is None else runtime.breakers,
         resident_models=None if residency is None else residency.resident_canonical_ids(),
         resident_devices=None if residency is None else residency.resident_devices(),
+        # Residency was an *input* here and never an output: a synchronous request routed with
+        # the exception for an already-loaded model and then recorded no load of its own. So the
+        # next request saw an empty map, could not apply the exception, and was refused
+        # `insufficient_vram` by the memory this one is still holding — which on a single-GPU
+        # machine fails the second stage of every multi-stage workflow.
+        residency=residency,
+        in_use_model_ids=frozenset() if runtime is None else runtime.in_use_model_ids(),
+        vram_headroom_bytes=(0 if runtime is None else runtime.policy.vram_headroom_bytes),
     )
 
 

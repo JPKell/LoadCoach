@@ -7,6 +7,24 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Fixed
+- **A synchronous generation now records the model it made resident**, so consecutive requests on
+  one GPU stop refusing each other. Residency was an *input* to `/generate` and never an output:
+  the endpoint routed using the exception that lets an already-loaded model be chosen without
+  re-checking VRAM, loaded a model into the provider, and wrote no residency episode. The next
+  request therefore read an empty residency map, could not apply the exception, and was refused
+  `NO_ELIGIBLE_MODEL` / `insufficient_vram` by the memory the previous request was still holding —
+  including by the very model that had just answered and was still loaded.
+
+  On a single-GPU machine this failed the **second** stage of any caller whose stages use
+  different task profiles, whatever they asked for, and the queue did not rescue it because
+  routing refuses before a job reaches `waiting_resources`. Reported by IdeaPress, whose stages map
+  to `general.reasoning`, `content.review` and `content.article_draft` seconds apart. The
+  synchronous path now calls `ResidencyService.ensure_loaded` exactly as the queue worker does, so
+  it both records the load and evicts under `max_resident_models` to make room. Recording failures
+  are swallowed: residency is an optimisation and an eviction policy, never a precondition for a
+  generation the provider can serve.
+
 ### Changed
 - **The M5C-6/M5C-11 stopgaps are gone, closed by `mirrorwall 0.2.1`.** The job page's
   explanation links live in the definition list itself — `kv_list`'s new `href` item shape

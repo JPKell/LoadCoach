@@ -63,6 +63,7 @@ from modelrack import (
 from sqlalchemy import update
 
 from loadcoach.domain.authorization import Principal, authorize
+from loadcoach.domain.routing.constraints import free_vram_by_gpu
 from loadcoach.domain.routing.context_budget import estimate_input_tokens
 from loadcoach.domain.routing.subject import ProviderFacts, RuntimeOverrides
 from loadcoach.domain.validation import (
@@ -693,6 +694,57 @@ def corrective_turns(
     return turns, correction
 
 
+def _make_resident(
+    candidate: RankedCandidate,
+    *,
+    residency: Any | None,
+    now: Callable[[], datetime],
+    in_use_model_ids: frozenset[str] = frozenset(),
+    vram_headroom_bytes: int = 0,
+    free_bytes_by_gpu: Mapping[int, int] | None = None,
+) -> None:
+    """Make the chosen candidate resident before running it, as the queue worker does.
+
+    Args:
+        candidate: The candidate about to be attempted.
+        residency: The residency tracker, or ``None`` outside a served application.
+        now: The clock.
+        in_use_model_ids: Models in-flight jobs hold; never evicted.
+        vram_headroom_bytes: The per-device reserve.
+        free_bytes_by_gpu: Free memory per device, as telemetry reports it.
+
+    The synchronous endpoints previously routed with residency as an *input* — the exception that
+    lets an already-loaded model be chosen without re-checking VRAM — and never wrote one. So a
+    `/generate` loaded a model into the provider, recorded nothing, and the next request saw an
+    empty residency map, could not apply the exception, and was refused ``insufficient_vram`` by
+    the memory the previous request was still holding. On a single-GPU machine that makes the
+    second stage of any multi-stage workflow fail, whichever task profile it asks for, and the
+    queue does not rescue it because routing refuses before a job reaches ``waiting_resources``.
+
+    Failures are swallowed deliberately. Residency is an optimisation and an eviction policy, not
+    a precondition: a tracker that cannot record must not stop a generation the provider is
+    perfectly able to serve.
+    """
+    if residency is None or candidate.target_gpu_index is None:
+        return
+    facts = candidate.subject.facts
+    try:
+        residency.ensure_loaded(
+            model_id=facts.model_id,
+            canonical_id=facts.canonical_id,
+            identity=identity_of(facts),
+            profile=candidate.subject.runtime_profile,
+            gpu_index=candidate.target_gpu_index,
+            in_use_model_ids=in_use_model_ids,
+            required_bytes=candidate.estimated_vram_bytes,
+            free_bytes=(free_bytes_by_gpu or {}).get(candidate.target_gpu_index),
+            headroom_bytes=vram_headroom_bytes,
+            now=now(),
+        )
+    except Exception:  # noqa: BLE001 — see the docstring: never a precondition
+        logger.warning("residency.sync_record_failed", extra={"canonical_id": facts.canonical_id})
+
+
 def _execute_attempts(
     provider: Provider,
     request: GenerateRequest,
@@ -706,6 +758,8 @@ def _execute_attempts(
     on_chunk: Callable[[StreamChunk], None] | None,
     now: Callable[[], datetime],
     breakers: CircuitBreakers | None = None,
+    residency: Any | None = None,
+    residency_inputs: Mapping[str, Any] | None = None,
 ) -> tuple[list[AttemptRecord], RankedCandidate | None, _Collected | None, ValidationOutcome]:
     """The synchronous endpoints' loop: try each ranked candidate, retrying correctively.
 
@@ -727,6 +781,7 @@ def _execute_attempts(
         if candidate is None:
             continue
         canonical_id = candidate.subject.facts.canonical_id
+        _make_resident(candidate, residency=residency, now=now, **(residency_inputs or {}))
         holds_probe = False
         if breakers is not None:
             holds_probe = breakers.allow_probe(canonical_id, now=now())
@@ -870,6 +925,13 @@ class ExecutionContext:
         resident_models: Canonical IDs currently loaded, for the residency tie-break, or
             ``None`` when no residency tracker exists.
         resident_devices: Canonical ID -> devices the model is resident on, or ``None``.
+        residency: The residency tracker. Without it a synchronous execution loads a model into
+            the provider and records nothing, so the **next** request sees no resident model,
+            cannot apply the residency exception, and is refused ``insufficient_vram`` by the
+            memory the previous request is still holding. On a single-GPU machine that makes the
+            second stage of any workflow fail.
+        in_use_model_ids: Models in-flight jobs hold, which are never evicted.
+        vram_headroom_bytes: The per-device reserve.
     """
 
     provider: Provider
@@ -883,6 +945,17 @@ class ExecutionContext:
     breakers: CircuitBreakers | None = None
     resident_models: frozenset[str] | None = None
     resident_devices: Mapping[str, frozenset[int]] | None = None
+    residency: Any | None = None
+    """The residency tracker, so a synchronous execution makes its chosen model resident.
+
+    Typed loosely on purpose: :mod:`loadcoach.services.residency` imports from here, so naming
+    ``ResidencyService`` would close an import cycle. The only members used are ``ensure_loaded``
+    and ``manageable``.
+    """
+    in_use_model_ids: frozenset[str] = frozenset()
+    """Models in-flight jobs are executing on, which residency must never evict."""
+    vram_headroom_bytes: int = 0
+    """The per-device reserve, for the eviction arithmetic."""
 
 
 def existing_job_for_key(
@@ -1418,6 +1491,14 @@ def execute(
         on_chunk=on_chunk,
         now=context.now,
         breakers=context.breakers,
+        residency=context.residency,
+        residency_inputs={
+            "in_use_model_ids": context.in_use_model_ids,
+            "vram_headroom_bytes": context.vram_headroom_bytes,
+            "free_bytes_by_gpu": (
+                free_vram_by_gpu(context.snapshot) if context.snapshot is not None else {}
+            ),
+        },
     )
 
     total_ms = int((time.perf_counter() - started) * 1000)
