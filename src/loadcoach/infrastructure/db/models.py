@@ -517,6 +517,10 @@ class Job(Base):
     ttft_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The two cache classes of baseaicore.TokenUsage (ADR-0070 decision 7). NULL means the adapter
+    # reported nothing; 0 means it reported zero, which is a real count and not the same answer.
+    cache_write_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     thinking_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     validation_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     degradations_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
@@ -563,6 +567,8 @@ class JobAttempt(Base):
     ttft_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_write_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     finish_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String, nullable=True)
     error_text: Mapped[str | None] = mapped_column(String, nullable=True)

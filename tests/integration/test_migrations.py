@@ -558,7 +558,13 @@ def test_migration_0006_adds_feedback_and_reliability_stats_and_nothing_else() -
 
 
 def test_migration_0006_touches_no_column_an_earlier_revision_created() -> None:
-    """Drift check: the schema at ``0005`` and the schema at ``0006`` differ by two tables only."""
+    """Drift check: the schema at ``0005`` and the schema at ``0006`` differ by two tables only.
+
+    Pinned to ``0006`` rather than to head, which is what ``0005``'s equivalent above already
+    does: reading "after" at head made this assertion silently about *every* later revision, and
+    ``0007`` — which does add columns to a table ``0003`` created, deliberately and additively —
+    would have failed it while saying nothing about ``0006``.
+    """
     with temporary_sqlite() as engine:
         runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
         runner.upgrade(revision="0005", backup=False)
@@ -569,7 +575,7 @@ def test_migration_0006_touches_no_column_an_earlier_revision_created() -> None:
                     text("SELECT name, sql FROM sqlite_master WHERE type = 'table'")
                 )
             }
-        runner.upgrade(backup=False)
+        runner.upgrade(revision="0006", backup=False)
         with engine.connect() as connection:
             after = {
                 row[0]: row[1]
@@ -580,3 +586,112 @@ def test_migration_0006_touches_no_column_an_earlier_revision_created() -> None:
     assert set(after) - set(before) == {"feedback", "reliability_stats"}
     for name, sql in before.items():
         assert after[name] == sql, name
+
+
+def test_migration_0007_adds_the_four_cache_columns_and_nothing_else() -> None:
+    """ADR-0070 decision 7's migration: two nullable columns on each of two tables.
+
+    Unlike every revision since ``0003``, this one *does* touch tables an earlier revision
+    created — additively, which is the whole point, so the drift check here is the inverse of the
+    one ``0005`` and ``0006`` run: the schema at ``0006`` and the schema at ``0007`` differ by
+    exactly these four columns and no table.
+    """
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(revision="0006", backup=False)
+        with engine.connect() as connection:
+            before = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT name, sql FROM sqlite_master WHERE type = 'table'")
+                )
+            }
+        runner.upgrade(revision="0007", backup=False)
+        assert runner.check_parity(Base.metadata).matches
+
+        with engine.connect() as connection:
+            after = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT name, sql FROM sqlite_master WHERE type = 'table'")
+                )
+            }
+            columns = {
+                table: {
+                    (row[1], row[2], row[3], row[4])
+                    for row in connection.execute(text(f"PRAGMA table_info({table})"))
+                }
+                for table in ("jobs", "job_attempts")
+            }
+
+    assert set(after) == set(before)
+    assert {name for name, sql in before.items() if after[name] != sql} == {"jobs", "job_attempts"}
+    for table, info in columns.items():
+        for column in ("cache_write_tokens", "cache_read_tokens"):
+            declared = {(name, type_, notnull, default) for name, type_, notnull, default in info}
+            match = [row for row in declared if row[0] == column]
+            assert match, f"{table}.{column} is missing"
+            _, type_, notnull, default = match[0]
+            assert type_ == "INTEGER", (table, column, type_)
+            # Nullable, and no server default: an existing row genuinely has no value for these,
+            # and a `0` default would be the fabricated zero ADR-0016 forbids, applied to every
+            # historical row at once.
+            assert notnull == 0, (table, column)
+            assert default is None, (table, column, default)
+
+
+def test_migration_0007_downgrades_on_sqlite_and_re_upgrades() -> None:
+    """The dialect a downgrade is most likely to be run on is the one that cannot DROP COLUMN.
+
+    SQLite has no plain ``ALTER TABLE ... DROP COLUMN`` that Alembic will emit here, so the
+    revision uses ``batch_alter_table``, which recreates the table by copy-and-move. A downgrade
+    that only worked on PostgreSQL would fail in the default dialect (ADR-0006).
+    """
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(backup=False)
+
+        runner.downgrade(revision="0006")
+
+        assert runner.current() == "0006"
+        with engine.connect() as connection:
+            for table in ("jobs", "job_attempts"):
+                names = {row[1] for row in connection.execute(text(f"PRAGMA table_info({table})"))}
+                assert "cache_write_tokens" not in names, table
+                assert "cache_read_tokens" not in names, table
+                # The copy-and-move rebuilt the table; everything else must have survived it.
+                assert {"id", "attempt", "input_tokens", "output_tokens"} <= names, table
+
+        runner.upgrade(backup=False)
+        assert runner.is_at_head()
+        assert runner.check_parity(Base.metadata).matches
+
+
+def test_migration_0007_upgrades_and_downgrades_on_postgresql() -> None:
+    """The same round trip on the other dialect, where the columns are a plain ``ALTER``.
+
+    Skips locally — there is no PostgreSQL on this machine — and runs in CI's ``db-matrix`` job.
+    """
+    with temporary_postgres() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(backup=False)
+        assert runner.check_parity(Base.metadata).matches
+
+        runner.downgrade(revision="0006")
+        assert runner.current() == "0006"
+        with engine.connect() as connection:
+            names = {
+                row[0]
+                for row in connection.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'jobs'"
+                    )
+                )
+            }
+        assert "cache_write_tokens" not in names
+        assert "cache_read_tokens" not in names
+
+        runner.upgrade(backup=False)
+        assert runner.is_at_head()
+        assert runner.check_parity(Base.metadata).matches
