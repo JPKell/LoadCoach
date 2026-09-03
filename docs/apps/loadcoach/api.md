@@ -89,7 +89,8 @@ Response `200`:
             "target_gpu_index": 0},
   "routing": {"decision_id": "01J9K…", "rank": 1, "final_score": 0.71,
               "flags": ["low_evidence"], "explanation_url": "/api/v1/jobs/01J9K…/explanation"},
-  "usage": {"input_tokens": 812, "output_tokens": 1104, "thinking_tokens": "unsupported"},
+  "usage": {"input_tokens": 812, "output_tokens": 1104, "cache_write_tokens": 0,
+            "cache_read_tokens": 128, "thinking_tokens": "unsupported"},
   "timing": {"total_ms": 18422, "provider_ms": 18310, "loadcoach_overhead_ms": 112,
              "ttft_ms": 640, "queue_wait_ms": 0},
   "validation": {"performed": false, "passed": null, "attempts": 1},
@@ -102,6 +103,14 @@ Notes:
 * `reasoning` is populated **only** when the provider explicitly returns reasoning content or a
   summary; otherwise `available: false`. LoadCoach never synthesizes or infers hidden chain-of-thought.
 * `provider_ms` and `loadcoach_overhead_ms` are always reported separately.
+* **`usage` carries four disjoint token classes.** `cache_read_tokens` counts tokens the provider
+  billed at its cache-hit rate and `cache_write_tokens` those it billed at its cache-creation
+  rate; both are excluded from `input_tokens`, so the four never double-count. A class is `0` when
+  the provider's protocol could not have billed it — a real count of nothing — and the string
+  `"unsupported"` when it was never reported, which is not a number and must not be totalled as
+  one ([ADR-0016](../../adr/0016-unavailable-is-not-zero.md) rule 4,
+  [ADR-0070](../../adr/0070-an-absent-token-class-is-zero-only-where-the-protocol-cannot-bill-it.md)).
+  The same `usage` object appears in the job document `GET /jobs/{id}` returns (§5).
 * `idempotency_key` makes a retried POST safe: the same key returns the original job rather than
   creating a second one. Keys are scoped **per caller**, not globally, so two clients cannot collide;
   the caller is the authenticated token's name, or `X-Client-Name` on an unauthenticated loopback

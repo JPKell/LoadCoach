@@ -147,6 +147,7 @@ lease_owner TEXT NULL · lease_expires_at NULL · cancel_requested BOOLEAN
 created_at · scheduled_for · queued_at · started_at · completed_at · max_wait_seconds
 queue_wait_ms · provider_ms · loadcoach_overhead_ms · total_ms · ttft_ms
 input_tokens · output_tokens · thinking_tokens NULL
+cache_write_tokens NULL · cache_read_tokens NULL   -- ADR-0070: NULL is unreported, 0 is a count
 validation_passed BOOLEAN NULL · degradations_json
 error_code · error_text
 ```
@@ -163,6 +164,7 @@ model_id FK NULL · runtime_profile_hash · rank INT        -- 1 = primary, 2+ =
 started_at · completed_at · outcome TEXT                  -- completed|provider_error|timeout|
                                                           -- validation_failed|cancelled|context_exceeded
 provider_ms · ttft_ms · input_tokens · output_tokens · finish_reason
+cache_write_tokens NULL · cache_read_tokens NULL
 error_code · error_text · partial_response_hash
 UNIQUE (job_id, attempt)
 ```
