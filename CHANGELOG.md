@@ -7,6 +7,37 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Added
+- **All four token classes on the wire and on the rows** (ADR-0070 decision 7). `jobs` and
+  `job_attempts` gain nullable `cache_write_tokens` and `cache_read_tokens` (migration `0007`),
+  the `usage` object in the `POST /generate` response and in the job document
+  `GET /jobs/{id}` returns gains the same two fields, and both execution paths — the synchronous
+  one and the queue worker — capture them through the existing `_count` helper.
+
+  **Additive within `/api/v1`**: no field removed, no existing field's type changed, no new API
+  version. A client written against 1.0.0 reads the new response unchanged.
+
+  The three answers a cache class can give are deliberately distinct and none renders as another:
+  a number is a count the adapter reported; `0` is a real count, meaning the provider's protocol
+  could not have billed that class; the string `"unsupported"` (ADR-0016 rule 4) means the class
+  was never reported and is not a number. In storage the last of these is `NULL`. LoadCoach does
+  not decide which of the three a response gets — ADR-0070 puts that decision in the adapter, and
+  re-deciding it here would put one rule in two places.
+
+  Without this, PromptCadence would rebuild a `TokenUsage` whose cache classes are unsupported and
+  a strict money ceiling would trip on every remote turn (ADR-0069 §"Not decided here"). Until
+  `modelrack 0.7.0` is released and installed here, every real adapter still reports the cache
+  classes `UNSUPPORTED` and these fields render `"unsupported"` — correct, honest, and the interim
+  ADR-0070 decision 8 sequences for.
+
+  Migration `0007` adds four nullable columns with **no backfill and no server default**: an
+  existing row genuinely has no value for these, `NULL` is how this schema already says "not
+  reported", and a `0` default would be a fabricated zero applied retroactively to every
+  historical row. The downgrade uses `batch_alter_table`, so it works on SQLite — which cannot
+  drop a column with a plain `ALTER` and is the dialect a downgrade is most likely to be run on.
+
+  The job event stream carries `summary.as_json()`, so the new fields reach job events for free.
+
 ### Fixed
 - **A synchronous generation now records the model it made resident**, so consecutive requests on
   one GPU stop refusing each other. Residency was an *input* to `/generate` and never an output:
