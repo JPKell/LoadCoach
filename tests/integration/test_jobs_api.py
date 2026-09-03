@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from baseaicore import UNSUPPORTED
 from fastapi.testclient import TestClient
 from modelrack.testing import FakeGeneration, FakeProvider, FakeScript
 from tests.integration.test_generate import NOW, _model
@@ -31,9 +32,17 @@ TERMINAL = {"completed", "failed", "cancelled"}
 
 @contextmanager
 def _client(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, env: dict[str, str] | None = None
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    env: dict[str, str] | None = None,
+    generation: FakeGeneration | None = None,
 ) -> Iterator[TestClient]:
-    """An entered TestClient whose workers run against a scripted fake provider."""
+    """An entered TestClient whose workers run against a scripted fake provider.
+
+    ``generation`` overrides the single scripted response, for a test that needs the provider to
+    report something particular — token counts, above all.
+    """
     url = f"sqlite:///{tmp_path / 'jobs.sqlite3'}"
     monkeypatch.setenv("LOADCOACH_STORAGE__DATABASE_URL", url)
     monkeypatch.setenv("LOADCOACH_PROVIDER__KIND", "fake")
@@ -42,7 +51,7 @@ def _client(
     settings = load_settings().settings
     script = FakeScript(
         models=(_model(),),
-        generations=(FakeGeneration(text="the answer"),),
+        generations=(generation or FakeGeneration(text="the answer"),),
         repeat_final_generation=True,
     )
     database = Database.from_url(url)
@@ -273,3 +282,59 @@ def test_post_generate_with_a_repeated_key_returns_the_original_job_without_re_e
         assert listed[0]["state_reason"] == "synchronous"
         assert len(listed[0]["attempts"]) == 1
         assert json.dumps(listed[0])  # the document is JSON-serializable throughout
+
+
+# --- the four token classes on the asynchronous path (ADR-0070 decision 7) --------------------
+#
+# The queue worker builds the same ExecutionOutcome the synchronous path does, and `job_document`
+# renders the same `usage` object `ExecutionOutcome.as_json` renders. These two tests prove that
+# for the *async* half, over HTTP, because a field added to one path and forgotten on the other
+# is the failure mode that survives a green unit suite. As in test_generate.py, every class is
+# scripted explicitly: CI's lock pins `modelrack==0.5.0`, whose unscripted cache defaults differ
+# from this working tree's.
+
+
+@pytest.mark.parametrize(
+    ("counts", "expected"),
+    [
+        pytest.param(
+            {"cache_read_tokens": 64, "cache_write_tokens": 8},
+            {"cache_read_tokens": 64, "cache_write_tokens": 8},
+            id="reported",
+        ),
+        pytest.param(
+            {"cache_read_tokens": 0, "cache_write_tokens": 0},
+            {"cache_read_tokens": 0, "cache_write_tokens": 0},
+            id="reported-zero",
+        ),
+        pytest.param(
+            {"cache_read_tokens": UNSUPPORTED, "cache_write_tokens": UNSUPPORTED},
+            {"cache_read_tokens": "unsupported", "cache_write_tokens": "unsupported"},
+            id="unreported",
+        ),
+    ],
+)
+def test_the_job_document_carries_all_four_token_classes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    counts: dict[str, Any],
+    expected: dict[str, Any],
+) -> None:
+    """`GET /jobs/{id}`'s usage object distinguishes a counted zero from an unreported class."""
+    generation = FakeGeneration(text="the answer", input_tokens=100, output_tokens=50, **counts)
+    with _client(tmp_path, monkeypatch, generation=generation) as client:
+        response = client.post(
+            "/api/v1/jobs",
+            json={"task": "general.chat", "prompt": "hello", "class": "background"},
+            headers={"X-Client-Name": "ideapress"},
+        )
+        document = _wait(client, response.json()["job_id"])
+
+    assert document["state"] == "completed"
+    usage = document["usage"]
+    assert usage["cache_read_tokens"] == expected["cache_read_tokens"]
+    assert usage["cache_write_tokens"] == expected["cache_write_tokens"]
+    # Additive: the fields a 1.0.0 client reads are untouched, with their old types.
+    assert usage["input_tokens"] == 100
+    assert usage["output_tokens"] == 50
+    assert usage["thinking_tokens"] == "unsupported"

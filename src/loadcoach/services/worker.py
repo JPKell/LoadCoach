@@ -1340,6 +1340,8 @@ class Worker:
             ttft_ms=records[-1].ttft_ms if records else None,
             input_tokens=_count(result.usage.tokens.input_tokens),
             output_tokens=_count(result.usage.tokens.output_tokens),
+            cache_write_tokens=_count(result.usage.tokens.cache_write_tokens),
+            cache_read_tokens=_count(result.usage.tokens.cache_read_tokens),
             thinking_tokens=_count(result.usage.thinking_tokens),
             queue_wait_ms=self._queue_wait_ms(job),
         )
@@ -1370,6 +1372,8 @@ class Worker:
                     "ttft_ms": summary.ttft_ms,
                     "input_tokens": summary.input_tokens,
                     "output_tokens": summary.output_tokens,
+                    "cache_write_tokens": summary.cache_write_tokens,
+                    "cache_read_tokens": summary.cache_read_tokens,
                     "thinking_tokens": summary.thinking_tokens,
                     "validation_passed": validation.passed,
                     "degradations_json": list(degradations),

@@ -434,6 +434,8 @@ class JobRecord:
     ttft_ms: int | None
     input_tokens: int | None
     output_tokens: int | None
+    cache_write_tokens: int | None
+    cache_read_tokens: int | None
     thinking_tokens: int | None
     validation_passed: bool | None
     degradations: tuple[str, ...]
@@ -1227,6 +1229,8 @@ def _record(job: Job) -> JobRecord:
         ttft_ms=job.ttft_ms,
         input_tokens=job.input_tokens,
         output_tokens=job.output_tokens,
+        cache_write_tokens=job.cache_write_tokens,
+        cache_read_tokens=job.cache_read_tokens,
         thinking_tokens=job.thinking_tokens,
         validation_passed=job.validation_passed,
         degradations=tuple(cast("list[str]", job.degradations_json or [])),
@@ -1336,6 +1340,15 @@ def job_document(database: Database, job_id: str) -> dict[str, Any]:
         "usage": {
             "input_tokens": record.input_tokens,
             "output_tokens": record.output_tokens,
+            # The same four-class shape ExecutionOutcome.as_json renders (api.md §4 and §5 carry
+            # one usage object, not two): `0` is a count the adapter reported, "unsupported" is
+            # a class it never reported (ADR-0016 rule 4, ADR-0070 decision 7).
+            "cache_write_tokens": record.cache_write_tokens
+            if record.cache_write_tokens is not None
+            else "unsupported",
+            "cache_read_tokens": record.cache_read_tokens
+            if record.cache_read_tokens is not None
+            else "unsupported",
             "thinking_tokens": record.thinking_tokens
             if record.thinking_tokens is not None
             else "unsupported",

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from baseaicore import ModelDescriptor, ModelIdentity
+from baseaicore import UNSUPPORTED, ModelDescriptor, ModelIdentity
 from modelrack import (
     GenerationRequest,
     GenerationResult,
@@ -403,3 +403,155 @@ def test_a_streaming_provider_records_no_such_degradation(tmp_path: Path) -> Non
     finally:
         database.close()
     assert outcome.degradations == ()
+
+
+# --- the four token classes (ADR-0070 decision 7) ---------------------------------------------
+#
+# Every test below **scripts all four classes explicitly** rather than leaning on FakeGeneration's
+# defaults. That is deliberate and load-bearing, not verbosity. `requirements/ci.lock` pins
+# `modelrack==0.5.0`, where an unscripted cache class derives `UNSUPPORTED`; the working tree
+# ModelRack (row C5, unreleased, editable in this venv) derives `0`. A test that asserted `0` from
+# an unscripted generation would pass here and fail in CI against a modelrack two minors older
+# than the one beside it. Explicitly scripted counts — integers and `UNSUPPORTED` alike — have
+# meant the same thing in every version of the fake, so these assertions are about LoadCoach's own
+# behaviour and nothing else.
+
+
+def _usage_script(**counts: Any) -> FakeScript:
+    """A script whose one generation reports exactly the four token classes given."""
+    return FakeScript(models=(_model(),), generations=(FakeGeneration(text="answer", **counts),))
+
+
+def _rows(database: Database) -> tuple[Any, Any]:
+    """Return the single ``jobs`` row and its single ``job_attempts`` row."""
+    from loadcoach.infrastructure.db.models import Job, JobAttempt
+
+    with database.read() as session:
+        job = session.query(Job).one()
+        attempt = session.query(JobAttempt).one()
+        session.expunge_all()
+    return job, attempt
+
+
+def _execute(database: Database, provider: Any) -> Any:
+    return execute(
+        database,
+        GenerateRequest(task="content.article_draft", prompt="Write about local inference."),
+        _context(provider),
+    )
+
+
+def test_reported_cache_classes_reach_both_rows_and_the_usage_object(tmp_path: Path) -> None:
+    """A provider that billed a cache tier: the counts land on the rows and on the wire."""
+    database, provider = _setup(
+        tmp_path,
+        _usage_script(
+            input_tokens=100, output_tokens=50, cache_read_tokens=64, cache_write_tokens=8
+        ),
+    )
+    try:
+        outcome = _execute(database, provider)
+        job, attempt = _rows(database)
+    finally:
+        database.close()
+
+    assert (job.cache_read_tokens, job.cache_write_tokens) == (64, 8)
+    assert (attempt.cache_read_tokens, attempt.cache_write_tokens) == (64, 8)
+    usage = outcome.as_json()["usage"]
+    assert usage["cache_read_tokens"] == 64
+    assert usage["cache_write_tokens"] == 8
+
+
+def test_unreported_cache_classes_are_null_on_the_rows_and_unsupported_on_the_wire(
+    tmp_path: Path,
+) -> None:
+    """ADR-0016: `NULL` in storage, the string ``"unsupported"`` in JSON. Never ``0``, never null.
+
+    This is the interim shape every *real* adapter produces until `modelrack 0.7.0` ships — the
+    state ADR-0070 decision 8 deliberately sequences through — so it is the shape F1's estimator
+    will meet first, and it must be unmistakable for a zero.
+    """
+    database, provider = _setup(
+        tmp_path,
+        _usage_script(
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=UNSUPPORTED,
+            cache_write_tokens=UNSUPPORTED,
+        ),
+    )
+    try:
+        outcome = _execute(database, provider)
+        job, attempt = _rows(database)
+    finally:
+        database.close()
+
+    assert job.cache_read_tokens is None
+    assert job.cache_write_tokens is None
+    assert attempt.cache_read_tokens is None
+    assert attempt.cache_write_tokens is None
+    usage = outcome.as_json()["usage"]
+    assert usage["cache_read_tokens"] == "unsupported"
+    assert usage["cache_write_tokens"] == "unsupported"
+
+
+def test_a_reported_zero_is_stored_and_rendered_as_zero(tmp_path: Path) -> None:
+    """The assertion the whole ADR-0070 chain is worth anything for.
+
+    A provider whose protocol cannot bill a cache tier reports `0`, and `0` must survive to the
+    wire as the number `0` — distinguishable from the `"unsupported"` above and from a `null`. If
+    these three collapsed into one another, a ledger could not tell "this call used no cache" from
+    "nobody counted", which is the exact confusion ADR-0069 left open and ADR-0070 closes.
+    """
+    database, provider = _setup(
+        tmp_path,
+        _usage_script(
+            input_tokens=100, output_tokens=50, cache_read_tokens=0, cache_write_tokens=0
+        ),
+    )
+    try:
+        outcome = _execute(database, provider)
+        job, attempt = _rows(database)
+    finally:
+        database.close()
+
+    assert job.cache_read_tokens == 0
+    assert job.cache_write_tokens == 0
+    assert attempt.cache_read_tokens == 0
+    assert attempt.cache_write_tokens == 0
+    usage = outcome.as_json()["usage"]
+    assert usage["cache_read_tokens"] == 0
+    assert usage["cache_write_tokens"] == 0
+    # Not the string, and not absent. `0 == False` in Python, so identity is asserted too.
+    assert usage["cache_read_tokens"] is not None
+    assert not isinstance(usage["cache_read_tokens"], str)
+
+
+def test_the_usage_object_stays_additive_for_a_1_0_0_client(tmp_path: Path) -> None:
+    """A client written against 1.0.0 reads this response unchanged (api.md, additive within v1).
+
+    The three fields 1.0.0 shipped keep their names and their types; the two new ones are added
+    beside them. Nothing is removed and nothing is retyped.
+    """
+    database, provider = _setup(
+        tmp_path,
+        _usage_script(
+            input_tokens=100, output_tokens=50, cache_read_tokens=0, cache_write_tokens=0
+        ),
+    )
+    try:
+        outcome = _execute(database, provider)
+    finally:
+        database.close()
+
+    usage = outcome.as_json()["usage"]
+    assert usage["input_tokens"] == 100
+    assert usage["output_tokens"] == 50
+    assert usage["thinking_tokens"] == "unsupported"
+    assert set(usage) == {
+        "input_tokens",
+        "output_tokens",
+        "cache_write_tokens",
+        "cache_read_tokens",
+        "thinking_tokens",
+    }

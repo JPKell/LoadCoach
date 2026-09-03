@@ -212,6 +212,8 @@ class AttemptRecord:
     ttft_ms: int | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    cache_read_tokens: int | None = None
     finish_reason: str | None = None
     error_code: str | None = None
     error_text: str | None = None
@@ -260,6 +262,8 @@ class ExecutionOutcome:
     ttft_ms: int | None
     input_tokens: int | None
     output_tokens: int | None
+    cache_write_tokens: int | None
+    cache_read_tokens: int | None
     thinking_tokens: int | None
     queue_wait_ms: int = 0
 
@@ -297,6 +301,17 @@ class ExecutionOutcome:
             "usage": {
                 "input_tokens": self.input_tokens,
                 "output_tokens": self.output_tokens,
+                # ADR-0016 rule 4: an unavailable measurement is the string "unsupported" in
+                # JSON, never null and never 0 — and under ADR-0070 a `0` here is a real count,
+                # the provider's protocol having reported that nothing was billed to this class.
+                # The two are different answers and a consumer's ledger must be able to tell them
+                # apart, which is why neither is rendered as the other.
+                "cache_write_tokens": self.cache_write_tokens
+                if self.cache_write_tokens is not None
+                else "unsupported",
+                "cache_read_tokens": self.cache_read_tokens
+                if self.cache_read_tokens is not None
+                else "unsupported",
                 "thinking_tokens": self.thinking_tokens
                 if self.thinking_tokens is not None
                 else "unsupported",
@@ -886,6 +901,12 @@ def _record(
         ttft_ms=collected.ttft_ms,
         input_tokens=None if result is None else _count(result.usage.tokens.input_tokens),
         output_tokens=None if result is None else _count(result.usage.tokens.output_tokens),
+        cache_write_tokens=(
+            None if result is None else _count(result.usage.tokens.cache_write_tokens)
+        ),
+        cache_read_tokens=(
+            None if result is None else _count(result.usage.tokens.cache_read_tokens)
+        ),
         finish_reason=None if result is None else result.finish_reason.value,
         error_code=None if error is None else type(error).__name__,
         error_text=None if error is None else str(error),
@@ -1163,6 +1184,8 @@ def _persist(
             job.ttft_ms = outcome.ttft_ms if outcome is not None else None
             job.input_tokens = outcome.input_tokens if outcome is not None else None
             job.output_tokens = outcome.output_tokens if outcome is not None else None
+            job.cache_write_tokens = outcome.cache_write_tokens if outcome is not None else None
+            job.cache_read_tokens = outcome.cache_read_tokens if outcome is not None else None
             job.thinking_tokens = outcome.thinking_tokens if outcome is not None else None
             job.validation_passed = outcome.validation.passed if outcome is not None else None
             job.degradations_json = list(outcome.degradations) if outcome is not None else []
@@ -1220,6 +1243,10 @@ def _persist(
                     ttft_ms=outcome.ttft_ms if outcome is not None else None,
                     input_tokens=outcome.input_tokens if outcome is not None else None,
                     output_tokens=outcome.output_tokens if outcome is not None else None,
+                    cache_write_tokens=(
+                        outcome.cache_write_tokens if outcome is not None else None
+                    ),
+                    cache_read_tokens=outcome.cache_read_tokens if outcome is not None else None,
                     thinking_tokens=outcome.thinking_tokens if outcome is not None else None,
                     validation_passed=outcome.validation.passed if outcome is not None else None,
                     degradations_json=list(outcome.degradations) if outcome is not None else [],
@@ -1327,6 +1354,8 @@ def write_attempt(
         ttft_ms=record.ttft_ms,
         input_tokens=record.input_tokens,
         output_tokens=record.output_tokens,
+        cache_write_tokens=record.cache_write_tokens,
+        cache_read_tokens=record.cache_read_tokens,
         finish_reason=record.finish_reason,
         error_code=record.error_code,
         error_text=record.error_text,
@@ -1554,6 +1583,8 @@ def execute(
         ttft_ms=records[-1].ttft_ms if records else None,
         input_tokens=_count(result.usage.tokens.input_tokens),
         output_tokens=_count(result.usage.tokens.output_tokens),
+        cache_write_tokens=_count(result.usage.tokens.cache_write_tokens),
+        cache_read_tokens=_count(result.usage.tokens.cache_read_tokens),
         thinking_tokens=_count(result.usage.thinking_tokens),
     )
     _persist(
