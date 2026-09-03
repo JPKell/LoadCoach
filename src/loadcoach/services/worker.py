@@ -1344,6 +1344,7 @@ class Worker:
             cache_read_tokens=_count(result.usage.tokens.cache_read_tokens),
             thinking_tokens=_count(result.usage.thinking_tokens),
             queue_wait_ms=self._queue_wait_ms(job),
+            finish_reason=result.finish_reason.value,
         )
         with runtime.sink.write(runtime.database) as (session, events):
             transition(

@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from baseaicore import UNSUPPORTED, ModelDescriptor, ModelIdentity
 from modelrack import (
+    FinishReason,
     GenerationRequest,
     GenerationResult,
     Message,
@@ -226,6 +227,7 @@ def test_generate_returns_a_result_with_routing_metadata_and_separated_timings(
     body = outcome.as_json()
     assert body["status"] == "completed"
     assert body["output"]["text"]
+    assert body["output"]["finish_reason"] == "stop"  # declared by the provider, rendered here
     assert body["model"]["canonical_id"].startswith("fake/alpha:8b@")
     assert body["model"]["runtime_profile_hash"]
     assert body["model"]["served_context"] > 0
@@ -241,6 +243,34 @@ def test_generate_returns_a_result_with_routing_metadata_and_separated_timings(
         body["timing"]["total_ms"]
         >= body["timing"]["provider_ms"] + body["timing"]["loadcoach_overhead_ms"] - 1
     )
+    assert body["attempts"][0]["outcome"] == "completed"
+
+
+def test_the_declared_finish_reason_is_rendered_not_inferred(tmp_path: Path) -> None:
+    """``output.finish_reason`` is what the provider declared for the attempt, verbatim.
+
+    A truncated answer and a chosen ending are the same text with different meanings; a caller
+    that advances on the output reads this field, so it must carry ``length`` when the provider
+    said so — not ``stop`` because the text looks finished, and not nothing.
+    """
+    script = FakeScript(
+        models=(_model(),),
+        generations=(FakeGeneration(text="cut off mid", finish_reason=FinishReason.LENGTH),),
+        repeat_final_generation=True,
+    )
+    database, provider = _setup(tmp_path, script)
+    try:
+        outcome = execute(
+            database,
+            GenerateRequest(task="general.chat", prompt="say a lot"),
+            _context(provider),
+        )
+    finally:
+        database.close()
+    assert outcome.finish_reason == "length"
+    body = outcome.as_json()
+    assert body["status"] == "completed"
+    assert body["output"]["finish_reason"] == "length"
     assert body["attempts"][0]["outcome"] == "completed"
 
 

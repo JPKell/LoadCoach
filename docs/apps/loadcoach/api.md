@@ -80,7 +80,7 @@ Response `200`:
 {
   "job_id": "01J9K…",
   "status": "completed",
-  "output": {"text": "…", "structured": null, "tool_calls": []},
+  "output": {"text": "…", "finish_reason": "stop", "structured": null, "tool_calls": []},
   "reasoning": {"available": false, "summary": null, "source": null},
   "model": {"canonical_id": "ollama/qwen3.5:9b-q8_0@sha256:1f3a9c4e2b70",
             "model_ref": "01J9K…",
@@ -93,13 +93,24 @@ Response `200`:
             "cache_read_tokens": 128, "thinking_tokens": "unsupported"},
   "timing": {"total_ms": 18422, "provider_ms": 18310, "loadcoach_overhead_ms": 112,
              "ttft_ms": 640, "queue_wait_ms": 0},
-  "validation": {"performed": false, "passed": null, "attempts": 1},
+  "validation": {"performed": false, "passed": null, "attempts": 1, "checks": []},
   "attempts": [{"attempt": 1, "model": "ollama/qwen3.5:9b-q8_0@…", "outcome": "completed"}],
   "degradations": []
 }
 ```
 
 Notes:
+* **`output.finish_reason` is the provider's declared reason for stopping**, for the attempt that
+  produced the output: `stop`, `length`, `tool_calls`, `content_filter`, `cancelled`, `error` or
+  `unknown` (ModelRack's `FinishReason`). It is recorded from the provider, never inferred from
+  the text: an answer truncated at the token limit (`length`) and one the model chose to end
+  (`stop`) can be the same string with entirely different meanings, and a caller that advances on
+  the output must read this field rather than the text to tell them apart. `validation.checks`
+  lists every check the task profile's policy ran on that output, in order, with its `kind`
+  (`json`, `json_schema`, `required_fields`, `regex`, `length`), `passed` and `detail`; `performed`
+  is `false` (and `passed` `null`) when the profile asked for none. Both fields appear identically
+  in the job document `GET /jobs/{id}` returns (§5), so a caller reconciling a job it lost track
+  of reads the same facts it would have read here.
 * `reasoning` is populated **only** when the provider explicitly returns reasoning content or a
   summary; otherwise `available: false`. LoadCoach never synthesizes or infers hidden chain-of-thought.
 * `provider_ms` and `loadcoach_overhead_ms` are always reported separately.
@@ -145,7 +156,7 @@ persisted job events.
 |---|---|
 | `POST /jobs` | Asynchronous submission; same body as `/generate` plus `class`, `priority`, `max_wait_seconds`, `idempotent`. Returns `202` with the job |
 | `GET /jobs` | Filter by state, class, task, model, date; cursor pagination |
-| `GET /jobs/{id}` | Full job: state, attempts, routing summary, usage, timings, validation, degradations |
+| `GET /jobs/{id}` | Full job: state, attempts, routing summary, usage, timings, validation (with its `checks`), degradations, and the output with its `finish_reason` — the same `output` and `validation` shapes as `POST /generate` (§4) |
 | `GET /jobs/{id}/stream` | SSE: state changes, tokens (when streaming was requested), terminal result |
 | `POST /jobs/{id}/cancel` | 202, or 409 `JOB_NOT_CANCELLABLE` |
 | `GET /jobs/{id}/explanation` | The complete routing explanation |

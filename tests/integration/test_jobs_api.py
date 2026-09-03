@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 from baseaicore import UNSUPPORTED
 from fastapi.testclient import TestClient
+from modelrack import FinishReason
 from modelrack.testing import FakeGeneration, FakeProvider, FakeScript
 from tests.integration.test_generate import NOW, _model
 from tests.integration.test_streaming import _frames
@@ -338,3 +339,56 @@ def test_the_job_document_carries_all_four_token_classes(
     assert usage["input_tokens"] == 100
     assert usage["output_tokens"] == 50
     assert usage["thinking_tokens"] == "unsupported"
+
+
+# --- the declared finish and the validation checks, read back from the rows -------------------
+
+
+def test_the_job_document_carries_the_declared_finish_reason_and_the_validation_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`GET /jobs/{id}`, every `GET /jobs` item and a replayed key say what `/generate` says.
+
+    The synchronous response has always rendered the validation checks, and since this change
+    both render `output.finish_reason`; the job document reads both back from the attempt and
+    validation rows, so a caller reconciling a job it lost track of reads the same facts.
+    """
+    generation = FakeGeneration(text="the answer", finish_reason=FinishReason.LENGTH)
+    with _client(tmp_path, monkeypatch, generation=generation) as client:
+        response = client.post(
+            "/api/v1/jobs",
+            json={"task": "general.chat", "prompt": "hello", "class": "background"},
+            headers={"X-Client-Name": "promptcadence"},
+        )
+        document = _wait(client, response.json()["job_id"])
+        listed = client.get(
+            "/api/v1/jobs", params={"source": "promptcadence"}, headers={"X-Client-Name": "x"}
+        ).json()["items"]
+        first = client.post(
+            "/api/v1/generate",
+            json={"task": "general.chat", "prompt": "hello", "idempotency_key": "turn-1"},
+            headers={"X-Client-Name": "promptcadence"},
+        ).json()
+        replayed = client.post(
+            "/api/v1/generate",
+            json={"task": "general.chat", "prompt": "hello", "idempotency_key": "turn-1"},
+            headers={"X-Client-Name": "promptcadence"},
+        ).json()
+
+    assert document["state"] == "completed"
+    assert document["output"]["finish_reason"] == "length"  # declared, not inferred from text
+    assert document["validation"] == {
+        "performed": True,
+        "passed": True,
+        "attempts": 1,
+        "checks": [{"kind": "length", "passed": True, "detail": {}}],
+    }
+    (item,) = [job for job in listed if job["job_id"] == document["job_id"]]
+    assert item["output"]["finish_reason"] == "length"
+    assert item["validation"]["checks"] == document["validation"]["checks"]
+    # The synchronous response and its replay agree, field for field, on what this test reads.
+    assert first["output"]["finish_reason"] == "length"
+    assert first["validation"]["checks"] == [{"kind": "length", "passed": True, "detail": {}}]
+    assert replayed["job_id"] == first["job_id"]
+    assert replayed["output"]["finish_reason"] == "length"
+    assert replayed["validation"] == first["validation"]

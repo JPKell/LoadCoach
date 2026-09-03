@@ -266,6 +266,12 @@ class ExecutionOutcome:
     cache_read_tokens: int | None
     thinking_tokens: int | None
     queue_wait_ms: int = 0
+    finish_reason: str | None = None
+    """The provider's declared reason for the attempt that produced the output — a
+    :class:`modelrack.FinishReason` value (``stop``, ``length``, ``tool_calls``, …) — recorded,
+    never inferred from the text. ``None`` only when no attempt answered, which no completed
+    outcome has; it is rendered at ``output.finish_reason`` so a caller advancing on the output
+    can tell an answer the model chose to end from one cut off at the token limit."""
 
     def as_json(self) -> dict[str, Any]:
         """Return the ``POST /generate`` response body (api.md §4)."""
@@ -275,6 +281,7 @@ class ExecutionOutcome:
             "status": self.status,
             "output": {
                 "text": self.text,
+                "finish_reason": self.finish_reason,
                 "structured": self.structured,
                 "tool_calls": list(self.tool_calls),
             },
@@ -1586,6 +1593,7 @@ def execute(
         cache_write_tokens=_count(result.usage.tokens.cache_write_tokens),
         cache_read_tokens=_count(result.usage.tokens.cache_read_tokens),
         thinking_tokens=_count(result.usage.thinking_tokens),
+        finish_reason=result.finish_reason.value,
     )
     _persist(
         database,

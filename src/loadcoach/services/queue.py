@@ -1258,12 +1258,17 @@ def job_document(database: Database, job_id: str) -> dict[str, Any]:
     timings, validation, degradations — a superset of ``POST /generate``'s response shape, so a
     repeated idempotency key can return the original job in a form the caller already reads.
 
+    Everything ``POST /generate`` says about the output is said here too, read back from the
+    rows: ``output.finish_reason`` is the last attempt's declared reason and
+    ``validation.checks`` are that attempt's stored checks, so a caller reconciling a job it lost
+    track of reads the same facts it would have read from the synchronous response.
+
     Raises:
         JobNotFound: No such job.
     """
     from baseaicore.timeutil import to_rfc3339
 
-    from loadcoach.infrastructure.db.models import JobAttempt, Model, RoutingDecision
+    from loadcoach.infrastructure.db.models import JobAttempt, Model, RoutingDecision, Validation
     from loadcoach.services.feedback import feedback_for_job
 
     record = get_job(database, job_id)
@@ -1274,6 +1279,25 @@ def job_document(database: Database, job_id: str) -> dict[str, Any]:
             .where(JobAttempt.job_id == job_id)
             .order_by(JobAttempt.attempt)
         ).all()
+        last_attempt = attempts[-1][0] if attempts else None
+        checks = (
+            []
+            if last_attempt is None
+            else [
+                {
+                    "kind": check.kind,
+                    "passed": check.passed,
+                    "detail": check.detail_json if isinstance(check.detail_json, dict) else {},
+                }
+                for check in session.execute(
+                    select(Validation)
+                    .where(Validation.job_attempt_id == last_attempt.id)
+                    .order_by(Validation.id)
+                )
+                .scalars()
+                .all()
+            ]
+        )
         feedback = [item.as_json() for item in feedback_for_job(session, job_id)]
         decision = session.execute(
             select(RoutingDecision.id, RoutingDecision.selected_score, RoutingDecision.flags_json)
@@ -1315,6 +1339,7 @@ def job_document(database: Database, job_id: str) -> dict[str, Any]:
         },
         "output": {
             "text": record.response_text,
+            "finish_reason": None if last_attempt is None else last_attempt.finish_reason,
             "structured": record.structured_output,
             "tool_calls": record.tool_calls or [],
         },
@@ -1360,7 +1385,15 @@ def job_document(database: Database, job_id: str) -> dict[str, Any]:
             "ttft_ms": record.ttft_ms,
             "queue_wait_ms": record.queue_wait_ms,
         },
-        "validation": {"passed": record.validation_passed, "attempts": len(attempts)},
+        "validation": {
+            # The same shape ExecutionOutcome.as_json renders: `performed` is false when the
+            # profile asked for no check (and `passed` is then null, not false), and `checks`
+            # are the last attempt's stored rows, in the order they ran.
+            "performed": record.validation_passed is not None,
+            "passed": record.validation_passed,
+            "attempts": len(attempts),
+            "checks": checks,
+        },
         # Retention's promise (F9/M5C-9): a scrubbed job says so, rather than showing nothing
         # where its text was. The marker is written by services.retention's sweep.
         "retention": {

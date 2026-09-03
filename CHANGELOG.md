@@ -8,6 +8,20 @@ packaging and release standards §3.
 ## [Unreleased]
 
 ### Added
+- **The declared `finish_reason` and the validation checks on the wire.** `POST /generate`'s
+  response and the job document (`GET /jobs/{id}`, every `GET /jobs` item, and a replayed
+  `idempotency_key`) now carry `output.finish_reason` — the provider's declared reason for the
+  attempt that produced the output (`stop`, `length`, `tool_calls`, `content_filter`,
+  `cancelled`, `error`, `unknown`), recorded on `job_attempts.finish_reason` since 1.0.0 but
+  rendered nowhere until now — and the job document's `validation` block gains `performed` and
+  `checks`, the same shape the synchronous response has always rendered. A caller that advances
+  on an answer can now tell one the model chose to end from one cut off at the token limit, and
+  can read the same facts back for a job it lost track of, instead of inferring either from the
+  text. Surfaced by PromptCadence's Phase 3 (`D2_HANDOFF.md` §2), whose advance contract refuses
+  to read an undeclared finish as success.
+
+  **Additive within `/api/v1`**: no field removed, no existing field's type changed, no new API
+  version. A client written against 1.0.0 reads the new response unchanged.
 - **All four token classes on the wire and on the rows** (ADR-0070 decision 7). `jobs` and
   `job_attempts` gain nullable `cache_write_tokens` and `cache_read_tokens` (migration `0007`),
   the `usage` object in the `POST /generate` response and in the job document
