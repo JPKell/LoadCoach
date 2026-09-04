@@ -39,7 +39,7 @@ VECTORS_PATH: Final[Path] = (
     Path(__file__).parent.parent / "fixtures" / "fetch" / "adr0026_vectors.json"
 )
 
-VECTORS_SHA256: Final[str] = "bf2c5731f1ecc265f19cca2e2a565a05e3aefbb9cabae88eefc18a8ea3774e50"
+VECTORS_SHA256: Final[str] = "ae7d6689ded17443ff6a944d567d343b1981acfb3e17d4ae87ed43bad0e91fcc"
 """The digest of the shared vector file, asserted in **both** repositories.
 
 The file is authored in ToolYard, copied here byte-for-byte and proven with ``cmp``. Update this
@@ -81,6 +81,12 @@ def _transport(
             body = str(step.get("body", "")).encode("utf-8")
         if "declared_length_over_cap" in step:
             headers["content-length"] = str(cap + int(step["declared_length_over_cap"]))
+        if step.get("streamed"):
+            # An iterator makes httpx send the body chunked, with no Content-Length — the only
+            # shape in which the during-streaming check is the one that fires.
+            size = int(step.get("chunk_bytes", 1024))
+            content: Any = iter([body[at : at + size] for at in range(0, len(body), size)])
+            return httpx.Response(int(step["status"]), content=content, headers=headers)
         return httpx.Response(int(step["status"]), content=body, headers=headers)
 
     return httpx.MockTransport(handler)

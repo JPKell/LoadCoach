@@ -9,7 +9,7 @@
     "max_bytes": "null means the implementation's configured default; an integer overrides it for this vector so a cap can be exercised without moving 128 MiB",
     "max_redirects": "null means the implementation's default (3 in both)",
     "resolves": "host -> addresses the injected resolver answers with. A host absent from this map resolves to nothing.",
-    "responses": "scripted, consumed in order, one per request the client makes. Each has status, headers, and one of body (literal text) or body_bytes_over_cap (a body of exactly cap + N bytes, streamed).",
+    "responses": "scripted, consumed in order, one per request the client makes. Each has status, headers, and one of body (literal text) or body_bytes_over_cap (a body of exactly cap + N bytes). `streamed: true` sends the body as chunks with NO Content-Length, which is the only way to reach the during-streaming check — a fixed body makes httpx declare a length, and the declared-length check would fire first and pass the test for the wrong reason. `declared_length_over_cap` sets Content-Length to cap + N explicitly.",
     "expect": "{outcome: 'refused'|'failed'|'ok', reason: <the machine-readable reason both implementations must produce>, content_type: <for ok>}",
     "requests_expected": "how many requests the client is allowed to have made — a check applied before a socket is opened must show as 0"
   },
@@ -218,7 +218,7 @@
     },
     {
       "name": "a_body_that_outgrows_the_cap_is_stopped_mid_stream",
-      "why": "§3: enforced DURING streaming. An origin that under-declares its length is exactly why the second check exists.",
+      "why": "§3: enforced DURING streaming, so an origin that declares no length at all — chunked, which is what a streaming export does — is still bounded. `streamed` is load-bearing: with a fixed body httpx declares a Content-Length and the earlier check fires instead, and this vector would pass without ever running the code it names.",
       "url": "http://127.0.0.1:8765/bundle.json",
       "allowed_hosts": ["127.0.0.1"],
       "max_bytes": 8192,
@@ -228,10 +228,32 @@
         {
           "status": 200,
           "headers": { "content-type": "application/json" },
-          "body_bytes_over_cap": 1
+          "body_bytes_over_cap": 1,
+          "streamed": true,
+          "chunk_bytes": 1024
         }
       ],
       "expect": { "outcome": "refused", "reason": "too_large" },
+      "requests_expected": 1
+    },
+    {
+      "name": "a_chunked_body_within_the_cap_is_read_to_the_end",
+      "why": "The streaming path's success case, so that tightening the mid-stream comparison cannot quietly refuse every chunked response.",
+      "url": "http://127.0.0.1:8765/bundle.json",
+      "allowed_hosts": ["127.0.0.1"],
+      "max_bytes": 8192,
+      "max_redirects": null,
+      "resolves": { "127.0.0.1": ["127.0.0.1"] },
+      "responses": [
+        {
+          "status": 200,
+          "headers": { "content-type": "application/json" },
+          "body_bytes_over_cap": -4096,
+          "streamed": true,
+          "chunk_bytes": 1024
+        }
+      ],
+      "expect": { "outcome": "ok", "content_type": "application/json" },
       "requests_expected": 1
     },
     {
