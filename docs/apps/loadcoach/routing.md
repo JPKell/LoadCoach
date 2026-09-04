@@ -70,7 +70,21 @@ reference a capability outside the SetSpec vocabulary.
 Shipped profiles: `general.chat`, `general.reasoning`, `general.summarize`, `code.generate`,
 `code.review`, `code.debug`, `content.research_synthesis`, `content.outline`,
 `content.article_draft`, `content.rewrite`, `content.edit`, `content.review`,
-`content.fact_check`, `structured.extract`, `tools.agent` — fifteen.
+`content.fact_check`, `structured.extract`, `tools.agent`, `tools.agent.local_fast`,
+`tools.agent.local_large`, `tools.agent.remote_cheap`, `tools.agent.remote_frontier`,
+`tools.plan` — twenty.
+
+The last five are **PromptCadence's harness profiles**, namespaced specializations of `tools.agent`
+shipped as LoadCoach configuration rather than PromptCadence code
+([ADR-0047 §1](../../adr/0047-a-tier-is-configuration-and-a-model-never-sizes-its-own-budget.md)).
+A PromptCadence tier is a name over exactly one of them, so the four `tools.agent.*` profiles carry
+the tier distinctions LoadCoach can express — a latency ceiling, a minimum served context equal to
+the tier's `context_budget_tokens`, minimum capability scores and `allow_remote_providers` — and
+nothing about model size, which LoadCoach has no vocabulary for. `tools.plan` is the planner's
+intent: JSON out, validated as JSON, with **no** schema, because the plan document's shape stays
+PromptCadence-internal. The two remote profiles ship with `allow_remote_providers = true` and route
+to `NO_ELIGIBLE_MODEL` until a remote provider is registered; PromptCadence reports that as
+`TIER_UNAVAILABLE`, which is visible rather than silent.
 
 `content.review` reviews **prose** against a requirement set and returns structured findings. It is
 weighted on `auditing`, `instruction_following`, `reasoning` and `structured_output`, and it exists

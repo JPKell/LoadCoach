@@ -19,11 +19,11 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
         yield test_client
 
 
-def test_get_task_profiles_returns_all_fifteen(client: TestClient) -> None:
+def test_get_task_profiles_returns_all_twenty(client: TestClient) -> None:
     response = client.get("/api/v1/task-profiles")
     assert response.status_code == 200
     profiles = response.json()["task_profiles"]
-    assert len(profiles) == 15
+    assert len(profiles) == 20
     ids = {profile["profile_id"] for profile in profiles}
     assert "content.review" in ids
     assert "code.review" in ids

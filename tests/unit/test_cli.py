@@ -219,7 +219,7 @@ def test_tasks_list_shows_shipped_profiles_on_a_fresh_install_without_serve() ->
     listed = runner.invoke(app, ["tasks", "list", "--json"])
     assert listed.exit_code == 0
     profiles = json.loads(listed.stdout)
-    assert len(profiles) == 15
+    assert len(profiles) == 20
     assert "general.chat" in {profile["profile_id"] for profile in profiles}
 
     shown = runner.invoke(app, ["tasks", "show", "general.chat"])
@@ -235,7 +235,7 @@ def test_tasks_list_import_is_idempotent_across_repeated_invocations() -> None:
     first = json.loads(runner.invoke(app, ["tasks", "list", "--json"]).stdout)
     second = json.loads(runner.invoke(app, ["tasks", "list", "--json"]).stdout)
     assert first == second
-    assert len(second) == 15
+    assert len(second) == 20
 
 
 def test_models_list_is_empty_on_a_fresh_install_and_that_is_honest() -> None:

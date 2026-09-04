@@ -83,7 +83,7 @@ tests/unit/{test_task_profile_validation,test_registry}.py
   provider (fewer flags, honestly reported).
 
 **Acceptance criteria**
-1. All **fifteen** shipped task profiles load and validate, including `content.review` — the prose
+1. All **twenty** shipped task profiles load and validate, including `content.review` — the prose
    review intent IdeaPress's audit stages route to ([Routing §2](routing.md)).
 2. Models list shows declared capabilities and availability with reasons.
 3. A malformed profile refuses startup with the file, key and problem named.

@@ -104,11 +104,11 @@ def test_a_valid_profile_loads_cleanly() -> None:
     assert loaded.weights == {"reasoning": 0.6, "instruction_following": 0.4}
 
 
-def test_all_fifteen_shipped_profiles_load_and_validate() -> None:
+def test_all_twenty_shipped_profiles_load_and_validate() -> None:
     """dev-plan P2 acceptance criterion 1."""
     profiles = read_task_profiles_file(DEFAULT_TASK_PROFILES_PATH, schemas_dir=DEFAULT_SCHEMAS_DIR)
     profile_ids = {profile.profile_id for profile in profiles}
-    assert len(profiles) == 15
+    assert len(profiles) == 20
     assert "content.review" in profile_ids
 
 

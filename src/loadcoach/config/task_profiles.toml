@@ -1,9 +1,11 @@
 # LoadCoach — shipped task profiles (routing.md §2).
 #
-# Fifteen profiles, as named in routing.md §2: general.chat, general.reasoning,
+# Twenty profiles, as named in routing.md §2: general.chat, general.reasoning,
 # general.summarize, code.generate, code.review, code.debug, content.research_synthesis,
 # content.outline, content.article_draft, content.rewrite, content.edit, content.review,
-# content.fact_check, structured.extract, tools.agent.
+# content.fact_check, structured.extract, tools.agent, and PromptCadence's five harness profiles
+# tools.agent.local_fast, tools.agent.local_large, tools.agent.remote_cheap,
+# tools.agent.remote_frontier, tools.plan.
 #
 # A task profile is routing intent, not a prompt (routing.md §2). Weights must sum to 1.0 and are
 # soft (they rank); constraints are hard (they filter). Every capability named — in weights,
@@ -415,3 +417,151 @@ fallback_depth = 2
 
 [task_profiles."tools.agent".validation]
 max_output_chars = 100000
+
+# --- PromptCadence's harness profiles (ADR-0047 §1, routing.md §2) --------------------------------
+#
+# Five namespaced specializations of `tools.agent`, shipped here because a PromptCadence tier is
+# configuration over exactly one LoadCoach task profile and PromptCadence performs no routing maths.
+# LoadCoach has no vocabulary for model size, so what separates `local_fast` from `local_large` is
+# the latency ceiling, the minimum served context and the minimum capability scores — that is the
+# decision, not an approximation of one. Each profile's `min_context_tokens` equals its tier's
+# `context_budget_tokens`, so a tier that cannot be served its own compaction budget is rejected by
+# `context_too_small` rather than admitted and silently truncated.
+
+[task_profiles."tools.agent.local_fast"]
+version = "1.0.0"
+description = "Agent turns on a small local model: tools, short latency, a 16k context budget."
+
+[task_profiles."tools.agent.local_fast".weights]
+agentic = 0.35
+tool_use = 0.30
+reasoning = 0.20
+reliability = 0.15
+
+[task_profiles."tools.agent.local_fast".constraints]
+min_context_tokens = 16384
+requires_capabilities = ["tool_use"]
+max_latency_p95_seconds = 60
+min_capability_scores = { tool_use = 0.3 }
+allow_remote_providers = false
+
+[task_profiles."tools.agent.local_fast".execution]
+temperature = 0.2
+max_output_tokens = 4096
+response_format = "text"
+max_attempts = 3
+fallback_depth = 2
+
+[task_profiles."tools.agent.local_fast".validation]
+max_output_chars = 100000
+
+[task_profiles."tools.agent.local_large"]
+version = "1.0.0"
+description = "Agent turns on a larger local model: harder reasoning, a longer wait, a 32k budget."
+
+[task_profiles."tools.agent.local_large".weights]
+agentic = 0.30
+tool_use = 0.25
+reasoning = 0.30
+reliability = 0.15
+
+[task_profiles."tools.agent.local_large".constraints]
+min_context_tokens = 32768
+requires_capabilities = ["tool_use"]
+max_latency_p95_seconds = 300
+min_capability_scores = { tool_use = 0.4, reasoning = 0.4 }
+allow_remote_providers = false
+
+[task_profiles."tools.agent.local_large".execution]
+temperature = 0.2
+max_output_tokens = 8192
+response_format = "text"
+max_attempts = 3
+fallback_depth = 2
+
+[task_profiles."tools.agent.local_large".validation]
+max_output_chars = 100000
+
+[task_profiles."tools.agent.remote_cheap"]
+version = "1.0.0"
+description = "Agent turns on an inexpensive remote model: a 128k context budget, egress."
+
+[task_profiles."tools.agent.remote_cheap".weights]
+agentic = 0.35
+tool_use = 0.30
+reasoning = 0.20
+reliability = 0.15
+
+[task_profiles."tools.agent.remote_cheap".constraints]
+min_context_tokens = 128000
+requires_capabilities = ["tool_use"]
+max_latency_p95_seconds = 120
+min_capability_scores = { tool_use = 0.4 }
+allow_remote_providers = true
+
+[task_profiles."tools.agent.remote_cheap".execution]
+temperature = 0.2
+max_output_tokens = 4096
+response_format = "text"
+max_attempts = 3
+fallback_depth = 2
+
+[task_profiles."tools.agent.remote_cheap".validation]
+max_output_chars = 100000
+
+[task_profiles."tools.agent.remote_frontier"]
+version = "1.0.0"
+description = "Agent turns on a frontier remote model: a 200k context budget, egress."
+
+[task_profiles."tools.agent.remote_frontier".weights]
+agentic = 0.35
+tool_use = 0.30
+reasoning = 0.20
+reliability = 0.15
+
+[task_profiles."tools.agent.remote_frontier".constraints]
+min_context_tokens = 200000
+requires_capabilities = ["tool_use"]
+max_latency_p95_seconds = 300
+min_capability_scores = { tool_use = 0.5, reasoning = 0.5 }
+allow_remote_providers = true
+
+[task_profiles."tools.agent.remote_frontier".execution]
+temperature = 0.2
+max_output_tokens = 8192
+response_format = "text"
+max_attempts = 3
+fallback_depth = 2
+
+[task_profiles."tools.agent.remote_frontier".validation]
+max_output_chars = 100000
+
+# `tools.plan` deliberately declares no schema: the plan document's shape stays PromptCadence's,
+# which validates it against its own model. What LoadCoach enforces is that the answer is JSON.
+[task_profiles."tools.plan"]
+version = "1.0.0"
+description = "Draft a structured multi-step plan as JSON, for a harness to validate and approve."
+
+[task_profiles."tools.plan".weights]
+reasoning = 0.40
+structured_output = 0.30
+instruction_following = 0.20
+reliability = 0.10
+
+[task_profiles."tools.plan".constraints]
+min_context_tokens = 16384
+requires_capabilities = ["structured_output"]
+max_latency_p95_seconds = 180
+min_capability_scores = { structured_output = 0.4 }
+allow_remote_providers = false
+
+[task_profiles."tools.plan".execution]
+temperature = 0.1
+max_output_tokens = 4096
+response_format = "json"
+max_attempts = 3
+fallback_depth = 1
+
+[task_profiles."tools.plan".validation]
+require_valid_json = true
+max_output_chars = 50000

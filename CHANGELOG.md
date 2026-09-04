@@ -8,6 +8,32 @@ packaging and release standards §3.
 ## [Unreleased]
 
 ### Added
+- **Five shipped task profiles for PromptCadence's harness tiers**, taking the shipped set from
+  fifteen to twenty: `tools.agent.local_fast`, `tools.agent.local_large`,
+  `tools.agent.remote_cheap`, `tools.agent.remote_frontier` and `tools.plan`. They are namespaced
+  specializations of `tools.agent` in `src/loadcoach/config/task_profiles.toml` and they exist here
+  rather than in PromptCadence because [ADR-0047 §1] makes a harness tier configuration over
+  exactly one LoadCoach task profile — the harness performs no routing maths, so its tier
+  vocabulary has to be expressible in this application's profile grammar or not at all.
+
+  What the four `tools.agent.*` profiles differ in is what LoadCoach can actually express: a
+  latency ceiling (60 / 300 / 120 / 300 s), a `min_context_tokens` equal to the tier's context
+  budget (16384 / 32768 / 128000 / 200000), minimum capability scores, and
+  `allow_remote_providers`. There is no vocabulary here for model size, so those three constraints
+  *are* the distinction between a fast and a large local tier rather than an approximation of one;
+  `local_large` additionally leans its weights towards `reasoning` and doubles `max_output_tokens`.
+  The two remote profiles ship now and route to `NO_ELIGIBLE_MODEL` until a remote provider is
+  registered, which a caller sees rather than silently getting a local model.
+
+  `tools.plan` is the planner's intent: `response_format = "json"` with
+  `validation.require_valid_json`, and deliberately **no** schema — the plan document's shape stays
+  the harness's, validated there, so a corrective retry against a schema this application does not
+  own is not offered.
+
+  Configuration and its documentation only; `src/loadcoach/**/*.py` was not touched. No version
+  bump — this rides the next release.
+
+  [ADR-0047 §1]: docs/adr/0047-a-tier-is-configuration-and-a-model-never-sizes-its-own-budget.md
 - **The ADR-0026 §3 fetch vectors are now one fixture shared byte-for-byte with ToolYard**
   (`tests/fixtures/fetch/adr0026_vectors.json`, driven by
   `tests/integration/test_adr0026_shared_vectors.py`). The same outbound checks defend against the

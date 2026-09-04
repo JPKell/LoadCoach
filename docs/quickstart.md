@@ -12,7 +12,7 @@ loadcoach serve                # web UI and API on http://127.0.0.1:8766
 ```
 
 `loadcoach serve` migrates its SQLite database under `$XDG_DATA_HOME/loadcoach/` on first start,
-imports the fifteen shipped task profiles, and discovers whatever models the provider reports.
+imports the twenty shipped task profiles, and discovers whatever models the provider reports.
 Open **http://127.0.0.1:8766/** for the dashboard.
 
 Check the installation before anything else:
