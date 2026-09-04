@@ -8,6 +8,25 @@ packaging and release standards §3.
 ## [Unreleased]
 
 ### Added
+- **The ADR-0026 §3 fetch vectors are now one fixture shared byte-for-byte with ToolYard**
+  (`tests/fixtures/fetch/adr0026_vectors.json`, driven by
+  `tests/integration/test_adr0026_shared_vectors.py`). The same outbound checks defend against the
+  same class of request in both places — this application pulling an evidence bundle from a URL a
+  request body supplied, and ToolYard's `http_fetch` fetching a URL a *model* supplied — and until
+  now they were proven by two independent suites that agreed only as long as nobody edited one.
+  Twenty-three cases (scheme, host allowlist, literal and resolved link-local addresses, the
+  per-hop redirect re-check, the hop cap, the declared and the streamed size cap, the content-type
+  check and the refused-versus-failed line) now run against `FreeWeightClient` here and against
+  ToolYard's tool there, from the same bytes; the file's sha256 is asserted in both repositories,
+  so a one-sided edit fails a test rather than becoming a divergence somebody finds in production.
+
+  **`FreeWeightClient` passed all twenty-three unchanged** — `src/` was not touched, no reason
+  string moved, and no behaviour changed. Sizes in the fixture are written relative to the
+  configured cap rather than as numbers, because the cap is 128 MiB here and 8 MiB there; vectors
+  belonging to only one implementation are deliberately outside the shared set (this application's
+  credentials, `since` and bare-origin export path; ToolYard has no credential surface at all).
+
+  Tests and a fixture only. No version bump: this rides the next release.
 - **The declared `finish_reason` and the validation checks on the wire.** `POST /generate`'s
   response and the job document (`GET /jobs/{id}`, every `GET /jobs` item, and a replayed
   `idempotency_key`) now carry `output.finish_reason` — the provider's declared reason for the
