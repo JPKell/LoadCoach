@@ -34,6 +34,7 @@ __all__ = [
     "ConfigurationError",
     "EvidenceSettings",
     "ExecutionSettings",
+    "FakeProviderSettings",
     "InsecureBindingError",
     "LoadedSettings",
     "LoggingSettings",
@@ -256,6 +257,50 @@ class StorageSettings(BaseModel):
         return url.startswith("sqlite")
 
 
+class FakeProviderSettings(BaseModel):
+    """``[provider.fake]`` — override the declared model ``kind = "fake"`` serves (E6).
+
+    Every field defaults to ``None``, in which case :func:`loadcoach.infrastructure.providers.
+    factory.build_provider` uses its own small built-in fake model — one whose VRAM estimate never
+    trips the ``insufficient_vram`` hard constraint (routing.md §4), so a fake-provider journey is
+    reproducible on any machine rather than gated on a free GPU.
+
+    Setting these lets an operator deliberately reproduce ``insufficient_vram`` end to end, with
+    the whole ``estimate`` block populated, on a machine with plenty of free VRAM. All four fields
+    must be set together, or none: the estimate's KV term (``2 × layers × kv_heads × head_dim × 2
+    bytes`` for the assumed f16 precision, multiplied by the served context) dominates
+    ``size_bytes`` at any interesting context length, so ``size_bytes`` alone cannot reliably
+    provoke the rejection this block exists to reach.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    size_bytes: int | None = Field(
+        default=None,
+        gt=0,
+        description="On-disk weight size to declare, overriding the small built-in default.",
+        examples=[8_540_000_000],
+    )
+    layers: int | None = Field(
+        default=None,
+        gt=0,
+        description="Transformer block count to declare, overriding the small built-in default.",
+        examples=[32],
+    )
+    kv_heads: int | None = Field(
+        default=None,
+        gt=0,
+        description="Key/value head count to declare, overriding the small built-in default.",
+        examples=[8],
+    )
+    head_dim: int | None = Field(
+        default=None,
+        gt=0,
+        description="Per-head dimension to declare, overriding the small built-in default.",
+        examples=[128],
+    )
+
+
 class ProviderSettings(BaseModel):
     """The default model provider LoadCoach talks to."""
 
@@ -273,6 +318,16 @@ class ProviderSettings(BaseModel):
     )
     timeout_seconds: float = Field(
         default=300.0, gt=0, description="Per-call provider timeout.", examples=[300.0]
+    )
+    fake: FakeProviderSettings = Field(
+        default_factory=FakeProviderSettings,
+        description=(
+            "Override the model kind='fake' declares, to provoke insufficient_vram on purpose "
+            "(E6); absent by default, and absent entirely on a normal install. See spec.md §12."
+        ),
+        examples=[
+            {"size_bytes": 8_540_000_000, "layers": 32, "kv_heads": 8, "head_dim": 128},
+        ],
     )
 
 

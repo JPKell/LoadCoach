@@ -7,6 +7,38 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Fixed
+- **The `fake` provider no longer trips `insufficient_vram` on a busy GPU** (E6, found at E4:
+  `E4_HANDOFF.md` §5). `build_provider("fake")` used to construct ModelRack's unscripted
+  `FakeProvider()`, whose `DEFAULT_MODEL` declares an 8.5 GB model — so routing's
+  `insufficient_vram` hard constraint rejected the only candidate whenever the host had little
+  free VRAM, including plain `tools.agent`, unchanged. A provider that exists so the suite and an
+  operator can be exercised without a GPU was gated on one.
+
+  `build_provider` now declares a small model instead, built from `DEFAULT_MODEL` by
+  `dataclasses.replace` (`infrastructure/providers/factory.py`): `size_bytes=47_000_000`,
+  `layers=4`, `kv_heads=2`, `head_dim=64`, `parameter_count=45_000_000` — a coherent tiny-model
+  shape, not just a shrunk number. At the worst case this model ever serves (`served_context`
+  defaults to its own `max_context`, unchanged at 32 768, so every shipped local task profile's
+  `min_context_tokens` is still satisfied), the VRAM estimate is weights 49_350_000 B + kv
+  67_108_864 B + activation 268_435_456 B ≈ 385 MB — comfortably under
+  `DEFAULT_VRAM_HEADROOM_BYTES` (512 MiB) below even a machine reporting ~1 GiB free. Renamed
+  `fake-model:8b-q8_0` → `fake-model:tiny-q8_0`, since nothing in this repository pins the old
+  name (checked before renaming) and a shrunk model claiming to be an 8B one would be dishonest.
+  `DEFAULT_MODEL` and ModelRack itself are untouched — this is LoadCoach's own construction of the
+  fake, not a change to a contract three applications' fakes read.
+
+  The rejection stays reachable on purpose: **`[provider.fake]`** (`size_bytes`, `layers`,
+  `kv_heads`, `head_dim`, all optional) lets an operator override the declared model, e.g. back to
+  the original numbers, to provoke `insufficient_vram` deliberately and inspect the full `estimate`
+  block. All four fields must be set together — the KV term dominates `size_bytes` at any
+  interesting context length (`2 × layers × kv_heads × head_dim × 2 bytes` for the assumed f16
+  precision, times the served context), so `size_bytes` alone cannot reliably provoke the
+  rejection this block exists to reach; `build_provider` refuses a partial set with a
+  `ConfigurationError` naming `provider.fake` and the missing fields. The `fake` provider kind is
+  **not** exempted from `insufficient_vram` — this block makes the fake keep modelling the
+  constraint, on purpose, rather than stop modelling it.
+
 ### Added
 - **Five shipped task profiles for PromptCadence's harness tiers**, taking the shipped set from
   fifteen to twenty: `tools.agent.local_fast`, `tools.agent.local_large`,

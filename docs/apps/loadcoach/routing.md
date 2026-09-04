@@ -149,6 +149,12 @@ Every rejection is stored with the numbers that caused it (`needs 14.2 GB, 9.8 G
 never a constraint input; a model that advertises 131 072 tokens and will be served 4 096 is rejected
 by `context_too_small`, not admitted and silently truncated.
 
+`kind = "fake"` declares a small model by default so a fake-provider journey never trips
+`insufficient_vram` on its own (E6, `E6_HANDOFF.md`); `[provider.fake]`'s `size_bytes`, `layers`,
+`kv_heads` and `head_dim` — set all four together, never a subset, since the KV term dominates
+`size_bytes` at any interesting context length — let an operator provoke this rejection on purpose
+and inspect the full `estimate` block it produces.
+
 ## 5. Step 3 — Capability scoring
 
 ```text

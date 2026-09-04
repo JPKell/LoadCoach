@@ -52,6 +52,7 @@ The default model provider LoadCoach talks to.
 | `provider.kind` | `LOADCOACH_PROVIDER__KIND` | `str` | `'ollama'` | — | no | **config-only:** Which backend receives every prompt. | `'ollama'` | Which provider serves the models: ollama, or fake for tests. |
 | `provider.base_url` | `LOADCOACH_PROVIDER__BASE_URL` | `str` | `'http://127.0.0.1:11434'` | — | no | **config-only:** Where prompts are sent. | `'http://127.0.0.1:11434'` | The provider's API endpoint. |
 | `provider.timeout_seconds` | `LOADCOACH_PROVIDER__TIMEOUT_SECONDS` | `float` | `300.0` | > 0 | no | — | `300.0` | Per-call provider timeout. |
+| `provider.fake` | `LOADCOACH_PROVIDER__FAKE` | `table` | — | — | no | — | `{'size_bytes': 8540000000, 'layers': 32, 'kv_heads': 8, 'head_dim': 128}` | Override the model kind='fake' declares, to provoke insufficient_vram on purpose (E6); absent by default, and absent entirely on a normal install. See spec.md §12. |
 
 ## `[providers]`
 

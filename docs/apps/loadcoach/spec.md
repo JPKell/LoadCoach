@@ -193,6 +193,9 @@ environment, then CLI, field by field. Principal sections:
               content_retention_hours = 24   # finished jobs keep text this long; runtime-changeable
               retain_content = false         # keep text for ever; config-only (§14)
 [provider]    kind = "ollama"  base_url = "http://127.0.0.1:11434"  timeout_seconds = 300
+[provider.fake]  # kind = "fake" only; absent on a normal install (E6). All four together or none:
+              # size_bytes, layers, kv_heads, head_dim — overrides the small built-in fake model
+              # to provoke `insufficient_vram` on purpose (routing.md §4).
 [providers]   allow_remote = false
 [server]      allowed_hosts = []           # required when host is not loopback (ADR-0026)
               rate_limit_per_minute = 600  rate_limit_burst = 100  failed_auth_per_minute = 20
