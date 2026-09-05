@@ -482,3 +482,132 @@ starves a legitimate caller; documentation drift from the generated configuratio
 **Deferred to post-1.0:** multi-machine execution, exploration routing, learned routing, batch
 affinity beyond the current heuristic, cost-aware remote routing, speculative execution,
 `LoadCoachClient` as a package.
+
+---
+
+## Phase 10 — Adapters and multi-provider registration · **LA2**
+
+**Goal:** LoadCoach 1.1 — more than one provider, an operator's adapter directory, adapter subjects
+that route and pin like any other candidate, and a residency model in which switching adapters on a
+warm base is free.
+
+**Prerequisites:** P9 (`loadcoach 1.0.0` published); `baseaicore 0.4.2` (ADR-0074's
+`RuntimeProfile.adapters_registered`); `modelrack 0.7.0` (`LlamaCppProvider`, `list_adapters`,
+`register_adapters`, `adapter_hot_swap`); `setspec 0.5.x` (`model.adapter_manifest` 1.0). The
+[adapter roadmap](../../roadmap/adapter-roadmap.md) §4.2 is this phase's scope statement and its
+accepted A- and D-decisions are its specification.
+
+**Work**
+* **Providers by name and kind (LC-E1, [ADR-0055](../../adr/0055-loadcoach-registers-providers-by-name-and-kind.md)).**
+  `[providers.<name>]` blocks carrying `kind`, connection settings and a declared `remote` flag; the
+  singular `[provider]` block read as one registration named after its kind; both forms present
+  refused at startup ([ADR-0077](../../adr/0077-a-named-provider-block-and-the-singular-block-are-one-registry.md)).
+  One tagged registry, not one per provider: discovery from every registration enters `models` with
+  its provider name, provider kind and egress class. `is_remote` stops being inferred from the kind
+  and reads the declared flag everywhere it is consulted.
+* **The adapter registry ([ADR-0061](../../adr/0061-the-adapter-registry-is-a-directory-and-a-manifest.md)).**
+  `[adapters] directory` — empty means off. Manifests are `setspec`'s `model.adapter_manifest` 1.0,
+  read and validated, never re-defined; the conversion into ModelRack's `AdapterRegistration`
+  happens here, in the application. An `adapters` table keyed on the artifact hash, whose
+  `artifact_path` is a locator. `loadcoach adapters scan|list|show`: `scan` drafts manifests for a
+  person to review and keep, `list` and `show` report registration state, base compatibility and
+  evidence status. A base digest that does not match refuses, fail closed, naming the mismatch.
+* **Subject expansion and three new hard constraints
+  ([ADR-0058](../../adr/0058-the-execution-subject-gains-an-adapter-axis.md),
+  [ADR-0064](../../adr/0064-adapters-are-selected-through-the-capability-vocabulary.md)).**
+  Candidates expand to adapter subjects only where the provider declares `adapter_hot_swap` and the
+  base digest matches. `adapter_incompatible`, `adapter_unmeasured` (from `require_adapter_evidence`,
+  default on) and `adapter_classification_conflict`
+  ([ADR-0079](../../adr/0079-an-adapter-classification-refusal-is-a-routing-rejection.md)) join
+  routing §4's table, each with a persisted rejection detail. Selection rides the capability
+  vocabulary; there is no tag channel.
+* **`RuntimeProfile.adapters_registered` is set, never left `None`
+  ([ADR-0074](../../adr/0074-adapter-enabled-serving-is-a-runtime-profile-field.md)).** `True` where
+  the provider serving the candidate has registrations, `False` where it has none. Derived from what
+  LoadCoach handed the provider, not from `list_adapters()`, which is a snapshot that moves during a
+  pending restart.
+* **Pins ([ADR-0064](../../adr/0064-adapters-are-selected-through-the-capability-vocabulary.md)
+  rule 4).** An `adapter` request override with `model`-pin semantics: it bypasses scoring, not hard
+  constraints, and a pin that cannot be honoured is a named refusal rather than a silent fallback.
+  Every attempt records the subject that answered
+  ([ADR-0080](../../adr/0080-a-persisted-decision-names-the-subject-by-reference-and-by-string.md)).
+* **Two-level residency ([ADR-0066](../../adr/0066-residency-is-two-level.md)).** Residency is
+  `(resident base process, registered adapter set)`: an adapter switch is free and scores as
+  resident, a base switch carries `base_switch_penalty`, and `ignore_residency` zeroes both terms
+  and is recorded in the explanation.
+* **Reliability keys on the subject ([ADR-0067](../../adr/0067-reliability-keys-on-the-subject-not-the-base.md)).**
+  `reliability_stats` and the circuit breaker key on `(model, adapter)`: a failing adapter never
+  breaks its base or its siblings, and the fragmentation cost is reported as honest `low_evidence`
+  flags rather than pooled away.
+* **Explanations and the models UI.** The persisted explanation names the subject, its evidence
+  source, the residency terms it paid and any adapter rejection. The models view groups adapter
+  subjects under their base and shows each one's evidence source and provider name.
+* **The tool-call response shape.** `output.tool_calls_assembled` is added beside the shipped
+  fragment field, which is documented as superseded with its removal named at LoadCoach `2.0`
+  ([ADR-0078](../../adr/0078-a-shipped-response-field-is-superseded-beside-its-replacement.md)).
+* **Release.** `2c7d740` (a synchronous generation records the model it made resident) and G2's tool
+  wire ship in this release and are named in the changelog rather than riding silently.
+
+**Files/subsystems**
+```text
+src/loadcoach/config.py                          [providers.<name>], [adapters], routing knobs
+src/loadcoach/infrastructure/providers/factory.py  build_providers -> a named registry
+src/loadcoach/infrastructure/adapters/{directory,manifest}.py   scan, read, convert
+src/loadcoach/domain/routing/{subject,constraints,scoring}.py   the adapter axis and its constraints
+src/loadcoach/domain/{reliability,circuit_breaker}.py           subject-keyed statistics
+src/loadcoach/services/{models,routing,residency,execution,doctor}.py
+src/loadcoach/cli/commands/adapters.py           scan | list | show
+src/loadcoach/web/routes/models.py + templates   subjects grouped under their base
+src/loadcoach/infrastructure/db/migrations/versions/0008_adapters_and_subjects.py
+```
+
+**Tests**
+* A two-provider registry routes across both; a remote registration is excluded for a profile that
+  disallows remote, with the existing reason; a singular `[provider]` configuration produces
+  today's registry byte-identically (the compatibility golden).
+* `[provider]` and `[providers.<name>]` together refuses at startup, naming both.
+* A manifest golden round-trips; a renamed artifact is the same subject; an edited artifact is a new
+  one; a base digest mismatch refuses by name; `scan` never overwrites a kept manifest.
+* An adapter subject appears as a candidate only where `adapter_hot_swap` is declared; each of the
+  three new constraints rejects with its reason and the rejection is persisted and queryable.
+* A pin to an unmeasured adapter is honoured; a pin to an incompatible adapter refuses; provenance
+  names the subject on every attempt.
+* Alternating adapters on one base pay no penalty; a base switch pays `base_switch_penalty` exactly
+  once; `ignore_residency` appears in the persisted explanation.
+* A failing adapter opens its own breaker and leaves its base and its siblings servable; existing
+  reliability rows migrate to base subjects with their statistics unchanged.
+* `RuntimeProfile.adapters_registered` is `True`/`False` and never `None` for a llama.cpp
+  registration; a property test asserts LoadCoach never earns ModelRack's `ProfileMismatch`.
+
+**Acceptance criteria**
+1. `loadcoach config validate` accepts a two-provider configuration, refuses one carrying both block
+   forms, and `loadcoach doctor` reports each registration's reachability by name.
+2. With `[adapters] directory` set to a directory of artifacts, `loadcoach adapters scan` writes
+   drafts a person can read, and `loadcoach adapters list` shows every adapter with its status, its
+   base compatibility and its evidence state; renaming an artifact and rescanning changes no
+   identity.
+3. `loadcoach route explain --task … --adapter …` shows the pinned subject selected, and the same
+   command with an incompatible pin shows the named refusal with the digests that caused it.
+4. Three requests pinning three adapters on one base produce **one** base load, asserted from the
+   provider's process table and from load timings (I16); a fourth request whose classification
+   conflicts leaves a queryable `adapter_classification_conflict` rejection (I19).
+5. A configuration with no adapters and one provider behaves byte-identically to `1.0` — asserted by
+   the compatibility golden, not argued.
+6. `loadcoach 1.1.0` is prepared with the full gate green and coverage ≥ 85 %.
+
+**Known risks:** a released configuration file growing a second shape; five tables changing key
+shape in one migration; adapter subjects multiplying the candidate pool and fragmenting reliability
+samples. Mitigated by the refusal in
+[ADR-0077](../../adr/0077-a-named-provider-block-and-the-singular-block-are-one-registry.md), by the
+compatibility golden, by the migration's stated rule for existing rows, and by
+[ADR-0067](../../adr/0067-reliability-keys-on-the-subject-not-the-base.md)'s decision to report
+fragmentation rather than hide it.
+**Likely failure modes:** a `NULL` adapter making a unique key stop constraining; `adapters_registered`
+derived from `list_adapters()` and therefore wrong exactly during a pending restart; a rejection
+reason that names a remedy an operator cannot apply; an explanation that renders an adapter's
+*current* name rather than the one recorded at decision time.
+**Gold standards:** explainable routing, extended to a second axis; no silent fallback; a rejection
+that names its own remedy.
+**Deferred:** FreeWeight's adapter evidence (LA3, H4) and therefore live routed selection on measured
+adapter evidence; IdeaPress's per-stage pins (H3); the removal of the superseded
+`output.tool_calls` field (LoadCoach `2.0`).

@@ -58,7 +58,8 @@ looks wrong.
   "response_format": null,
   "sampling": {"temperature": 0.7, "max_output_tokens": 1200},
   "constraints": {"max_latency_seconds": 120},
-  "overrides": {"model": null, "runtime_profile": null},
+  "overrides": {"model": null, "runtime_profile": null, "adapter": null,
+                "ignore_residency": false},
   "priority": {"class": "normal"},
   "tools": null,
   "idempotency_key": "01J9K…"
@@ -138,14 +139,21 @@ The first three are ModelRack's own refusals, surfaced here rather than reaching
 fourth is LoadCoach's, and it is the reason a transcript is checked at the edge rather than at the
 model.
 
-**The response's `output.tool_calls` and the request's `tool_calls` are different shapes.**
-`output.tool_calls` renders the provider's stream as it arrived — one entry per delta, carrying
-`call_index`, `id`, `name` and `arguments_fragment`, so a call whose arguments came in three
-deltas is three entries. The request's form is one entry per call, assembled. A caller replaying a
-turn groups the fragments by `id` (or by `call_index` where the provider sent none) and
-concatenates `arguments_fragment` in arrival order. The asymmetry is deliberate for now: the
-streamed form is what `POST /generate/stream`'s `tool_call` frames must carry, and collapsing it
-in the response would be a breaking change to a `1.0` field.
+**The response carries tool calls twice, in two shapes, and a replaying caller reads the assembled
+one.** `output.tool_calls` renders the provider's stream as it arrived — one entry per delta,
+carrying `call_index`, `id`, `name` and `arguments_fragment`, so a call whose arguments came in
+three deltas is three entries. It is what a caller rendering a call as it streams needs, and it is
+what `POST /generate/stream`'s `tool_call` frames carry. **`output.tool_calls_assembled`** (from
+1.1) carries one entry per call — `id`, `name`, `arguments` — in exactly the shape the request body
+accepts, so replaying a turn is a copy rather than a computation. The grouping rule (by `id`, or by
+`call_index` where the provider sent none, concatenating `arguments_fragment` in arrival order) now
+describes how the server relates the two fields; it is no longer an algorithm each caller must
+implement, and the first caller that had to got it wrong against a real model.
+
+`output.tool_calls` is **superseded** by `output.tool_calls_assembled` for replay, and is removed in
+LoadCoach `2.0` ([ADR-0078](../../adr/0078-a-shipped-response-field-is-superseded-beside-its-replacement.md)).
+It is supported, populated and tested until then: superseded says which field a new caller should
+read, not that this one is about to stop working.
 
 **LoadCoach sends the caller's text to the provider unmodified.** It does not prepend a system prompt
 of its own, does not substitute the task profile's wording, and does not rewrite the request. The only
@@ -159,10 +167,14 @@ Response `200`:
 {
   "job_id": "01J9K…",
   "status": "completed",
-  "output": {"text": "…", "finish_reason": "stop", "structured": null, "tool_calls": []},
+  "output": {"text": "…", "finish_reason": "stop", "structured": null, "tool_calls": [],
+             "tool_calls_assembled": []},
   "reasoning": {"available": false, "summary": null, "source": null},
   "model": {"canonical_id": "ollama/qwen3.5:9b-q8_0@sha256:1f3a9c4e2b70",
+            "subject_canonical_id": "ollama/qwen3.5:9b-q8_0@sha256:1f3a9c4e2b70",
             "model_ref": "01J9K…",
+            "provider_name": "ollama", "provider_kind": "ollama", "is_remote": false,
+            "adapter": null,
             "runtime_profile_hash": "8f2c…",
             "served_context": 32768, "served_context_source": "configured",
             "target_gpu_index": 0},
@@ -338,6 +350,16 @@ Standard envelope. Codes as listed in the [spec §13](spec.md), with these prese
 * `VALIDATION_ERROR` includes `details.fields`, a list of `{"path", "problem"}` — the same shape
   whether the body failed the schema or failed one of §4's transcript rules, so a caller reads one
   place for the field that was wrong.
+* `ADAPTER_NOT_FOUND` names the adapter the request pinned and lists the adapter names the
+  selected provider actually holds. A pin is an assertion, so it fails loudly rather than falling
+  back to the bare base ([ADR-0064](../../adr/0064-adapters-are-selected-through-the-capability-vocabulary.md)
+  rule 4).
+* `PROFILE_MISMATCH` means the resolved runtime profile does not describe the server that would
+  serve it ([ADR-0074](../../adr/0074-adapter-enabled-serving-is-a-runtime-profile-field.md)). It is
+  **permanent for the request as written** — an identical retry changes nothing — so it is never
+  retried and never triggers a fallback, and it belongs with `ADAPTER_NOT_FOUND` rather than with a
+  transient provider failure. Seeing one is a LoadCoach defect, not an operator error: LoadCoach
+  sets `adapters_registered` from what it handed the provider, so it should never earn this refusal.
 * **A request refused while an attempt is being built fails the job with its attempts written.**
   A transcript LoadCoach itself assembles — the structured-output corrective retry — can be
   refused by ModelRack before any provider is called. The job becomes `failed` with

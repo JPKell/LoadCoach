@@ -3,6 +3,7 @@
 **Owner:** LoadCoach. **Evidence policy:** [ADR-0017](../../adr/0017-benchmark-confidence-and-freshness.md).
 **Rule:** every decision is explainable, and the explanation is persisted for every job — not sampled.
 **Also normative:** [ADR-0023](../../adr/0023-runtime-profile-resolution.md) (execution subject and served context), [ADR-0027](../../adr/0027-multi-gpu-semantics.md) (per-device admission).
+**Also normative from 1.1:** [ADR-0055](../../adr/0055-loadcoach-registers-providers-by-name-and-kind.md) (providers by name and kind), [ADR-0058](../../adr/0058-the-execution-subject-gains-an-adapter-axis.md) (the subject's adapter axis), [ADR-0064](../../adr/0064-adapters-are-selected-through-the-capability-vocabulary.md) (selection rides the vocabulary), [ADR-0066](../../adr/0066-residency-is-two-level.md) (two-level residency), [ADR-0067](../../adr/0067-reliability-keys-on-the-subject-not-the-base.md) (reliability keys on the subject).
 
 ---
 
@@ -106,8 +107,9 @@ Every model the registry knows, that the configured providers can currently serv
 by discovery are not candidates. A model explicitly named in the request bypasses scoring but **not**
 hard constraints (an override that would fail is refused with the reason, not silently honoured).
 
-A candidate is not a model but an **execution subject**: the pair `(identity, resolved runtime
-profile)`. The profile resolves before scoring, through
+A candidate is not a model but an **execution subject**: from 1.1 the triple `(identity,
+adapter | none, resolved runtime profile)` ([ADR-0058](../../adr/0058-the-execution-subject-gains-an-adapter-axis.md)).
+The profile resolves before scoring, through
 `[runtime].default → [runtime.models."<canonical_id>"] → task-profile runtime settings →
 overrides.runtime_profile`, and its hash is what evidence must match
 ([ADR-0023](../../adr/0023-runtime-profile-resolution.md)). `RuntimeProfile()` — every field unset,
@@ -127,6 +129,43 @@ Where `ProviderCapabilities.context_configurable` is true and the task profile d
 `min_context_tokens`, LoadCoach **sets** `context_size` rather than hoping — so the common case is
 `configured`, not `assumed`.
 
+### 3.1 Provider registrations and the pool they feed
+
+Every registered provider ([ADR-0055](../../adr/0055-loadcoach-registers-providers-by-name-and-kind.md),
+[ADR-0077](../../adr/0077-a-named-provider-block-and-the-singular-block-are-one-registry.md)) is
+discovered into **one** registry, and every model carries the name of the registration that serves
+it, that registration's kind, and its declared egress class. Filtering, scoring, ranking, residency
+and reliability are unchanged code over a larger pool.
+
+`is_remote` is read from the registration's declared `remote` flag, never inferred from a kind or a
+URL: an OpenAI-compatible endpoint on loopback is local, and the same kind pointed at a hosted API
+is remote. The same weights served by two registrations are **two subjects**, with separate
+evidence and separate statistics, because `provider_kind` is part of model identity
+([ADR-0008](../../adr/0008-canonical-model-identity.md)) and two measurements of them are not
+interchangeable.
+
+### 3.2 Adapter subjects
+
+Where a registration's provider declares `adapter_hot_swap` and an adapter's manifest is compatible
+with a base that provider serves, the candidate list gains one subject per `(base, adapter)` pair
+**beside** the bare base — never instead of it. Expansion happens only under those two conditions:
+a provider that cannot hot-swap contributes no adapter subjects at all
+([ADR-0062](../../adr/0062-llamacpp-serves-adapters-through-a-supervised-process.md) decision 5),
+and an adapter whose declared base digest does not match the served base is refused rather than
+tried ([ADR-0058](../../adr/0058-the-execution-subject-gains-an-adapter-axis.md) §5).
+
+An adapter whose manifest declares its base **by name only** may still be used, and its subject
+carries `IdentityConfidence.NAME_ONLY` through the existing machinery — displayed, stored and
+discounted like any other name-only identity, not flagged by a parallel mechanism.
+
+The runtime profile a candidate resolves against records **whether the serving process has adapters
+registered at all**: `adapters_registered` is `True` for a registration holding registrations,
+`False` for one holding none, and never `None`
+([ADR-0074](../../adr/0074-adapter-enabled-serving-is-a-runtime-profile-field.md)). It is derived
+from what LoadCoach handed the provider, not from a `list_adapters()` snapshot, which moves while a
+restart is pending. A profile that disagrees with the server ModelRack would use is that package's
+refusal, and LoadCoach's job is never to earn it.
+
 ## 4. Step 2 — Hard constraints
 
 Applied in this order; the first failure records the rejection and stops evaluating that candidate.
@@ -142,7 +181,10 @@ Applied in this order; the first failure records the rejection and stops evaluat
 | Estimated RAM need > free RAM | `insufficient_ram` | SweatMeter |
 | Capability score below `min_capability_scores` | `below_minimum_score` | Evidence |
 | Model in `exclude_models`, or provider is remote while remote is disallowed | `excluded_by_policy` | Profile + config |
-| Circuit breaker open for this model | `recently_failing` | Reliability stats |
+| Adapter's declared base digest does not match the served base, or its provider cannot hot-swap | `adapter_incompatible` | Manifest + provider |
+| Adapter subject with no measured evidence for the profile's top-weighted capability, while `require_adapter_evidence` is on | `adapter_unmeasured` | Evidence + config |
+| Adapter's classification forbids the egress this candidate would be | `adapter_classification_conflict` | Manifest + registration |
+| Circuit breaker open for this **subject** | `recently_failing` | Reliability stats |
 
 A required capability comes from one of two places, and the rejection says which: the task
 profile's `requires_capabilities`, or the request itself — a `POST /generate` body carrying a
@@ -156,6 +198,31 @@ Every rejection is stored with the numbers that caused it (`needs 14.2 GB, 9.8 G
 7.1 GB free on GPU 1`), because "nothing was eligible" is useless without them. Advertised context is
 never a constraint input; a model that advertises 131 072 tokens and will be served 4 096 is rejected
 by `context_too_small`, not admitted and silently truncated.
+
+The three adapter constraints, in the words a caller needs:
+
+* **`adapter_incompatible`** — the adapter cannot be applied to this base at all. Its detail carries
+  the manifest's declared base name and digest and the served base's digest, or the fact that the
+  provider declares no `adapter_hot_swap`. There is no configuration that makes this candidate
+  eligible; the remedy is a different adapter or a different base
+  ([ADR-0058](../../adr/0058-the-execution-subject-gains-an-adapter-axis.md) §5).
+* **`adapter_unmeasured`** — `[routing] require_adapter_evidence` is on (the default,
+  [ADR-0064](../../adr/0064-adapters-are-selected-through-the-capability-vocabulary.md) rule 3) and
+  this adapter subject has no measured evidence for the profile's top-weighted capability. **Until
+  FreeWeight measures adapters (LA3), every adapter subject is unmeasured**, so the shipped default
+  makes adapters invisible to *routed* selection while leaving pins working. That is the intended
+  behaviour of "no benchmark, no use", not a defect: turning the gate off is an operator's
+  configuration change, it is recorded on every decision made under it, and the resulting selection
+  carries the existing `low_evidence` flag.
+* **`adapter_classification_conflict`** — the adapter's `data_classification` forbids the egress
+  this candidate would be ([ADR-0065](../../adr/0065-an-adapter-is-classified-and-local-only.md),
+  [ADR-0079](../../adr/0079-an-adapter-classification-refusal-is-a-routing-rejection.md)). Its
+  detail names the adapter's classification, the caller's declared classification where one was
+  supplied, the effective `max()` of the two, and the provider name and `remote` flag that made the
+  candidate an egress. It is deliberately **not** `excluded_by_policy`: that rejection is fixed by
+  turning remote on, and this one cannot be fixed by any flag. This rejection row **is** the
+  recorded denial integration verification I19 asks for; a `governance.egress_decision` is written
+  only by an application holding a Commissioner ledger, about a request it meant to send.
 
 `kind = "fake"` declares a small model by default so a fake-provider journey never trips
 `insufficient_vram` on its own (E6, `docs/history/E6_HANDOFF.md`); `[provider.fake]`'s `size_bytes`, `layers`,
@@ -227,11 +294,40 @@ final_score = task_fit
 |---|---|---|
 | `reliability_factor` | 0.5–1.0 | From production evidence: validation pass rate, error rate, timeout rate for this task profile. Neutral (1.0) until the minimum sample count |
 | `availability_factor` | 0.7–1.0 | Estimated queue-and-load cost: currently executing on this model, expected wait |
-| `residency_factor` | 1.0–1.05 | Small bonus for an already-resident model (`prefer_resident_bonus`), because a cold load can cost more than the difference between two close candidates |
+| `residency_factor` | 0.90–1.05 | Two-level (§6.1, [ADR-0066](../../adr/0066-residency-is-two-level.md)): a small bonus for a candidate on the resident base, whatever adapter it names, and a configurable penalty for one that would need a different base loaded |
 | `cost_factor` | 0.0–1.0 | 1.0 for local providers; configurable penalty for remote ones. Also enforces `allow_remote` as a hard constraint upstream |
 
 Each factor's value and inputs are recorded. The residency bonus is deliberately small: it breaks
 ties, it does not override capability.
+
+### 6.1 Two-level residency
+
+Residency is the pair `(resident base process, registered adapter set)`, and the two levels are
+scored differently, because the expensive event is loading a base and not selecting an adapter:
+
+```text
+residency_factor = 1 + prefer_resident_bonus     candidate's base is the resident base
+                                                 (any registered adapter, including none)
+                 = 1                             nothing is resident, or residency is unknown
+                 = 1 - base_switch_penalty       a different base is resident and this candidate
+                                                 would require loading its own
+```
+
+`prefer_resident_bonus` keeps its shipped default of `0.05`. `base_switch_penalty` defaults to
+`0.10` — **chosen, not measured**: twice the residency bonus, so a base switch is never decided by
+the tie-break that the bonus exists to be, and small enough that a candidate genuinely better at the
+task still wins. Its true value depends on model size, storage speed and the machine
+([ADR-0066](../../adr/0066-residency-is-two-level.md) rule 2), which is why it is configuration; a
+deployment that has measured its own load times should set it from them, and the explanation records
+the value that was used.
+
+A per-request `ignore_residency` override zeroes **both** terms — the factor becomes exactly `1.0`
+for every candidate — and is recorded in the persisted explanation like every other override
+(§8, §10). "Use the best model and pay the swap" is one flag, and it is traceable afterwards.
+
+[ADR-0038](../../adr/0038-one-model-at-a-time-per-gpu.md) is unchanged: the **base** is the unit
+that must fit, and registered adapters count toward its footprint in the VRAM estimate. An adapter
+switch on a resident base is not a model switch and must not trigger an unload.
 
 `reliability_factor` is `0.5 + 0.5 × success_rate × validation_pass_rate × feedback_term`, computed
 from the freshest of the `7d` and `30d` windows holding at least the minimum sample count
@@ -270,6 +366,8 @@ Persisted for every routing decision:
   "requested_at": "2026-08-21T09:14:02.318Z",
   "duration_ms": 18,
   "selected": {"canonical_id": "ollama/qwen3.5:9b-q8_0@sha256:1f3a9c4e2b70",
+               "subject_canonical_id": "ollama/qwen3.5:9b-q8_0@sha256:1f3a9c4e2b70",
+               "provider_name": "ollama", "adapter": null,
                "runtime_profile_hash": "8f2c…", "final_score": 0.71, "rank": 1,
                "served_context": 32768, "served_context_source": "configured",
                "target_gpu_index": 0},
@@ -286,12 +384,30 @@ Persisted for every routing decision:
         "source": "evidence_profile_mismatch",
         "note": "evidence measured under runtime profile 4a91…, executing under 8f2c…",
         "remedy": "freeweight run start --model … --context-size 32768 --kv-cache-precision f16"}],
-     "factors": {"reliability": 0.98, "availability": 1.0, "residency": 1.05, "cost": 1.0}}
+     "factors": {"reliability": 0.98, "availability": 1.0, "residency": 1.05, "cost": 1.0},
+     "residency_detail": {"level": "resident_base", "resident_base_canonical_id":
+        "ollama/qwen3.5:9b-q8_0@sha256:1f3a9c4e2b70", "prefer_resident_bonus": 0.05,
+        "base_switch_penalty": 0.10, "ignore_residency": false}},
+    {"canonical_id": "llamacpp/qwen3.5-9b-q8@sha256:1f3a9c4e2b70",
+     "subject_canonical_id":
+        "llamacpp/qwen3.5-9b-q8@sha256:1f3a9c4e2b70+factcheck@sha256:9e2b41d07c55",
+     "provider_name": "local-llamacpp",
+     "adapter": {"name": "factcheck", "artifact_digest": "sha256:9e2b41d07c55",
+                 "base_confidence": "digest", "data_classification": "confidential",
+                 "evidence_source": "absent"},
+     "task_fit": 0.69, "final_score": 0.66,
+     "factors": {"reliability": 1.0, "availability": 1.0, "residency": 1.0, "cost": 1.0}}
   ],
   "rejected": [
     {"canonical_id": "ollama/llama4:70b@…", "reason": "insufficient_vram",
      "detail": {"estimated_bytes": 41000000000,
-                "free_bytes_by_gpu": {"0": 9800000000, "1": 7100000000}}}
+                "free_bytes_by_gpu": {"0": 9800000000, "1": 7100000000}}},
+    {"canonical_id": "openai_compatible/gpt-x@…",
+     "subject_canonical_id": "openai_compatible/gpt-x@…+house_voice@sha256:4c1e…",
+     "reason": "adapter_classification_conflict",
+     "detail": {"adapter": "house_voice", "adapter_classification": "confidential",
+                "caller_classification": "internal", "effective_classification": "confidential",
+                "provider_name": "hosted", "provider_remote": true}}
   ],
   "flags": ["low_evidence"],
   "evidence_summary": {"source": "freeweight", "imported_at": "2026-08-09T…",
@@ -328,6 +444,8 @@ is never done silently — it requires an explicit request option.
 | Override | Effect |
 |---|---|
 | `model` | Bypasses scoring; hard constraints still apply; recorded as `override: model` |
+| `adapter` | Names an adapter by its manifest name. Bypasses scoring exactly as `model` does, and **not** hard constraints: compatibility, classification and the evidence gate all still apply, and a pin that cannot be honoured is refused by name rather than silently served bare ([ADR-0064](../../adr/0064-adapters-are-selected-through-the-capability-vocabulary.md) rule 4). Recorded as `override: adapter` |
+| `ignore_residency` | Zeroes both residency terms for this call (§6.1); recorded |
 | `runtime_profile` | Uses the given context/KV settings; recorded |
 | `sampling` | Overrides profile execution parameters; recorded |
 | `disallow_fallback` | Fails instead of falling back; recorded |
@@ -336,9 +454,18 @@ is never done silently — it requires an explicit request option.
 Every override appears in the explanation, so a surprising decision can always be traced to the
 instruction that caused it.
 
+`adapter` without `model` is legal and means "this adapter, on whichever base can serve it": the
+compatible bases are scored normally and the pin selects among their adapter subjects. `adapter`
+with `model` names one subject exactly. **A pin does not bypass `require_adapter_evidence`'s
+sibling problem in reverse**: an unmeasured adapter *is* pinnable, because the evidence gate filters
+routed selection and a pin is not routed selection — it is a caller asserting an intent the router
+would not have reached on its own.
+
 ## 11. Production evidence and reliability
 
-Every completed attempt updates per `(model, task_profile)` statistics: attempts, successes,
+Every completed attempt updates per `(subject, task_profile)` statistics — the subject including its
+adapter axis, never the base alone
+([ADR-0067](../../adr/0067-reliability-keys-on-the-subject-not-the-base.md)): attempts, successes,
 validation pass rate, error and timeout rates, p50/p95 latency, tokens per second, mean output tokens.
 Caller feedback (`accepted`, `rejected`, `edited`, optional quality score) is folded in with its own
 weight.
@@ -361,6 +488,24 @@ benchmark entries in `capabilities` with `source: benchmark`.
 
 Production evidence never overwrites benchmark evidence — the two are separate sources with separate
 confidence, and both are shown.
+
+### 11.1 What subject-keyed statistics cost, and what they buy
+
+A failing `(base, adapterA)` is deprioritized and eventually broken **as that subject**. It never
+breaks the bare base and never breaks a sibling adapter, which is the whole point: one bad adapter
+must not take a base and its four other adapters out of service.
+
+Process- and transport-level failures are **availability, not reliability**. A `llama-server` that
+will not start, a dead port, a connection refused — these take every subject on that registration
+out of the pool through the existing `model_unavailable` hard constraint, which is a statement about
+reachability and never about a subject's quality. Keeping the two apart is what stops one crashed
+process from looking like four failing adapters.
+
+The cost is sample fragmentation, and it is reported rather than hidden. The 20-sample minimum
+applies **per subject**, so a low-traffic adapter carries `low_evidence` for a long time and its
+`reliability_factor` stays neutral until it does not. Nothing is pooled from a neighbouring subject
+to fill the gap, and "is the base itself failing?" is left to a person reading the per-subject rows
+the explanation already shows — the suite does not infer cross-adapter attribution in v1.
 
 ## 12. Determinism and testability
 

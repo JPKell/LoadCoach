@@ -107,7 +107,14 @@ loadcoach job submit|list|show|cancel|wait|feedback
 loadcoach queue status|drain|pause|resume
 loadcoach evidence import|show|sources|refresh
 loadcoach reliability show                      loadcoach token create|list|revoke
+loadcoach adapters scan|list|show               # 1.1, only with [adapters] directory set
 ```
+
+`loadcoach adapters scan` **drafts** a `model.adapter_manifest` for every artifact in the configured
+directory that has none, writing it beside the artifact for a person to review and keep; it never
+overwrites a kept manifest and nothing trusts a draft
+([ADR-0061](../../adr/0061-the-adapter-registry-is-a-directory-and-a-manifest.md) rule 4). `list`
+and `show` report each adapter's registration status, base compatibility and evidence state.
 
 ## 8. Inputs
 
@@ -141,17 +148,25 @@ IdeaPress, whose per-attempt provenance records the `prompt_id`, `version` and `
 sent — a record that would be a lie if LoadCoach altered the text. Every prompt record LoadCoach does
 apply is recorded on the attempt that used it, so the job history shows exactly what the model saw.
 
-**Every response names its execution subject**: the selected model, the resolved
-`runtime_profile_hash`, the served context and its source, and the target GPU index
+**Every response names its execution subject**: the selected model, the adapter that answered where
+one did ([ADR-0058](../../adr/0058-the-execution-subject-gains-an-adapter-axis.md)), the provider
+registration's name, the resolved `runtime_profile_hash`, the served context and its source, and the
+target GPU index
 ([ADR-0023](../../adr/0023-runtime-profile-resolution.md),
 [ADR-0027](../../adr/0027-multi-gpu-semantics.md)).
 
 ## 10. Data ownership
 
 Owns `loadcoach.sqlite3` exclusively: models, model_capabilities, runtime_profiles, task_profiles,
-capability_evidence (imported), evidence_sources, jobs, job_attempts, job_events, routing_decisions,
-routing_candidates, validations, feedback, reliability_stats, residency, api_tokens, settings.
-See [Data Model](data-model.md).
+capability_evidence (imported), evidence_sources, adapters (1.1), jobs, job_attempts, job_events,
+routing_decisions, routing_candidates, validations, feedback, reliability_stats, residency,
+api_tokens, settings. See [Data Model](data-model.md).
+
+**The adapter directory is the operator's, not LoadCoach's.** `[adapters] directory` names files a
+person owns, diffs and backs up; LoadCoach reads them, hashes them and keeps rows describing them,
+and writes into that directory only the drafts `adapters scan` produces for review. FreeWeight reads
+the same directory independently; neither application reads the other's database
+([ADR-0061](../../adr/0061-the-adapter-registry-is-a-directory-and-a-manifest.md) rule 3).
 
 LoadCoach holds no `machines` table. It knows exactly one machine — its own, whose fingerprint comes
 from SweatMeter at startup — and it compares imported evidence's `machine_fingerprint` against that
@@ -174,6 +189,16 @@ performance, memory or energy constraints
    `judge_validity_factor` is applied as part of the confidence LoadCoach receives, never
    recomputed. Any explanation that used one names the goal, its `kappa_w` and its `n_holdout` in
    words. `goal_hash` and judge set identity are hard separations, handled like a benchmark version.
+3b. **Adapter registry contract.** With `[adapters] directory` set, LoadCoach reads SetSpec
+   `model.adapter_manifest` 1.0 records the operator has reviewed and kept; it never defines a
+   second manifest shape and never registers a drafted one. An adapter's identity is its artifact
+   hash, so a rename is transparent and a content change is a new subject; a manifest whose declared
+   base digest does not match the served base is refused, never applied
+   ([ADR-0061](../../adr/0061-the-adapter-registry-is-a-directory-and-a-manifest.md),
+   [ADR-0058](../../adr/0058-the-execution-subject-gains-an-adapter-axis.md) §5). **An adapter
+   artifact never leaves this machine** ([ADR-0065](../../adr/0065-an-adapter-is-classified-and-local-only.md)),
+   and the effective classification of work is `max(caller, adapter)`, recorded on every attempt
+   that used one.
 4. **Feedback contract.** `POST /jobs/{id}/feedback` accepts an acceptance signal and optional
    quality/validation detail; it is idempotent per `(job_id, source)`.
 5. **Streaming contract.** SSE per [API Standards §8](../../standards/api-and-contract-standards.md),
@@ -193,6 +218,13 @@ environment, then CLI, field by field. Principal sections:
               content_retention_hours = 24   # finished jobs keep text this long; runtime-changeable
               retain_content = false         # keep text for ever; config-only (§14)
 [provider]    kind = "ollama"  base_url = "http://127.0.0.1:11434"  timeout_seconds = 300
+              # 1.0's singular block, still fully supported: it is exactly one registration named
+              # after its kind, declaring remote = false (ADR-0077). Writing it *and* any
+              # [providers.<name>] block is refused at startup, naming both.
+[providers.local]     kind = "ollama"     base_url = "http://127.0.0.1:11434"  remote = false
+[providers.llama]     kind = "llamacpp"   models_directory = "~/models/llm"    remote = false
+[providers.hosted]    kind = "openai_compatible"  base_url = "https://…"       remote = true
+              # remote is declared, never inferred from the kind or the URL (ADR-0055 rule 4)
 [provider.fake]  # kind = "fake" only; absent on a normal install (E6). All four together or none:
               # size_bytes, layers, kv_heads, head_dim — overrides the small built-in fake model
               # to provoke `insufficient_vram` on purpose (routing.md §4).
@@ -214,8 +246,15 @@ environment, then CLI, field by field. Principal sections:
               ageing_interval_seconds = 30
               max_wait_seconds = 3600  ageing_priority_per_minute = 1
               overflow_allowance = 100  max_affinity_streak = 5
+[adapters]    directory = ""               # empty = the whole feature is off (ADR-0061 rule 2)
 [routing]     strategy = "weighted_evidence"  min_confidence = 0.05
               prefer_resident_bonus = 0.05  min_present_weight = 0.5
+              base_switch_penalty = 0.10   # two-level residency (routing.md §6.1); chosen, not
+                                           # measured — set it from your own load times
+              require_adapter_evidence = true   # "no benchmark, no use" (ADR-0064 rule 3). Until
+                                           # FreeWeight measures adapters (LA3) this makes every
+                                           # adapter subject invisible to routed selection while
+                                           # leaving pins working, which is intended
               explanation_retention_days = 0    # 0 = forever
 [evidence]    freeweight_url = ""          # empty = not configured, not "unavailable"
               freeweight_api_key_env = ""  # or freeweight_api_key_file (ADR-0026)
@@ -236,7 +275,7 @@ PROVIDER_UNAVAILABLE      CONTEXT_LIMIT_EXCEEDED     MAX_WAIT_EXCEEDED
 PROVIDER_TIMEOUT          CAPABILITY_UNSUPPORTED     EVIDENCE_IMPORT_FAILED
 PROVIDER_PROTOCOL_ERROR   ALL_CANDIDATES_FAILED      SCHEMA_VERSION_UNSUPPORTED
 PROVIDER_REJECTED         GENERATION_CANCELLED       EVIDENCE_SOURCE_REFUSED
-VALIDATION_ERROR
+VALIDATION_ERROR          ADAPTER_NOT_FOUND          PROFILE_MISMATCH
 ```
 
 `VALIDATION_ERROR` is a **request** that could not be accepted, and it is distinct from
@@ -261,6 +300,8 @@ as `INTERNAL_ERROR`:
 | `CapabilityUnsupported` | `CAPABILITY_UNSUPPORTED` | 422 |
 | `ValidationError` | `VALIDATION_ERROR` (the refused field in `details.fields`) | 400 |
 | `GenerationCancelled` | `GENERATION_CANCELLED` — terminal, never retried | 200 with a cancelled job |
+| `AdapterNotFound` | `ADAPTER_NOT_FOUND` | 404 |
+| `ProfileMismatch` | `PROFILE_MISMATCH` — permanent for the request as written; never retried and never a fallback trigger, because retrying an identical request changes nothing | 422 |
 
 `EVIDENCE_SOURCE_REFUSED` is returned when an import URL fails the fetch allowlist
 ([ADR-0026 §3](../../adr/0026-local-http-hardening.md)); it is distinct from
@@ -306,7 +347,22 @@ Behavioural rules:
   so an offer is never silently discarded.
 * Per-token rate limits and queue depth caps prevent a single caller from starving others.
 * Remote providers require explicit opt-in and are marked as egress in the UI and in every routing
-  explanation that selects one.
+  explanation that selects one. `[providers] allow_remote` is the cross-provider gate and a
+  registration's `remote` flag is its declaration; the gate is evaluated above the flag, so a remote
+  registration in a deployment that disallows remote is configured, visible and never routed to
+  ([ADR-0077](../../adr/0077-a-named-provider-block-and-the-singular-block-are-one-registry.md)
+  rule 4).
+* **An adapter artifact is local-only and classified.** No adapter is ever sent to a remote
+  endpoint: a remote registration contributes no adapter subjects, because only a provider
+  supervising a local process declares `adapter_hot_swap`, and a candidate whose adapter
+  classification conflicts with the egress it would be is rejected by name and the rejection is
+  persisted ([ADR-0065](../../adr/0065-an-adapter-is-classified-and-local-only.md),
+  [ADR-0079](../../adr/0079-an-adapter-classification-refusal-is-a-routing-rejection.md)). A
+  manifest without a `data_classification` is invalid and its adapter stays unavailable until a
+  person supplies one.
+* Adapter manifests are untrusted input on the same terms as imported evidence: schema-validated,
+  size-limited, capability terms checked against the vocabulary, and a declared base digest verified
+  against the served base before anything is applied. A manifest can never execute anything.
 
 ## 15. Performance considerations
 
@@ -367,6 +423,20 @@ disabled where the provider cannot report it.
   an explanation remains truthful after the runtime configuration changes.
 * Routing strategy and confidence policy versions are recorded on every decision.
 * Evidence import accepts a configured set of schema majors and rejects others explicitly.
+
+**What 1.1 adds, and what it does not break.** Named provider registration, the adapter registry and
+the adapter axis of the subject are all additive within `/api/v1`
+([ADR-0013](../../adr/0013-api-versioning.md)): a 1.0 configuration starts unchanged and produces a
+byte-identical registry, a request that names no adapter routes exactly as it did, and a subject
+with no adapter serializes to today's canonical string byte-for-byte
+([ADR-0058](../../adr/0058-the-execution-subject-gains-an-adapter-axis.md) §3). Responses gain
+fields — `output.tool_calls_assembled`, the subject's adapter and provider name — and lose none.
+`output.tool_calls` keeps its shipped fragment shape and is **superseded**, with its removal named
+at LoadCoach `2.0`; a superseded field is supported and tested for as long as it exists
+([ADR-0078](../../adr/0078-a-shipped-response-field-is-superseded-beside-its-replacement.md)).
+Stored rows gain nullable columns and two unique keys change shape, migrated with a stated rule:
+every pre-existing row is a bare-base subject
+([ADR-0080](../../adr/0080-a-persisted-decision-names-the-subject-by-reference-and-by-string.md)).
 
 ## 20. Acceptance criteria
 

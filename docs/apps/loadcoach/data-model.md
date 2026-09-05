@@ -23,7 +23,16 @@ erDiagram
     JOBS                ||--o{ JOB_EVENTS : emits
     JOBS                ||--o{ FEEDBACK : receives
     EVIDENCE_SOURCES    ||--o{ CAPABILITY_EVIDENCE : "imported from"
+    ADAPTERS            ||--o{ ROUTING_CANDIDATES : "subject of"
+    ADAPTERS            ||--o{ JOB_ATTEMPTS : "answered under"
+    ADAPTERS            ||--o{ RELIABILITY_STATS : "performs as"
 ```
+
+**From 1.1** the routing, attempt, residency and reliability rows name an **execution subject**
+rather than a model: a nullable `adapter_id` beside the existing `model_id`, plus the canonical
+subject string written at decision time
+([ADR-0080](../../adr/0080-a-persisted-decision-names-the-subject-by-reference-and-by-string.md)).
+`adapter_id IS NULL` is the bare base, which is every row written before that migration.
 
 ---
 
@@ -34,11 +43,22 @@ Identical identity columns to FreeWeight's — the same canonical identity, inde
 
 ```text
 id ULID PK · provider_kind · provider_model_name · artifact_digest NULL
+provider_name TEXT NOT NULL DEFAULT ''      -- 1.1: the registration that serves it (ADR-0055);
+                                            -- '' on rows discovered before named registration,
+                                            -- and the kind for a singular [provider] block
+is_remote BOOLEAN NOT NULL DEFAULT 0        -- the registration's declared `remote` flag, never
+                                            -- inferred from the kind or the URL (ADR-0077 rule 4)
 canonical_id · identity_confidence · descriptor_json · declared_capabilities_json
 max_context · size_bytes · quantization · family · parameter_count
 first_seen_at · last_seen_at · available BOOLEAN · unavailable_reason
 UNIQUE (provider_kind, provider_model_name, artifact_digest)
 ```
+
+Identity is unchanged: `provider_kind` is part of it and `provider_name` is not
+([ADR-0008](../../adr/0008-canonical-model-identity.md)), so two registrations *of the same kind*
+serving the same weights are one row, while the same weights under two different kinds are two rows
+with separate evidence. Where two registrations of one kind serve one model, `provider_name` records
+the one discovery last saw it on, and the models UI shows it.
 
 ### `model_capabilities`
 Non-benchmark capability signals: declared flags, manual scores, priors.
@@ -142,6 +162,7 @@ response_hash · response_text TEXT NULL
 structured_output_json NULL · tool_calls_json NULL
 reasoning_available BOOLEAN · reasoning_summary TEXT NULL · reasoning_source TEXT NULL
 selected_model_id FK NULL · runtime_profile_id FK NULL · runtime_profile_hash NULL
+selected_adapter_id FK NULL · selected_subject_canonical_id TEXT NULL   -- ADR-0080
 served_context INT NULL · served_context_source TEXT NULL   -- configured | reported | assumed
 target_gpu_index INT NULL
 attempt INT · max_attempts INT              -- attempt is written only by the executor, never by the
@@ -164,6 +185,9 @@ supported), `(task_profile_id, created_at DESC)`, `(selected_model_id, created_a
 ```text
 id ULID PK · job_id FK ON DELETE CASCADE · attempt INT NOT NULL
 model_id FK NULL · runtime_profile_hash · rank INT        -- 1 = primary, 2+ = fallback
+adapter_id FK NULL · subject_canonical_id TEXT NULL       -- what answered (ADR-0080)
+adapter_data_classification TEXT NULL                     -- the adapter's own classification
+effective_data_classification TEXT NULL                   -- max(caller, adapter) (ADR-0065 rule 2)
 started_at · completed_at · outcome TEXT                  -- completed|provider_error|timeout|
                                                           -- validation_failed|cancelled|context_exceeded
 provider_ms · ttft_ms · input_tokens · output_tokens · finish_reason
@@ -183,20 +207,31 @@ passed BOOLEAN · detail_json · duration_ms · created_at
 id ULID PK · job_id FK NULL          -- NULL for a /route call with no job
 task_profile_id FK · task_profile_version · strategy_name · strategy_version
 confidence_policy_version · requested_at · duration_ms
-selected_model_id FK NULL · selected_score NUMERIC NULL
+selected_model_id FK NULL · selected_adapter_id FK NULL · selected_score NUMERIC NULL
 flags_json · evidence_summary_json · overrides_json · telemetry_snapshot_json
 ```
 
 ### `routing_candidates`
 ```text
 id ULID PK · decision_id FK ON DELETE CASCADE · model_id FK
+adapter_id FK NULL · subject_canonical_id TEXT NOT NULL   -- the subject as it was at decision time
 rank INT NULL                        -- NULL when rejected
 task_fit NUMERIC NULL · final_score NUMERIC NULL
 capability_breakdown_json            -- per capability: weight, score, confidence, source, age, n
 factors_json                         -- reliability, availability, residency, cost
 rejected BOOLEAN · rejection_reason TEXT NULL · rejection_detail_json
+residency_detail_json NULL           -- which residency level was applied, and both knobs' values
 ```
 Index: `(decision_id, rank)`.
+
+`subject_canonical_id` is written, never parsed
+([ADR-0024 §4](../../adr/0024-model-identity-formatting-and-normalization.md),
+[ADR-0080](../../adr/0080-a-persisted-decision-names-the-subject-by-reference-and-by-string.md)):
+every question about *which* adapter is asked of `adapter_id`, and the string exists so an
+explanation still renders what the system believed at the time after the adapter directory has
+changed underneath it. A rejection whose reason is `adapter_classification_conflict` carries the
+classification arithmetic in `rejection_detail_json`, and that row is the recorded denial I19 asks
+for ([ADR-0079](../../adr/0079-an-adapter-classification-refusal-is-a-routing-rejection.md)).
 
 ### `job_events`
 ```text
@@ -223,13 +258,23 @@ Rolling production evidence, recomputed incrementally.
 
 ```text
 id ULID PK · model_id FK · task_profile_id · window TEXT         -- 7d | 30d | all
+adapter_id FK NULL · adapter_key TEXT NOT NULL DEFAULT ''       -- the subject axis (ADR-0067)
 attempts · successes · validation_passes · errors · timeouts · cancellations
 latency_count · p50_latency_ms NULL · p95_latency_ms NULL
 output_token_count · mean_output_tokens NULL · tokens_per_second_count · mean_tokens_per_second NULL
 feedback_count · acceptance_rate NUMERIC NULL · quality_count · mean_quality NUMERIC NULL
 circuit_state TEXT · circuit_opened_at NULL · circuit_reason · updated_at
-UNIQUE (model_id, task_profile_id, window)
+UNIQUE (model_id, adapter_key, task_profile_id, window)
 ```
+
+**The key is the subject, not the base** ([ADR-0067](../../adr/0067-reliability-keys-on-the-subject-not-the-base.md)):
+a failing `(base, adapterA)` opens its own breaker and leaves the bare base and every sibling
+adapter servable. `adapter_key` carries the empty string rather than `NULL` for the bare base
+because SQL treats `NULL`s in a unique index as distinct, and a key that admits duplicates is not a
+key ([ADR-0080](../../adr/0080-a-persisted-decision-names-the-subject-by-reference-and-by-string.md)
+rule 5); `adapter_id` is the real foreign key beside it. The 20-sample minimum applies per subject,
+so adapter subjects carry `low_evidence` until they have earned their own numbers — reported, never
+borrowed from a neighbour.
 
 Every statistic is stored beside the sample count that produced it (`*_count`) and is `NULL` below
 a documented minimum — absent with a reason, never a plausible number over three attempts
@@ -251,15 +296,52 @@ point is committed with its `outcome`, `finish_reason` and usage. Before this, s
 `executing` until a watchdog or a cancel and its attempts were never persisted, which made the
 `finish_reason` behind an empty answer unrecoverable.
 
+### `adapters`
+The operator's directory, read into rows. Identity is the **artifact hash**; the path is a locator,
+so a rename is safe and a content change is a different adapter
+([ADR-0061](../../adr/0061-the-adapter-registry-is-a-directory-and-a-manifest.md) rule 5).
+
+```text
+id ULID PK
+name TEXT NOT NULL                   -- the manifest's pin and display name
+artifact_sha256 TEXT NOT NULL        -- the identity, normalized 'sha256:' + 64 lowercase hex
+source_sha256 TEXT NULL              -- lineage only; never part of identity
+artifact_path TEXT NOT NULL          -- a locator, relative to [adapters] directory
+manifest_path TEXT NOT NULL          -- the reviewed manifest this row was read from
+base_model_name TEXT NOT NULL · base_artifact_digest TEXT NULL
+base_identity_confidence TEXT NOT NULL      -- digest | name_only (ADR-0058 §5)
+declared_capabilities_json           -- validated vocabulary terms (ADR-0064 rule 1)
+data_classification TEXT NOT NULL    -- required, no default (ADR-0065 rule 1)
+adapter_format TEXT NOT NULL         -- 'gguf' in v1
+manifest_json                        -- the model.adapter_manifest payload exactly as it arrived
+created_at · first_seen_at · last_seen_at
+available BOOLEAN · unavailable_reason TEXT NULL
+UNIQUE (artifact_sha256)
+```
+
+`manifest_json` holds the operator's document unchanged, for the same reason
+`capability_evidence.record_json` does: the row above it is the queryable projection, and a payload
+rebuilt from a projection is not the payload that was reviewed. `available` goes false with a reason
+when the artifact named by `artifact_path` is missing or its content no longer hashes to
+`artifact_sha256` — fail closed, named by `doctor`, until a rescan
+([ADR-0061](../../adr/0061-the-adapter-registry-is-a-directory-and-a-manifest.md) rule 5).
+Index: `(name)`, `(base_model_name)`, `available`.
+
 ### `residency`
 ```text
 id ULID PK · model_id FK · gpu_index INT NOT NULL
+adapter_id FK NULL · adapter_key TEXT NOT NULL DEFAULT ''   -- '' = the bare base (ADR-0080 rule 5)
 loaded_at · last_used_at
 vram_bytes NUMERIC NULL · vram_bytes_unavailable_reason TEXT NULL
 resident BOOLEAN · unloaded_at NULL · unload_reason
-UNIQUE (model_id, gpu_index, loaded_at)
+UNIQUE (model_id, adapter_key, gpu_index, loaded_at)
 ```
-`max_resident_models` is interpreted per `gpu_index`. The measurement column pair follows
+Residency is two-level ([ADR-0066](../../adr/0066-residency-is-two-level.md)): what occupies a
+device is the **base process**, and the adapter columns record which subject last used it. An
+adapter switch on a resident base is not a load and writes no new row — it updates `last_used_at`
+— which is what makes `residency_factor` free across adapters and expensive across bases
+([Routing §6.1](routing.md)). `max_resident_models` is interpreted per `gpu_index`, and counts
+bases, not subjects. The measurement column pair follows
 `weightsdb.measurement_columns` — a value column plus its reason column, never a single column typed
 "Measurement" ([Database Standards §3](../../standards/database-standards.md)).
 
@@ -279,6 +361,7 @@ As in FreeWeight ([FreeWeight Data Model](../freeweight/data-model.md)).
 | Tool definitions and tool calls | With the transcript | `request_json.tools` is caller-written prompt content and `request_json.messages[].tool_calls` is model output; both are removed by the same scrub that removes the transcript, and `tool_calls_json` with them |
 | Capability evidence | Upserted on re-import | Rows absent from a **complete** bundle are marked `superseded`, not deleted; an incremental bundle removes nothing ([ADR-0022 §5](../../adr/0022-capability-evidence-record-contract.md)) |
 | Reliability stats | Rolling windows | Recomputed; `all` window never pruned |
+| Adapters | Until removed from the directory | A row whose artifact is gone goes `available = false` with a reason; it is never deleted, so the decisions that named it stay readable |
 
 ---
 
@@ -293,5 +376,6 @@ Asserted in tests:
 * Evidence lookup during routing uses `(model_id, capability_id)` and filters on
   `match_state = 'bound'`.
 * The ageing sweep uses `(state, queued_at)` and never scans `jobs`.
-* Reliability lookup uses `(model_id, task_profile_id, window)`.
+* Reliability lookup uses `(model_id, adapter_key, task_profile_id, window)`.
+* Adapter lookup during registry construction uses `adapters.artifact_sha256`.
 * Lease reaping uses `lease_expires_at`.
