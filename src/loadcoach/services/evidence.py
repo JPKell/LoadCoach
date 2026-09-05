@@ -33,7 +33,12 @@ import setspec
 from baseaicore import SuiteError, is_supported
 from pydantic import ValidationError as PydanticValidationError
 from setspec import SchemaVersion, load_envelope
-from setspec.capability.v1 import CapabilityEvidenceFields, CapabilityEvidenceIn
+from setspec.capability.v1 import (
+    CapabilityEvidenceV1_1Fields as CapabilityEvidenceFields,
+)
+from setspec.capability.v1 import (
+    CapabilityEvidenceV1_1In as CapabilityEvidenceIn,
+)
 from weightsdb import upsert
 
 from loadcoach.domain.authorization import Principal, authorize
@@ -243,13 +248,22 @@ def _accepted_versions(accept_schema_majors: Sequence[int]) -> list[SchemaVersio
 
 
 def _identity_of(record: CapabilityEvidenceFields) -> EvidenceIdentity:
-    """Lift one validated record's model identity into the domain's value object."""
+    """Lift one validated record's measurement subject into the domain's value object.
+
+    The subject, not the model: a `capability.evidence` `1.1` record may carry an ``adapter``
+    block, and evidence measured on ``(base, adapterA)`` applies to that subject and to nothing
+    else — not to the bare base, not to a sibling adapter (ADR-0058 §4). Carrying the adapter here
+    is what lets :func:`~loadcoach.domain.evidence_policy.bind` refuse to attach it to a base row.
+    """
     identity = record.model
+    adapter = record.adapter
     return EvidenceIdentity(
         provider_kind=identity.provider_kind,
         provider_model_name=identity.provider_model_name,
         artifact_digest=identity.artifact_digest,
         canonical_id=identity.canonical_id,
+        adapter_name=None if adapter is None else adapter.name,
+        adapter_artifact_digest=None if adapter is None else adapter.artifact_digest,
     )
 
 

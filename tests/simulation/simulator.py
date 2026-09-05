@@ -37,6 +37,8 @@ from typing import Any, Final
 from baseaicore import UNSUPPORTED, ModelDescriptor, ModelIdentity, ProviderKind, RuntimeProfile
 from baseaicore.measurement import Measurement, is_supported
 from modelrack import (
+    AdapterRegistration,
+    AdapterState,
     GenerationRequest,
     GenerationResult,
     LoadResult,
@@ -557,6 +559,18 @@ class SimulatedProvider:
     def capabilities(self) -> ProviderCapabilities:
         """Return the declared capabilities."""
         return self._capabilities
+
+    def list_adapters(self) -> Sequence[AdapterState]:
+        """Delegate to the base fake, which declares no ``adapter_hot_swap`` and so refuses.
+
+        The refusal is the contract (``modelrack.provider.Provider.list_adapters``): an empty
+        list and "this provider has no concept of adapters" are different facts.
+        """
+        return self._base.list_adapters()
+
+    def register_adapters(self, adapters: Sequence[AdapterRegistration]) -> None:
+        """Delegate to the base fake, which refuses for the same reason."""
+        self._base.register_adapters(adapters)
 
     def list_models(self, *, refresh: bool = False) -> Sequence[ModelDescriptor]:
         """Delegate to the base fake."""

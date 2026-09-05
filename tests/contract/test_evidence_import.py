@@ -1,5 +1,11 @@
 """Contract: LoadCoach reads every published ``benchmark.evidence_bundle`` golden.
 
+The `1.1` reader and writer models are the ones imported here, aliased to the bare names, because
+ADR-0068 rule 3 keeps a bare name meaning the version it was frozen at: ``CapabilityEvidenceOut``
+is permanently `1.0` and would refuse the ``adapter`` block a `1.1` golden carries. Adopting `1.1`
+is an import change and nothing more — every `1.0` record validates through the `1.1` model
+unchanged, and a record with no adapter dumps byte-identically.
+
 Testing standards §8 rule 3, from the consumer's side: *the consumer's test suite asserts that it
 can read every golden payload for every supported major version.* The goldens are imported from
 the **installed** ``setspec``, never hand-authored here — a bundle typed out in this file would
@@ -19,10 +25,16 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from setspec import PUBLISHED_SCHEMAS, SchemaVersion, golden_names, golden_payloads
 from setspec.capability.v1 import (
-    CapabilityEvidenceIn,
-    CapabilityEvidenceOut,
-    EvidenceBundleIn,
-    EvidenceBundleOut,
+    CapabilityEvidenceV1_1In as CapabilityEvidenceIn,
+)
+from setspec.capability.v1 import (
+    CapabilityEvidenceV1_1Out as CapabilityEvidenceOut,
+)
+from setspec.capability.v1 import (
+    EvidenceBundleV1_1In as EvidenceBundleIn,
+)
+from setspec.capability.v1 import (
+    EvidenceBundleV1_1Out as EvidenceBundleOut,
 )
 
 from loadcoach.domain.evidence_policy import MATCH_STATES

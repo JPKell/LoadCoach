@@ -7,6 +7,27 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Changed
+- **The `setspec` pin moves to `>=0.5,<0.7`, and the evidence reader adopts `capability.evidence`
+  `1.1`** (H2). The adapter registry reads SetSpec's `model.adapter_manifest` 1.0 rather than
+  defining a second manifest shape (ADR-0061), and that payload ships in `setspec 0.5.0`, so the
+  pin E5 deliberately left at `>=0.4,<0.5` moves here rather than at H4. Moving it alone would have
+  turned three local-only reds into CI reds — a bare `CapabilityEvidenceOut` permanently means
+  `1.0` (ADR-0068 rule 3) and refuses the `adapter` block a `1.1` golden carries — so the reader
+  and the contract test now import `CapabilityEvidenceV1_1In`/`Out` and `EvidenceBundleV1_1In`/`Out`.
+  It is an import change and nothing else: every `1.0` record validates through the `1.1` model
+  unchanged, and a record with no adapter dumps byte-identically.
+
+  **Adapter-bearing evidence is retained, never attached to the base.** Evidence measured on
+  `(base, adapterA)` applies to that subject and to nothing else (ADR-0058 §4), so a record
+  carrying an `adapter` block binds `unmatched` with a note naming the adapter rather than raising
+  the score of weights that were never measured. H4 is where FreeWeight starts producing such
+  records.
+
+- **`baseaicore` moves to `>=0.4.2`** for ADR-0074's `RuntimeProfile.adapters_registered`, and
+  **`modelrack` to `>=0.7,<0.8`** for `LlamaCppProvider`, `list_adapters()` and
+  `register_adapters()`. Both carry a `TODO: re-pin on publish` until the operator publishes them.
+
 ### Added
 - **`POST /generate` and `POST /jobs` carry tool definitions** (G2). A body may now supply
   `tools` — a list of `{"name", "description", "parameters"}` — and they reach the provider

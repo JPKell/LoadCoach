@@ -128,6 +128,37 @@ def test_the_exact_match_wins_over_the_name_only_upgrade_when_both_rows_exist() 
     assert binding.upgrade_model_id is None
 
 
+def test_adapter_bearing_evidence_never_binds_to_the_base_row() -> None:
+    """Rule 0: evidence measured under an adapter is not evidence about the bare base.
+
+    ADR-0058 §4 — a differing adapter axis is a different subject, so binding an adapter-bearing
+    record to the base's registry row by its model identity would raise the score of weights that
+    were never measured. It is retained, named, and never scores.
+    """
+    identity = EvidenceIdentity(
+        provider_kind="ollama",
+        provider_model_name="qwen3.5:32b",
+        artifact_digest=DIGEST,
+        canonical_id=f"ollama/qwen3.5:32b@{DIGEST}",
+        adapter_name="factcheck",
+        adapter_artifact_digest=OTHER_DIGEST,
+    )
+    assert identity.is_adapter_bearing
+
+    binding = bind_identity(identity, [_local()])
+
+    assert binding.match_state == "unmatched"
+    assert binding.model_id is None
+    assert not binding.is_bound
+    assert "factcheck" in binding.note
+
+
+def test_a_bare_base_identity_is_not_adapter_bearing() -> None:
+    """The other half: the axis is absent by default, so every 1.0 record binds as it always did."""
+    assert not _identity().is_adapter_bearing
+    assert bind_identity(_identity(), [_local()]).match_state == "bound"
+
+
 def test_binding_ignores_a_model_of_another_provider_kind_or_name() -> None:
     other_kind = LocalModel(
         model_id="X",

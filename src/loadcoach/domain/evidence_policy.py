@@ -120,24 +120,35 @@ is not a reason to badge every measurement on the machine as stale.
 
 @dataclass(frozen=True, slots=True)
 class EvidenceIdentity:
-    """The model identity an evidence record carries, denormalized (ADR-0022 §4).
+    """The measurement subject an evidence record carries, denormalized (ADR-0022 §4).
 
     Attributes:
         provider_kind: e.g. ``"ollama"``.
         provider_model_name: The provider's own name for the weights.
         artifact_digest: ``sha256:…`` when the producer resolved one, else ``None``.
         canonical_id: The full ``provider/name@digest`` string (ADR-0008).
+        adapter_name: The adapter this measurement was taken under, from a `capability.evidence`
+            `1.1` record's ``adapter`` block, or ``None`` for the bare base (ADR-0058 §1).
+        adapter_artifact_digest: That adapter's artifact digest — its identity. ``None`` for the
+            bare base.
     """
 
     provider_kind: str
     provider_model_name: str
     artifact_digest: str | None
     canonical_id: str
+    adapter_name: str | None = None
+    adapter_artifact_digest: str | None = None
 
     @property
     def is_name_only(self) -> bool:
         """Whether this identity names weights without proving which ones."""
         return self.artifact_digest is None
+
+    @property
+    def is_adapter_bearing(self) -> bool:
+        """Whether this measurement was taken under an adapter rather than on a bare base."""
+        return self.adapter_name is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,7 +203,14 @@ class Binding:
 def bind_identity(identity: EvidenceIdentity, registry: Sequence[LocalModel]) -> Binding:
     """Resolve one evidence identity against the local registry (ADR-0022 §4).
 
-    The four rules, in the order the ADR's table gives them:
+    Rule 0, ahead of the ADR's four: **an adapter-bearing record binds to nothing.** Evidence
+    measured on ``(base, adapterA)`` applies to that subject and to nothing else — not to the bare
+    base, not to a sibling adapter (ADR-0058 §4) — so attaching it to the base row by its model
+    identity would raise the score of weights that were never measured. It is retained
+    ``unmatched`` with a note naming the adapter, which is the same shape as every other identity
+    this registry cannot yet resolve, and it is bound when the registry can hold adapter subjects.
+
+    Then the four rules, in the order the ADR's table gives them:
 
     1. **Exact triple match** — same ``(provider_kind, provider_model_name, artifact_digest)``,
        where two ``None`` digests match each other. Bound.
@@ -213,6 +231,19 @@ def bind_identity(identity: EvidenceIdentity, registry: Sequence[LocalModel]) ->
         The :class:`Binding`. Never raises and never reports failure: an identity that matches
         nothing is a legitimate, retained state, not an error (ADR-0022, rejected alternatives).
     """
+    if identity.is_adapter_bearing:
+        return Binding(
+            match_state="unmatched",
+            model_id=None,
+            upgrade_model_id=None,
+            upgrade_digest=None,
+            note=(
+                f"measured under adapter {identity.adapter_name!r}; evidence for an adapter "
+                "subject applies to that subject alone (ADR-0058 §4), and this build binds "
+                "adapter subjects no further than retaining them"
+            ),
+        )
+
     same_name = [
         row
         for row in registry
