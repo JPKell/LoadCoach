@@ -37,7 +37,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from loadcoach.__about__ import __version__
 from loadcoach.config import LOOPBACK_HOSTS, Settings
-from loadcoach.infrastructure.providers.factory import build_provider
+from loadcoach.infrastructure.providers.factory import build_registrations
 from loadcoach.services.database import Database
 from loadcoach.services.job_events import JobEventSink
 from loadcoach.services.queue_stream import QueueStatusPublisher
@@ -278,7 +278,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         database_url, statement_timeout_ms=settings.storage.statement_timeout_ms
     )
     app.state.database = database
-    app.state.provider = build_provider(settings.provider)
+    registrations = build_registrations(settings)
+    app.state.provider_registrations = registrations
+    app.state.provider = registrations[0].provider
     app.state.event_sink = JobEventSink()
     # The queue runtime: max_concurrent_jobs worker threads and the scheduler thread with the
     # lease keeper (queue §3, ADR-0029 §4). Started here because the lifespan is where the
@@ -289,6 +291,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         provider=app.state.provider,
         sink=app.state.event_sink,
         snapshot=lambda: current_snapshot(app),
+        registrations=registrations,
     )
     app.state.queue_runtime = runtime
     runtime.start()

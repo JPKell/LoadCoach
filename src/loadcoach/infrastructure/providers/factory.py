@@ -13,6 +13,7 @@ degraded health *about*, and this is the only place one is built.
 from __future__ import annotations
 
 import dataclasses
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 from baseaicore import ConfigurationError
@@ -21,9 +22,19 @@ if TYPE_CHECKING:
     from modelrack.provider import Provider
     from modelrack.testing import FakeModel
 
-    from loadcoach.config import FakeProviderSettings, ProviderSettings
+    from loadcoach.config import (
+        FakeProviderSettings,
+        ProviderRegistrationSettings,
+        ProviderSettings,
+        Settings,
+    )
 
-__all__ = ["SUPPORTED_PROVIDER_KINDS", "build_provider"]
+__all__ = [
+    "SUPPORTED_PROVIDER_KINDS",
+    "ProviderRegistration",
+    "build_provider",
+    "build_registrations",
+]
 
 SUPPORTED_PROVIDER_KINDS: frozenset[str] = frozenset({"ollama", "fake"})
 """``provider.kind`` values this phase can construct.
@@ -124,6 +135,88 @@ def _fake_model(overrides: FakeProviderSettings) -> FakeModel:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderRegistration:
+    """One registered provider: its operator-chosen name, its kind, its egress class, its handle.
+
+    LoadCoach 1.1 registers providers by name and kind into one tagged registry
+    (ADR-0055). The name is what explanations, the models UI and ``doctor`` refer to; for a
+    singular ``[provider]`` block it is the kind (ADR-0077 rule 1).
+
+    Attributes:
+        name: The registration's name, unique within one configuration.
+        kind: The provider kind this registration was built from.
+        is_remote: The registration's **declared** ``remote`` flag. Never inferred from the kind
+            or the URL (ADR-0055 rule 4).
+        provider: The constructed handle. Opens no connection by itself.
+    """
+
+    name: str
+    kind: str
+    is_remote: bool
+    provider: Provider
+
+
+def build_registrations(settings: Settings) -> tuple[ProviderRegistration, ...]:
+    """Construct every provider this configuration registers, in a stable order.
+
+    The one composition root for providers, plural. A singular ``[provider]`` block yields exactly
+    one registration named after its kind, declaring ``remote = false``; named
+    ``[providers.<name>]`` blocks yield one each, in name order so that discovery, ``doctor`` and
+    every explanation list them the same way twice running. A configuration writing both forms
+    never reaches here — :func:`~loadcoach.config.load_settings` refuses it (ADR-0077 rule 3).
+
+    Args:
+        settings: The resolved application configuration.
+
+    Returns:
+        One :class:`ProviderRegistration` per configured provider. Never empty: with no
+        configuration at all, the singular block's defaults are one Ollama registration, which is
+        LoadCoach 1.0's behaviour unchanged.
+
+    Raises:
+        ConfigurationError: A registration names an unsupported kind, or a ``fake`` registration
+            sets only some of its four model-shape overrides.
+    """
+    named = settings.providers.registrations
+    if named:
+        return tuple(
+            ProviderRegistration(
+                name=name,
+                kind=registration.kind,
+                is_remote=registration.remote,
+                provider=_build_one(registration, field=f"providers.{name}.kind"),
+            )
+            for name, registration in sorted(named.items())
+        )
+    singular = settings.provider
+    return (
+        ProviderRegistration(
+            name=singular.kind,
+            kind=singular.kind,
+            is_remote=False,
+            provider=_build_one(singular.as_registration(), field="provider.kind"),
+        ),
+    )
+
+
+def _build_one(settings: ProviderRegistrationSettings, *, field: str) -> Provider:
+    """Construct one registration's provider, naming ``field`` in any refusal."""
+    if settings.kind == "ollama":
+        from modelrack.providers.ollama import OllamaProvider
+
+        return OllamaProvider(settings.base_url, timeout=settings.timeout_seconds)
+    if settings.kind == "fake":
+        from modelrack.testing import FakeProvider, FakeScript
+
+        return FakeProvider(FakeScript(models=(_fake_model(settings.fake),)))
+    raise ConfigurationError(
+        f"{field}={settings.kind!r} is not supported; expected one of "
+        f"{sorted(SUPPORTED_PROVIDER_KINDS)!r}.",
+        details={"field": field, "value": settings.kind},
+    )
+
+
 def build_provider(settings: ProviderSettings) -> Provider:
     """Construct the configured :class:`~modelrack.provider.Provider`.
 
@@ -140,16 +233,4 @@ def build_provider(settings: ProviderSettings) -> Provider:
             (E6: the KV term dominates the estimate, so a partial override cannot reliably provoke
             ``insufficient_vram`` — see :class:`~loadcoach.config.FakeProviderSettings`).
     """
-    if settings.kind == "ollama":
-        from modelrack.providers.ollama import OllamaProvider
-
-        return OllamaProvider(settings.base_url, timeout=settings.timeout_seconds)
-    if settings.kind == "fake":
-        from modelrack.testing import FakeProvider, FakeScript
-
-        return FakeProvider(FakeScript(models=(_fake_model(settings.fake),)))
-    raise ConfigurationError(
-        f"provider.kind={settings.kind!r} is not supported; expected one of "
-        f"{sorted(SUPPORTED_PROVIDER_KINDS)!r}.",
-        details={"field": "provider.kind", "value": settings.kind},
-    )
+    return _build_one(settings.as_registration(), field="provider.kind")

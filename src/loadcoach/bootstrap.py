@@ -21,7 +21,7 @@ from sqlalchemy import func, select
 
 from loadcoach.config import LOOPBACK_HOSTS, InsecureBindingError, LoadedSettings, load_settings
 from loadcoach.infrastructure.db.models import ApiToken
-from loadcoach.infrastructure.providers.factory import build_provider
+from loadcoach.infrastructure.providers.factory import build_registrations
 from loadcoach.observability.logging import configure_logging
 from loadcoach.services.database import Database, ensure_ready
 from loadcoach.services.models import import_manual_capability_scores, try_discover_models
@@ -140,8 +140,8 @@ def bootstrap() -> Application:
             )
         profiles = read_task_profiles_file()
         import_task_profiles(database, profiles, now=datetime.now(UTC))
-        provider = build_provider(loaded.settings.provider)
-        try_discover_models(database, provider, now=datetime.now(UTC))
+        registrations = build_registrations(loaded.settings)
+        try_discover_models(database, registrations, now=datetime.now(UTC))
         # After discovery: a manual score names a model by canonical_id and is skipped, not an
         # error, if that model has not been discovered yet.
         import_manual_capability_scores(database, now=datetime.now(UTC))

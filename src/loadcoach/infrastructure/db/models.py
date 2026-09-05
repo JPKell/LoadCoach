@@ -31,6 +31,7 @@ from sqlalchemy import (
     MetaData,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from weightsdb import PortableJSON, UtcDateTime, measurement_columns, ulid_primary_key
@@ -126,6 +127,12 @@ class Model(Base):
     artifact_digest: Mapped[str | None] = mapped_column(String, nullable=True)
     canonical_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     identity_confidence: Mapped[str] = mapped_column(String, nullable=False)
+    provider_name: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    is_remote: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
     descriptor_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
     declared_capabilities_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
     max_context: Mapped[int | None] = mapped_column(Integer, nullable=True)

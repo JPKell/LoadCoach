@@ -195,38 +195,69 @@ def _database(settings: Settings) -> tuple[Database | None, list[Finding]]:
 
 
 def _provider(settings: Settings) -> list[Finding]:
+    """Probe every registered provider and report each one's reachability by name.
+
+    One finding per registration, each naming the registration and its kind. One registration
+    down among several is a warning about *that* one rather than the blanket "the provider is
+    unavailable" a single-provider doctor could say (ADR-0055's consequences). The code stays
+    ``PROVIDER_UNAVAILABLE`` for every registration: the failure mode is documented and a caller
+    switches on it, so the name belongs in the message, not in a code nobody has heard of.
+    """
     from modelrack.provider import ProviderStatus
 
-    from loadcoach.infrastructure.providers.factory import build_provider
+    from loadcoach.infrastructure.providers.factory import build_registrations
 
     try:
-        provider = build_provider(settings.provider)
-        health = provider.health()
-    except Exception as exc:  # noqa: BLE001 — an unreachable provider is the documented case
+        registrations = build_registrations(settings)
+    except Exception as exc:  # noqa: BLE001 — an unconstructable provider is a configuration fault
         return [
-            Finding(
-                "PROVIDER_UNAVAILABLE",
-                "warn",
-                f"{settings.provider.kind} at {settings.provider.base_url}: {exc}",
-                "start the provider, or set provider.base_url; LoadCoach serves without it, "
-                "degraded, and every generation is PROVIDER_UNAVAILABLE until it is back",
-            ),
+            Finding("PROVIDER_UNAVAILABLE", "warn", f"provider configuration: {exc}"),
             Finding("degraded:provider", "warn", "health reports provider: unavailable"),
         ]
-    if health.status is not ProviderStatus.OK:
-        return [
+
+    findings: list[Finding] = []
+    unhealthy: list[str] = []
+    for registration in registrations:
+        label = f"{registration.name} ({registration.kind})"
+        try:
+            health = registration.provider.health()
+        except Exception as exc:  # noqa: BLE001 — an unreachable provider is the documented case
+            unhealthy.append(registration.name)
+            findings.append(
+                Finding(
+                    "PROVIDER_UNAVAILABLE",
+                    "warn",
+                    f"{label}: {exc}",
+                    "start the provider, or fix its base_url; LoadCoach serves without it, "
+                    "degraded, and every generation on it is PROVIDER_UNAVAILABLE until it is "
+                    "back",
+                )
+            )
+            continue
+        if health.status is not ProviderStatus.OK:
+            unhealthy.append(registration.name)
+            findings.append(
+                Finding(
+                    "PROVIDER_UNAVAILABLE",
+                    "warn",
+                    f"{label}: {health.detail}",
+                    "start the provider or fix its base_url",
+                )
+            )
+            continue
+        findings.append(Finding("PROVIDER_UNAVAILABLE", "ok", f"{label} reachable"))
+
+    if unhealthy:
+        findings.append(
             Finding(
-                "PROVIDER_UNAVAILABLE",
+                "degraded:provider",
                 "warn",
-                f"{settings.provider.kind}: {health.detail}",
-                "start the provider or fix provider.base_url",
-            ),
-            Finding("degraded:provider", "warn", f"health reports provider: {health.status}"),
-        ]
-    return [
-        Finding("PROVIDER_UNAVAILABLE", "ok", f"{settings.provider.kind} reachable"),
-        Finding("degraded:provider", "ok", "provider healthy"),
-    ]
+                f"health reports provider: unavailable ({', '.join(unhealthy)})",
+            )
+        )
+    else:
+        findings.append(Finding("degraded:provider", "ok", "provider healthy"))
+    return findings
 
 
 def _models_and_profiles(database: Database, settings: Settings) -> list[Finding]:

@@ -310,6 +310,13 @@ def _merged_constraints(
 
 
 def _facts_for(model: Model, *, is_remote: bool) -> ModelFacts:
+    """Lift one registry row into routing's shape, with the egress class it was discovered under.
+
+    ``is_remote`` is the caller's fallback for a row whose ``provider_name`` is empty — a model
+    discovered before named registration existed, or through a bare provider handle. A row that
+    names its registration carries that registration's declared flag instead (ADR-0055 rule 4),
+    which is what lets one pool hold local and remote candidates at once.
+    """
     geometry = model.descriptor_json
     return ModelFacts(
         model_id=model.id,
@@ -325,7 +332,8 @@ def _facts_for(model: Model, *, is_remote: bool) -> ModelFacts:
         layers=geometry_from_json(geometry, "layers"),
         kv_heads=geometry_from_json(geometry, "kv_heads"),
         head_dim=geometry_from_json(geometry, "head_dim"),
-        is_remote=is_remote,
+        provider_name=model.provider_name,
+        is_remote=model.is_remote if model.provider_name else is_remote,
     )
 
 
@@ -345,11 +353,12 @@ def _signals_for(rows: Sequence[ModelCapability]) -> tuple[CapabilitySignal, ...
 def _read_candidates(
     database: Database,
     *,
-    is_remote: bool,
+    provider: ProviderFacts,
+    provider_facts_by_name: Mapping[str, ProviderFacts],
     weights: Mapping[str, float],
     now: datetime,
     machine_fingerprint: str | None,
-) -> tuple[tuple[ModelFacts, tuple[CapabilitySignal, ...]], ...]:
+) -> tuple[tuple[ModelFacts, ProviderFacts, tuple[CapabilitySignal, ...]], ...]:
     """Read every model the registry knows, with every capability signal that may score it.
 
     Two sources, one signal type: ``model_capabilities`` for declared flags, manual scores and
@@ -360,6 +369,11 @@ def _read_candidates(
     The benchmark half filters on ``match_state = 'bound'`` and applies the ``user.*`` opt-in
     before a signal exists at all — see
     :func:`~loadcoach.services.evidence.bound_signals_for_routing`.
+
+    Each candidate carries **its own** registration's provider facts (ADR-0055 rule 3: one pool,
+    tagged), falling back to ``provider`` for a row whose registration is not in the map — a model
+    discovered before named registration, or one whose registration has since been removed from
+    the configuration. Filtering, scoring and ranking are unchanged code over a larger pool.
     """
     with database.read() as session:
         models = session.execute(select(Model).order_by(Model.canonical_id)).scalars().all()
@@ -375,7 +389,8 @@ def _read_candidates(
     )
     return tuple(
         (
-            _facts_for(model, is_remote=is_remote),
+            _facts_for(model, is_remote=provider.is_remote),
+            provider_facts_by_name.get(model.provider_name, provider),
             _signals_for(by_model.get(model.id, [])) + evidence.get(model.id, ()),
         )
         for model in models
@@ -444,6 +459,7 @@ def route(
     request: RouteRequest,
     *,
     provider: ProviderFacts,
+    provider_facts_by_name: Mapping[str, ProviderFacts] | None = None,
     policy: RoutingPolicy,
     snapshot: TelemetrySnapshot | None = None,
     resident_models: frozenset[str] = frozenset(),
@@ -460,7 +476,12 @@ def route(
         database: The application's database handle.
         request: What to route.
         provider: The provider's own capabilities, which gate the context source and the
-            capability constraints.
+            capability constraints. With more than one registration this is the fallback for a
+            candidate whose registration is not named in ``provider_facts_by_name``.
+        provider_facts_by_name: One entry per registered provider, keyed by its registration name
+            (ADR-0055). A candidate is evaluated against **its own** registration's capabilities
+            and egress class; ``None`` — the default — is the single-provider case, where every
+            candidate uses ``provider`` and the pool is exactly what LoadCoach 1.0 produced.
         policy: The configured routing policy.
         snapshot: The telemetry the resource constraints read. ``None`` skips them, which is what
             a machine with no telemetry reader honestly supports — not a fabricated zero.
@@ -511,7 +532,8 @@ def route(
 
     candidates = _read_candidates(
         database,
-        is_remote=provider.is_remote,
+        provider=provider,
+        provider_facts_by_name=provider_facts_by_name or {},
         weights=profile.weights,
         now=now,
         machine_fingerprint=policy.machine_fingerprint,
@@ -522,7 +544,7 @@ def route(
     # neutral, and the neutral record still says how many attempts it has seen.
     reliability = factors_for_task(database, task_profile_id=profile.profile_id)
     priors = parameter_band_priors(
-        {facts.canonical_id: facts.parameter_count for facts, _ in candidates}
+        {facts.canonical_id: facts.parameter_count for facts, _, _ in candidates}
     )
     scoring = ScoringInputs(
         weights=profile.weights,
@@ -536,11 +558,11 @@ def route(
     rejected: list[RejectedCandidate] = []
     selected_budget: ContextBudget | None = None
 
-    for facts, signals in candidates:
+    for facts, candidate_provider, signals in candidates:
         subject, missing_context = _build_subject(
             facts,
             signals,
-            provider=provider,
+            provider=candidate_provider,
             policy=policy,
             request=request,
             constraints=constraints,

@@ -39,6 +39,14 @@ keys decide exposure, egress, credentials or retention; they are refused there b
 be set in the file or the environment (spec §14).
 """
 
+_DERIVED_KEYS: frozenset[str] = frozenset({"providers.registrations"})
+"""Fields that hold a *collected* value rather than a key an operator writes.
+
+``providers.registrations`` is filled from the ``[providers.<name>]`` subtables, so a row for it
+would advertise a key nobody types and an environment variable that could not set it. The
+``[providers]`` section's own prose explains the real shape.
+"""
+
 _SECURITY_NOTES: dict[str, str] = {
     "server.host": "Non-loopback exposes the service; requires allowed_hosts and a token.",
     "server.port": "Part of the exposure decision.",
@@ -137,6 +145,8 @@ def render_configuration_reference() -> str:
         lines.append("|---|---|---|---|---|---|---|---|---|")
         for field_name, info in model.model_fields.items():
             key = f"{section_name}.{field_name}"
+            if key in _DERIVED_KEYS:
+                continue
             env = f"`LOADCOACH_{section_name.upper()}__{field_name.upper()}`"
             runtime = "yes" if key in RUNTIME_SETTINGS else "no"
             security = (

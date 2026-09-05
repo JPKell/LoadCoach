@@ -78,7 +78,10 @@ def discover(request: Request, principal: CurrentPrincipal) -> dict[str, Any]:
     authorize(principal, "admin")
     app = request.app
     outcome = discover_models(
-        app.state.database, app.state.provider, now=datetime.now(UTC), principal=principal
+        app.state.database,
+        getattr(app.state, "provider_registrations", None) or app.state.provider,
+        now=datetime.now(UTC),
+        principal=principal,
     )
     return {
         "added": outcome.added,
@@ -86,6 +89,7 @@ def discover(request: Request, principal: CurrentPrincipal) -> dict[str, Any]:
         "unavailable": outcome.unavailable,
         "total": outcome.total,
         "checked_at": outcome.checked_at.isoformat(),
+        "unreachable": list(outcome.unreachable),
     }
 
 

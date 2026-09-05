@@ -56,7 +56,7 @@ The default model provider LoadCoach talks to.
 
 ## `[providers]`
 
-Cross-provider policy, distinct from the single default provider's own settings.
+Cross-provider policy, plus the ``[providers.<name>]`` registrations themselves.
 
 | Key | Environment variable | Type | Default | Range | Runtime-changeable | Security | Example | Description |
 |---|---|---|---|---|---|---|---|---|

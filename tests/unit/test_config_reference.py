@@ -9,7 +9,10 @@ from typer.testing import CliRunner
 
 from loadcoach.cli.main import app
 from loadcoach.config import Settings
-from loadcoach.services.config_reference import render_configuration_reference
+from loadcoach.services.config_reference import (
+    _DERIVED_KEYS,
+    render_configuration_reference,
+)
 from loadcoach.services.settings import CONFIG_ONLY_SECURITY_KEYS, RUNTIME_SETTINGS
 
 REFERENCE = Path(__file__).resolve().parents[2] / "docs" / "configuration.md"
@@ -30,6 +33,8 @@ def test_every_field_appears_with_its_columns() -> None:
         assert f"## `[{section_name}]`" in rendered
         for field_name in model.model_fields:  # type: ignore[union-attr]  # every section is a model
             key = f"{section_name}.{field_name}"
+            if key in _DERIVED_KEYS:
+                continue
             line = next(line for line in rendered.splitlines() if line.startswith(f"| `{key}` |"))
             assert f"`LOADCOACH_{section_name.upper()}__{field_name.upper()}`" in line
             cells = [cell.strip() for cell in re.split(r"(?<!\\)\|", line)[1:-1]]
@@ -37,6 +42,18 @@ def test_every_field_appears_with_its_columns() -> None:
             assert cells[5] == ("yes" if key in RUNTIME_SETTINGS else "no"), key
             if key in CONFIG_ONLY_SECURITY_KEYS:
                 assert cells[6].startswith("**config-only:**"), key
+
+
+def test_a_derived_key_is_not_advertised_as_one_an_operator_writes() -> None:
+    """`providers.registrations` is collected from `[providers.<name>]`, never typed.
+
+    A row for it would advertise a key nobody writes and an environment variable that could not
+    set it, which is exactly the kind of lie a generated reference is supposed to prevent.
+    """
+    rendered = render_configuration_reference()
+    assert "`providers.registrations`" not in rendered
+    assert "LOADCOACH_PROVIDERS__REGISTRATIONS" not in rendered
+    assert "| `providers.allow_remote` |" in rendered
 
 
 def test_the_check_command_reports_drift(tmp_path: Path) -> None:

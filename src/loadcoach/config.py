@@ -38,6 +38,7 @@ __all__ = [
     "InsecureBindingError",
     "LoadedSettings",
     "LoggingSettings",
+    "ProviderRegistrationSettings",
     "ProviderSettings",
     "ProvidersSettings",
     "QueueSettings",
@@ -330,17 +331,112 @@ class ProviderSettings(BaseModel):
         ],
     )
 
+    def as_registration(self) -> ProviderRegistrationSettings:
+        """Return this singular block as the one registration it is (ADR-0077 rule 1).
 
-class ProvidersSettings(BaseModel):
-    """Cross-provider policy, distinct from the single default provider's own settings."""
+        ``remote`` is ``False`` and carries no knob here: the shipped default is a loopback
+        provider, every deployment that has this block today is local, and an operator with a
+        remote endpoint moves to a named block to say so — which is the same act as opting in
+        (ADR-0077 rule 2).
+        """
+        return ProviderRegistrationSettings(
+            kind=self.kind,
+            base_url=self.base_url,
+            timeout_seconds=self.timeout_seconds,
+            remote=False,
+            fake=self.fake,
+        )
+
+
+class ProviderRegistrationSettings(BaseModel):
+    """One ``[providers.<name>]`` block: a provider LoadCoach registers, by name and kind.
+
+    LC-E1, generalized (ADR-0055). The name is the operator's, and it is what explanations, the
+    models UI and ``doctor`` refer to; the kind decides which adapter is constructed.
+    """
 
     model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(
+        description="Which provider adapter serves this registration.",
+        examples=["ollama", "llamacpp", "fake"],
+    )
+    base_url: str = Field(
+        default="",
+        description="The provider's API endpoint, where its kind takes one.",
+        examples=["http://127.0.0.1:11434"],
+    )
+    timeout_seconds: float = Field(
+        default=300.0, gt=0, description="Per-call provider timeout.", examples=[300.0]
+    )
+    remote: bool = Field(
+        default=False,
+        description=(
+            "Whether this registration is somewhere other than this machine. Declared, never "
+            "inferred from the kind or the URL: an OpenAI-compatible endpoint on loopback is "
+            "local, and the same kind pointed at a hosted API is remote (ADR-0055 rule 4)."
+        ),
+        examples=[False],
+    )
+    fake: FakeProviderSettings = Field(
+        default_factory=FakeProviderSettings,
+        description="For kind='fake' only; see ProviderSettings.fake.",
+    )
+
+
+class ProvidersSettings(BaseModel):
+    """Cross-provider policy, plus the ``[providers.<name>]`` registrations themselves.
+
+    ``allow_remote`` is policy — may *any* remote provider be routed to at all — and it is
+    evaluated above a registration's own ``remote`` flag: a remote registration in a deployment
+    that disallows remote is configured, visible and never routed to (ADR-0077 rule 4).
+
+    Every other key under ``[providers]`` is a registration, so this model allows extras and
+    validates them itself rather than forbidding them: ``[providers.local]`` and
+    ``[providers] allow_remote`` share one TOML table, and pydantic sees both in one mapping.
+    """
+
+    model_config = ConfigDict(extra="allow")
 
     allow_remote: bool = Field(
         default=False,
         description="Permit a remote provider at all — an explicit, deliberate opt-in.",
         examples=[False],
     )
+    registrations: dict[str, ProviderRegistrationSettings] = Field(
+        default_factory=dict,
+        description="The named registrations, keyed by their operator-chosen names.",
+    )
+
+    @model_validator(mode="after")
+    def _collect_registrations(self) -> ProvidersSettings:
+        """Lift every extra key under ``[providers]`` into :attr:`registrations`.
+
+        Returns:
+            This model, with the extras consumed.
+
+        Raises:
+            ValueError: An extra key whose value is not a table — a typo like
+                ``[providers] allow_remot = true`` reaches here as a scalar, and a scalar is not a
+                provider. Refusing it keeps ``extra="allow"`` from turning every misspelling into
+                a silently ignored key.
+        """
+        extras = self.__pydantic_extra__ or {}
+        if not extras:
+            return self
+        collected = dict(self.registrations)
+        for name, value in extras.items():
+            if not isinstance(value, dict):
+                raise ValueError(
+                    f"[providers] has an unknown key {name!r}. A key under [providers] is either "
+                    "`allow_remote` or a provider registration table `[providers.<name>]`; "
+                    f"{name!r} is neither."
+                )
+            collected[name] = ProviderRegistrationSettings.model_validate(value)
+        object.__setattr__(self, "registrations", collected)
+        if self.__pydantic_extra__ is not None:
+            self.__pydantic_extra__.clear()
+        return self
 
 
 class ExecutionSettings(BaseModel):
@@ -814,6 +910,45 @@ def _track_sources(
     return sources
 
 
+def _refuse_both_provider_forms(merged: dict[str, Any], config_path: Path) -> None:
+    """Refuse a configuration that writes both the singular and a named provider block.
+
+    ADR-0077 rule 3. There is no precedence rule, because a precedence rule is a silent answer to
+    a question the operator did not know they had asked: the half-migrated file — a
+    ``[providers.<name>]`` added and ``[provider]`` not deleted — would otherwise run a registry
+    that is not the one its operator is reading.
+
+    It runs on the merged raw data rather than on :class:`Settings`, because after validation the
+    singular block is always present with its defaults and "written by the operator" is no longer
+    a question the model can answer.
+
+    Args:
+        merged: File, environment and CLI layers, merged, before defaults.
+        config_path: The file the message names.
+
+    Raises:
+        ConfigurationError: Both forms are present, naming the singular block, every named block
+            and the one-line fix.
+    """
+    if "provider" not in merged:
+        return
+    providers = merged.get("providers")
+    if not isinstance(providers, dict):
+        return
+    named = sorted(key for key, value in providers.items() if isinstance(value, dict))
+    if not named:
+        return
+    listed = ", ".join(f"[providers.{name}]" for name in named)
+    raise ConfigurationError(
+        f"{config_path} configures providers twice: the singular [provider] block and "
+        f"{listed}. The singular block is exactly one registration named after its kind "
+        "(ADR-0077), so keeping both would run a registry that is not the one written here. "
+        "Delete [provider] and keep the named blocks, or delete the named blocks and keep "
+        "[provider].",
+        details={"field": "provider", "named_providers": named, "file": str(config_path)},
+    )
+
+
 def load_settings(
     *,
     config_path: str | Path | None = None,
@@ -832,9 +967,10 @@ def load_settings(
 
     Raises:
         ConfigurationError: The file is not valid TOML, a key is unrecognized, a value fails a
-            field's type or range, or an unsafe bind combination is configured
-            (:class:`InsecureBindingError`, a subclass). Does **not** check for an active API
-            token — see :mod:`loadcoach.bootstrap`.
+            field's type or range, both the singular ``[provider]`` block and a
+            ``[providers.<name>]`` block are configured (ADR-0077 rule 3), or an unsafe bind
+            combination is configured (:class:`InsecureBindingError`, a subclass). Does **not**
+            check for an active API token — see :mod:`loadcoach.bootstrap`.
     """
     resolved_path = resolve_config_path(config_path)
     file_data: dict[str, Any] = {}
@@ -853,6 +989,7 @@ def load_settings(
     env_data = _read_env(ENV_PREFIX)
     cli_data = cli_overrides or {}
     merged = _deep_merge(_deep_merge(file_data, env_data), cli_data)
+    _refuse_both_provider_forms(merged, resolved_path)
 
     try:
         settings = Settings.model_validate(merged)
@@ -884,13 +1021,27 @@ allowed_hosts = []          # required when host is not loopback (ADR-0026)
 # cannot be rolled back automatically (database standards §5.1). Set it explicitly to override.
 backup_retention = 5        # automatic pre-migration backups to keep
 
+# One provider, the common case. This block is fully supported and is not deprecated: it is
+# exactly one registration named after its kind, declaring remote = false (ADR-0077).
 [provider]
 kind = "ollama"
 base_url = "http://127.0.0.1:11434"
 timeout_seconds = 300.0
 
+# More than one provider: name each of them. `remote` is declared, never inferred from the kind
+# or the URL (ADR-0055). Writing a [providers.<name>] block *and* the [provider] block above is
+# refused at startup, naming both -- delete one.
+# [providers.local]
+# kind = "ollama"
+# base_url = "http://127.0.0.1:11434"
+# remote = false
+# [providers.hosted]
+# kind = "ollama"
+# base_url = "https://example.invalid"
+# remote = true
+
 [providers]
-allow_remote = false
+allow_remote = false        # policy: may *any* remote registration be routed to at all
 
 [execution]
 max_concurrent_jobs = 1         # raise only on multi-GPU or CPU-only setups

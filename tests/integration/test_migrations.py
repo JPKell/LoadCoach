@@ -607,7 +607,8 @@ def test_migration_0007_adds_the_four_cache_columns_and_nothing_else() -> None:
                 )
             }
         runner.upgrade(revision="0007", backup=False)
-        assert runner.check_parity(Base.metadata).matches
+        # Parity is asserted at head, not here: `check_parity` diffs the whole live schema against
+        # the current ORM, and revisions after this one have since added columns of their own.
 
         with engine.connect() as connection:
             after = {
@@ -661,6 +662,70 @@ def test_migration_0007_downgrades_on_sqlite_and_re_upgrades() -> None:
                 assert "cache_read_tokens" not in names, table
                 # The copy-and-move rebuilt the table; everything else must have survived it.
                 assert {"id", "attempt", "input_tokens", "output_tokens"} <= names, table
+
+        runner.upgrade(backup=False)
+        assert runner.is_at_head()
+        assert runner.check_parity(Base.metadata).matches
+
+
+def test_migration_0008_adds_the_two_provider_columns_and_nothing_else() -> None:
+    """ADR-0055's migration: `provider_name` and `is_remote` on `models`, and no other table.
+
+    The defaults are the assertion that matters. `provider_name = ''` says "not recorded" about
+    rows discovered before registrations had names; `is_remote = false` is a fact rather than a
+    guess, because LoadCoach 1.0 could not register a remote provider at all.
+    """
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(revision="0007", backup=False)
+        with engine.connect() as connection:
+            before = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT name, sql FROM sqlite_master WHERE type = 'table'")
+                )
+            }
+        runner.upgrade(backup=False)
+        assert runner.is_at_head()
+        assert runner.check_parity(Base.metadata).matches
+
+        with engine.connect() as connection:
+            after = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT name, sql FROM sqlite_master WHERE type = 'table'")
+                )
+            }
+            info = {
+                row[1]: (row[2], row[3], row[4])
+                for row in connection.execute(text("PRAGMA table_info(models)"))
+            }
+
+    assert set(after) == set(before)
+    assert {name for name, sql in before.items() if after[name] != sql} == {"models"}
+    type_, notnull, default = info["provider_name"]
+    assert type_ == "VARCHAR"
+    assert notnull == 1
+    assert default == "''"
+    type_, notnull, default = info["is_remote"]
+    assert notnull == 1
+    assert default == "0"
+
+
+def test_migration_0008_round_trips_on_sqlite() -> None:
+    """Down to 0007 and back: the two columns go and return, and nothing else moves."""
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(backup=False)
+        runner.downgrade(revision="0007")
+
+        assert runner.current() == "0007"
+        with engine.connect() as connection:
+            names = {row[1] for row in connection.execute(text("PRAGMA table_info(models)"))}
+            assert "provider_name" not in names
+            assert "is_remote" not in names
+            # The copy-and-move rebuilt the table; everything else must have survived it.
+            assert {"id", "canonical_id", "provider_kind", "available"} <= names
 
         runner.upgrade(backup=False)
         assert runner.is_at_head()

@@ -41,7 +41,10 @@ def test_discovery_can_be_triggered_and_reports_counts(client: TestClient) -> No
     response = client.post("/api/v1/models/discover")
     assert response.status_code == 200, response.text
     body = response.json()
-    assert set(body) == {"added", "updated", "unavailable", "total", "checked_at"}
+    assert set(body) == {"added", "updated", "unavailable", "total", "checked_at", "unreachable"}
+    # One dead endpoint among several never empties a working registry: the names of the
+    # registrations that could not be listed come back, and their models are left alone.
+    assert body["unreachable"] == []
     assert body["total"] >= 1 and body["added"] == 0  # already discovered at boot
 
 

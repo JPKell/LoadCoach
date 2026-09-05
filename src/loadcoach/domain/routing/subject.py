@@ -70,8 +70,13 @@ class ModelFacts:
         layers: Transformer block count, for the theoretical KV figure.
         kv_heads: Key/value head count, for the theoretical KV figure.
         head_dim: Per-head dimension, for the theoretical KV figure.
+        provider_name: The registration that served this model's most recent discovery
+            (ADR-0055). Empty for a row discovered before named registration existed, or through
+            a bare provider handle — ``""`` reads as "not recorded" everywhere it surfaces, and is
+            never a registration's name.
         is_remote: Whether this model is served by a remote provider. Gates
-            ``allow_remote_providers`` and the cost factor.
+            ``allow_remote_providers`` and the cost factor. **Declared** on the registration, not
+            inferred from the kind or the URL (ADR-0055 rule 4).
     """
 
     model_id: str
@@ -88,6 +93,7 @@ class ModelFacts:
     kv_heads: int | None = None
     head_dim: int | None = None
     is_remote: bool = False
+    provider_name: str = ""
 
 
 @dataclass(frozen=True, slots=True)

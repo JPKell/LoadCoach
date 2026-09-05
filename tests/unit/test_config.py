@@ -178,3 +178,73 @@ def test_accept_schema_majors_may_narrow_but_never_widen(tmp_path: Path) -> None
     narrowing = tmp_path / "narrow.toml"
     narrowing.write_text("[evidence]\naccept_schema_majors = []\n")
     assert load_settings(config_path=narrowing).settings.evidence.accept_schema_majors == ()
+
+
+# --------------------------------------------------------------------------------------------
+# LC-E1 (ADR-0055, ADR-0077) — the two configuration shapes, and the one they cannot both be
+# --------------------------------------------------------------------------------------------
+
+
+def test_named_provider_blocks_are_collected_beside_allow_remote(tmp_path: Path) -> None:
+    """`[providers] allow_remote` and `[providers.<name>]` share one TOML table."""
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        "[providers]\n"
+        "allow_remote = true\n\n"
+        '[providers.local]\nkind = "ollama"\nbase_url = "http://127.0.0.1:11434"\n\n'
+        '[providers.hosted]\nkind = "ollama"\nbase_url = "http://elsewhere"\nremote = true\n'
+    )
+
+    settings = load_settings(config_path=config_file).settings
+
+    assert settings.providers.allow_remote is True
+    assert sorted(settings.providers.registrations) == ["hosted", "local"]
+    assert settings.providers.registrations["hosted"].remote is True
+    assert settings.providers.registrations["local"].remote is False
+
+
+def test_both_provider_forms_together_are_refused_naming_each(tmp_path: Path) -> None:
+    """ADR-0077 rule 3: the half-migrated file is the case a precedence rule would hide.
+
+    An operator who adds `[providers.local]` and forgets to delete `[provider]` must be told,
+    not guessed at: a silent winner runs a registry that is not the one they are reading.
+    """
+    from baseaicore import ConfigurationError
+
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        '[provider]\nkind = "ollama"\n\n[providers.local]\nkind = "ollama"\n\n'
+        '[providers.hosted]\nkind = "ollama"\nremote = true\n'
+    )
+
+    with pytest.raises(ConfigurationError) as raised:
+        load_settings(config_path=config_file)
+
+    message = raised.value.message
+    assert "[provider]" in message
+    assert "[providers.local]" in message and "[providers.hosted]" in message
+    assert raised.value.details["named_providers"] == ["hosted", "local"]
+
+
+def test_allow_remote_alone_beside_the_singular_block_is_not_the_conflict(tmp_path: Path) -> None:
+    """`[providers] allow_remote` is policy, not a registration — the 1.0 file has both."""
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('[provider]\nkind = "fake"\n\n[providers]\nallow_remote = false\n')
+
+    settings = load_settings(config_path=config_file).settings
+
+    assert settings.provider.kind == "fake"
+    assert settings.providers.registrations == {}
+
+
+def test_a_misspelled_key_under_providers_is_refused_rather_than_collected(
+    tmp_path: Path,
+) -> None:
+    """`extra="allow"` must not turn every typo into a silently ignored key."""
+    from baseaicore import ConfigurationError
+
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("[providers]\nallow_remot = true\n")
+
+    with pytest.raises(ConfigurationError, match="allow_remot"):
+        load_settings(config_path=config_file)

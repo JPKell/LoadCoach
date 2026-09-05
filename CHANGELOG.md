@@ -7,6 +7,32 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Added
+- **Providers are registered by name and kind** (LC-E1, ADR-0055). `[providers.<name>]` blocks each
+  carry a `kind`, their connection settings and a **declared** `remote` flag — never inferred from
+  the kind or the URL, so an OpenAI-compatible endpoint on loopback is local and the same kind
+  pointed at a hosted API is remote. Discovery from every registration enters one registry, tagged:
+  `models` rows record the registration that served them and its egress class, routing evaluates
+  each candidate against *its own* registration's capabilities, and execution calls the provider
+  that serves the selected model. Residency is per registration, because each provider loads and
+  evicts its own models.
+
+  **The singular `[provider]` block keeps working, and both forms together are refused** (ADR-0077).
+  A 1.0 configuration is exactly one registration named after its kind, declaring `remote = false`,
+  and produces a byte-identical registry — asserted by a compatibility golden, not argued. A file
+  carrying both shapes is a startup error naming the singular block, every named block and the
+  one-line fix: the half-migrated file is the case a precedence rule would answer silently.
+
+  `[providers] allow_remote` keeps its meaning as cross-provider policy and is evaluated **above** a
+  registration's own flag, so a remote registration in a deployment that disallows remote is
+  configured, visible, and rejected by the existing `excluded_by_policy` constraint.
+
+  **One unreachable registration no longer empties a working registry.** Discovery marks a model
+  unavailable only when a registration that *answered* stopped reporting it; a registration that
+  could not be listed is named in the outcome's new `unreachable` field and its models are left
+  exactly as they were. With a single registration that raises, the 1.0 behaviour is unchanged.
+  `loadcoach doctor` reports each registration's reachability by name.
+
 ### Changed
 - **The `setspec` pin moves to `>=0.5,<0.7`, and the evidence reader adopts `capability.evidence`
   `1.1`** (H2). The adapter registry reads SetSpec's `model.adapter_manifest` 1.0 rather than

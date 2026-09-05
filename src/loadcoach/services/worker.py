@@ -115,6 +115,7 @@ if TYPE_CHECKING:
     from loadcoach.domain.routing.ranking import RankedCandidate
     from loadcoach.domain.routing.subject import ProviderFacts
     from loadcoach.domain.validation import ValidationOutcome
+    from loadcoach.infrastructure.providers.factory import ProviderRegistration
     from loadcoach.services.database import Database
 from loadcoach.services.job_events import JobEventSink
 from loadcoach.services.machine import machine_fingerprint
@@ -342,6 +343,8 @@ class QueueRuntime:
     policy: RoutingPolicy
     schemas_dir: Path
     owner_prefix: str
+    registrations: tuple[ProviderRegistration, ...] = ()
+    residency_by_name: dict[str, ResidencyService] = field(default_factory=dict)
     flags: QueueFlags = field(default_factory=QueueFlags)
     residency: ResidencyService | None = None
     resources_changed: threading.Event = field(default_factory=threading.Event)
@@ -359,16 +362,62 @@ class QueueRuntime:
     _threads: list[threading.Thread] = field(default_factory=list)
 
     def provider_facts(self) -> ProviderFacts:
-        """Read the provider's declared capabilities."""
+        """Read the primary provider's declared capabilities."""
         return provider_facts_for(self.provider)
+
+    def provider_facts_by_name(self) -> dict[str, ProviderFacts]:
+        """Read every registration's declared capabilities, keyed by registration name.
+
+        What routing evaluates each candidate against (ADR-0055 rule 3: one pool, tagged). Empty
+        when this runtime holds no registrations, which is the single-provider case and makes
+        :meth:`provider_facts` the only answer — LoadCoach 1.0's behaviour exactly.
+        """
+        return {
+            registration.name: provider_facts_for(registration.provider)
+            for registration in self.registrations
+        }
+
+    def provider_for(self, provider_name: str) -> Provider:
+        """Return the provider handle a candidate from ``provider_name`` must be executed on.
+
+        Falls back to :attr:`provider` for an unknown or empty name: a model discovered before
+        named registration existed, a registration since removed from the configuration, or the
+        single-provider case. The fallback is the primary registration, which is what a
+        one-provider deployment has always used.
+
+        Args:
+            provider_name: The registration name recorded on the selected model's row.
+
+        Returns:
+            The handle to call. Never ``None`` — a runtime always has a primary provider.
+        """
+        for registration in self.registrations:
+            if registration.name == provider_name:
+                return registration.provider
+        return self.provider
+
+    def residency_for(self, provider_name: str) -> ResidencyService | None:
+        """Return the residency service that manages ``provider_name``'s loaded models.
+
+        Residency is per provider: each runtime loads and evicts its own models, and one
+        provider's occupancy says nothing about another's. Falls back to :attr:`residency` for the
+        same reasons :meth:`provider_for` falls back to :attr:`provider`.
+        """
+        return self.residency_by_name.get(provider_name, self.residency)
 
     def replace_provider(self, provider: Provider) -> None:
         """Point the workers and the residency policy at ``provider`` from now on.
 
         For a test that scripts a provider after the application lifespan built the default one;
         the residency service is rebuilt because it holds its own handle.
+
+        Every named registration is dropped with it. One handle replacing the whole registry is
+        the single-provider shape, and leaving stale registrations behind would send some
+        candidates to providers this call was meant to retire.
         """
         self.provider = provider
+        self.registrations = ()
+        self.residency_by_name = {}
         self.residency = ResidencyService(
             self.database, provider, settings=self.settings.residency, clock=self.clock
         )
@@ -737,6 +786,7 @@ class Worker:
                     overrides=submission.overrides or RuntimeOverrides(),
                 ),
                 provider=runtime.provider_facts(),
+                provider_facts_by_name=runtime.provider_facts_by_name(),
                 policy=runtime.policy,
                 snapshot=runtime.admission_snapshot(excluding_job=job.job_id),
                 resident_models=self._resident_canonical_ids(),
@@ -1010,7 +1060,7 @@ class Worker:
                 state = self._start_executing(execution, state, attempt_number, residency)
                 on_chunk = self._on_chunk(job) if job.submission.stream else None
                 outcome = run_attempt(
-                    runtime.provider,
+                    runtime.provider_for(candidate.subject.facts.provider_name),
                     request=request,
                     candidate=candidate,
                     turns=turns,
@@ -1082,10 +1132,10 @@ class Worker:
     ) -> dict[str, Any] | None:
         """Load the candidate on its target device first, evicting idle residents as policy says."""
         runtime = self.runtime
-        residency = runtime.residency
+        facts = candidate.subject.facts
+        residency = runtime.residency_for(facts.provider_name)
         if residency is None:
             return None
-        facts = candidate.subject.facts
         snapshot = runtime.snapshot()
         free = (
             free_vram_by_gpu(snapshot).get(candidate.target_gpu_index)
@@ -1320,7 +1370,8 @@ class Worker:
         provider_ms = sum(record.provider_ms or 0 for record in records)
         validation: ValidationOutcome = outcome.validation
         degradations: list[str] = []
-        if not runtime.provider_facts().supports_streaming:
+        answering = runtime.provider_for(candidate.subject.facts.provider_name)
+        if not provider_facts_for(answering).supports_streaming:
             degradations.append("cancellation_deferred_to_completion")
         summary = ExecutionOutcome(
             job_id=job.job_id,
@@ -1844,6 +1895,7 @@ def build_runtime(
     provider: Provider,
     sink: JobEventSink,
     snapshot: Callable[[], TelemetrySnapshot | None],
+    registrations: Sequence[ProviderRegistration] = (),
     clock: Callable[[], datetime] | None = None,
     wakeup: Wakeup | None = None,
     sleep: Callable[[float], None] | None = None,
@@ -1857,9 +1909,13 @@ def build_runtime(
     Args:
         settings: The application settings.
         database: The database handle.
-        provider: The provider handle.
+        provider: The primary provider handle — the one a candidate whose registration is
+            unknown, or absent, is executed on.
         sink: The job event sink.
         snapshot: Takes one telemetry observation, or ``None``.
+        registrations: Every provider this configuration registers (ADR-0055). Empty is the
+            single-provider case: ``provider`` answers for every candidate, which is LoadCoach
+            1.0's behaviour, and it is what a caller holding one bare handle passes.
         clock: The clock; ``None`` is the wall clock.
         wakeup: The workers' wake-up; ``None`` is a ``threading.Event``.
         sleep: A worker's backoff sleep; ``None`` is a stoppable wall-clock wait.
@@ -1896,6 +1952,7 @@ def build_runtime(
             machine_fingerprint=machine_fingerprint(),
         ),
         schemas_dir=schemas_dir,
+        registrations=tuple(registrations),
         owner_prefix=owner_prefix if owner_prefix is not None else new_id(),
         jitter=jitter if jitter is not None else random.random,
     )
@@ -1911,7 +1968,19 @@ def build_runtime(
         database, provider, settings=settings.residency, clock=runtime.clock
     )
     runtime.residency = residency
-    runtime.resident_model_ids = residency.resident_model_ids
+    # One residency service per registration: each provider loads and evicts its own models, and
+    # one provider's occupancy says nothing about another's. The union is what admission and the
+    # routing tie-break read, because the machine holds all of them at once.
+    runtime.residency_by_name = {
+        registration.name: ResidencyService(
+            database, registration.provider, settings=settings.residency, clock=runtime.clock
+        )
+        for registration in registrations
+    }
+    services = tuple(runtime.residency_by_name.values()) or (residency,)
+    runtime.resident_model_ids = lambda: frozenset(
+        model_id for service in services for model_id in service.resident_model_ids()
+    )
     count = workers if workers is not None else settings.execution.max_concurrent_jobs
     runtime.workers = [Worker(runtime, index) for index in range(count)]
     runtime.scheduler = Scheduler(runtime, tick_seconds=settings.queue.poll_interval_ms / 1000.0)

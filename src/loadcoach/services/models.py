@@ -8,6 +8,7 @@ standards §8 states for results.
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -27,12 +28,11 @@ from loadcoach.infrastructure.db.models import Model, ModelCapability
 from loadcoach.services.evidence import rebind_evidence_in
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from baseaicore import ModelDescriptor
     from modelrack.provider import Provider
     from sqlalchemy.orm import Session
 
+    from loadcoach.infrastructure.providers.factory import ProviderRegistration
     from loadcoach.services.database import Database
 
 __all__ = [
@@ -54,16 +54,58 @@ DEFAULT_MANUAL_SCORES_PATH = (
 
 @dataclass(frozen=True, slots=True)
 class DiscoveryOutcome:
-    """The result of one :func:`discover_models` pass."""
+    """The result of one :func:`discover_models` pass, summed over every registration.
+
+    Attributes:
+        added: Rows this pass created.
+        updated: Rows this pass refreshed.
+        unavailable: Rows this pass retired, having not been reported by a registration that
+            answered.
+        total: Descriptors read, across every registration that answered.
+        checked_at: When.
+        unreachable: The names of registrations that could not be listed. Empty on a clean pass;
+            a name here means its models were left exactly as they were.
+    """
 
     added: int
     updated: int
     unavailable: int
     total: int
     checked_at: datetime
+    unreachable: tuple[str, ...] = ()
 
 
-def _upsert_model(session: Session, descriptor: ModelDescriptor, *, now: datetime) -> Model:
+def _as_registrations(
+    providers: Provider | Sequence[ProviderRegistration],
+) -> tuple[ProviderRegistration, ...]:
+    """Accept either a registration sequence or one bare provider.
+
+    The bare form keeps every caller that holds a single handle — the CLI's one-shot commands,
+    a test — working unchanged. Such a provider has no registration name, and the empty string is
+    what "not recorded" already means on the column (migration 0008).
+    """
+    from loadcoach.infrastructure.providers.factory import ProviderRegistration
+
+    if isinstance(providers, Sequence):
+        return tuple(providers)
+    return (
+        ProviderRegistration(
+            name="",
+            kind=providers.kind.value,
+            is_remote=False,
+            provider=providers,
+        ),
+    )
+
+
+def _upsert_model(
+    session: Session,
+    descriptor: ModelDescriptor,
+    *,
+    now: datetime,
+    provider_name: str,
+    is_remote: bool,
+) -> Model:
     """Insert or update ``descriptor``'s identity row, upgrading a name-only sibling in place.
 
     Mirrors FreeWeight's own identity resolution (its ``ModelRepository.upsert_identity``): the
@@ -72,6 +114,11 @@ def _upsert_model(session: Session, descriptor: ModelDescriptor, *, now: datetim
     ``weightsdb.upsert()`` cannot target (it does not support partial indexes — its own docstring
     names this exact case). A digest-confirmed sighting of a model LoadCoach previously only knew
     by name upgrades that row's identity rather than creating a second, duplicate one.
+
+    ``provider_name`` and ``is_remote`` record the **registration** that served this sighting
+    (ADR-0055). Identity is unchanged by them — ``provider_kind`` is part of it and the name is not
+    (ADR-0008) — so two registrations of one kind serving the same weights are one row, and the
+    name is the one the most recent pass saw it on.
     """
     identity = descriptor.identity
     provider_kind = identity.provider_kind.value
@@ -112,6 +159,8 @@ def _upsert_model(session: Session, descriptor: ModelDescriptor, *, now: datetim
             artifact_digest=identity.artifact_digest,
             canonical_id=identity.canonical_id,
             identity_confidence=identity.identity_confidence.value,
+            provider_name=provider_name,
+            is_remote=is_remote,
             max_context=max_context,
             size_bytes=size_bytes,
             quantization=descriptor.quantization,
@@ -130,6 +179,8 @@ def _upsert_model(session: Session, descriptor: ModelDescriptor, *, now: datetim
     existing.artifact_digest = identity.artifact_digest
     existing.canonical_id = identity.canonical_id
     existing.identity_confidence = identity.identity_confidence.value
+    existing.provider_name = provider_name
+    existing.is_remote = is_remote
     existing.max_context = max_context
     existing.size_bytes = size_bytes
     existing.quantization = descriptor.quantization
@@ -163,22 +214,28 @@ def _sync_declared_capabilities(
 
 def discover_models(
     database: Database,
-    provider: Provider,
+    providers: Provider | Sequence[ProviderRegistration],
     *,
     now: datetime,
     principal: Principal | None = None,
 ) -> DiscoveryOutcome:
-    """Run one discovery pass: list every model the provider serves and persist it.
+    """Run one discovery pass over every registered provider and persist what they serve.
 
     A model previously discovered but absent from this pass is marked ``available=False`` with a
-    reason — never deleted (dev-plan P2 test list, database standards §8).
+    reason — never deleted (dev-plan P2 test list, database standards §8). "Absent from this pass"
+    means absent from a registration that **answered**: a registration that could not be listed
+    takes no model out of the registry, because an unreachable provider is an availability fact
+    about the process and not a statement that its models are gone (ADR-0067 rule 2, routing §4's
+    ``model_unavailable``).
 
     Imported evidence is re-bound in the same transaction (ADR-0022 §4), so a bundle that arrived
     before its models were discovered starts scoring on this pass rather than on a re-import.
 
     Args:
         database: The application's database handle.
-        provider: The provider to discover through.
+        providers: The registrations to discover through (ADR-0055), or a bare
+            :class:`~modelrack.provider.Provider` for a caller that holds only one — it is
+            discovered under the empty registration name, which is what an unnamed provider is.
         now: The instant to record every upsert against. Injected for deterministic tests.
         principal: Who asks. ``admin`` is required (M5-17's rule — the scope is checked in the
             service as well as at the route; F8/M5C-8 closed the one writer that skipped it);
@@ -186,44 +243,74 @@ def discover_models(
             refresh) and is allowed.
 
     Returns:
-        The counts this run produced.
+        The counts this run produced, summed across every registration that answered.
 
     Raises:
         InsufficientScope: ``principal`` is present and below ``admin``; nothing was written.
-        ProviderError: The provider could not be listed at all (unreachable, timed out, or
-            answered with something ModelRack could not parse).
+        ProviderError: **Every** registration failed to list. One that fails among several is
+            recorded in :attr:`DiscoveryOutcome.unreachable` and the pass continues, so one dead
+            endpoint cannot empty a working registry; with a single registration this is the 1.0
+            behaviour unchanged.
     """
     authorize(principal, "admin")
-    descriptors: Sequence[ModelDescriptor] = provider.list_models(refresh=True)
+    registrations = _as_registrations(providers)
+    listed: list[tuple[ProviderRegistration, Sequence[ModelDescriptor]]] = []
+    unreachable: list[str] = []
+    first_error: ProviderError | None = None
+    for registration in registrations:
+        try:
+            listed.append((registration, registration.provider.list_models(refresh=True)))
+        except ProviderError as exc:
+            unreachable.append(registration.name)
+            if first_error is None:
+                first_error = exc
+    if not listed and first_error is not None:
+        raise first_error
+
     seen_canonical_ids: set[str] = set()
+    answered_kinds = {registration.kind for registration, _ in listed}
+    total = 0
 
     added = updated = 0
     with database.write() as session:
-        for descriptor in descriptors:
-            existing = (
-                session.query(Model)
-                .filter_by(
-                    provider_kind=descriptor.identity.provider_kind.value,
-                    provider_model_name=descriptor.identity.provider_model_name,
-                    artifact_digest=descriptor.identity.artifact_digest,
+        for registration, descriptors in listed:
+            total += len(descriptors)
+            for descriptor in descriptors:
+                existing = (
+                    session.query(Model)
+                    .filter_by(
+                        provider_kind=descriptor.identity.provider_kind.value,
+                        provider_model_name=descriptor.identity.provider_model_name,
+                        artifact_digest=descriptor.identity.artifact_digest,
+                    )
+                    .one_or_none()
                 )
-                .one_or_none()
-            )
-            is_new = existing is None
-            model = _upsert_model(session, descriptor, now=now)
-            _sync_declared_capabilities(session, model, descriptor, now=now)
-            seen_canonical_ids.add(model.canonical_id)
-            if is_new:
-                added += 1
-            else:
-                updated += 1
+                is_new = existing is None
+                model = _upsert_model(
+                    session,
+                    descriptor,
+                    now=now,
+                    provider_name=registration.name,
+                    is_remote=registration.is_remote,
+                )
+                _sync_declared_capabilities(session, model, descriptor, now=now)
+                seen_canonical_ids.add(model.canonical_id)
+                if is_new:
+                    added += 1
+                else:
+                    updated += 1
 
         unavailable = 0
         for model in session.query(Model).filter_by(available=True).all():
-            if model.canonical_id not in seen_canonical_ids:
-                model.available = False
-                model.unavailable_reason = "not reported by the provider's most recent discovery"
-                unavailable += 1
+            if model.canonical_id in seen_canonical_ids:
+                continue
+            # Only a registration that answered can retire its own models. A row served by a
+            # kind nothing answered for is left alone, availability unchanged.
+            if model.provider_kind not in answered_kinds:
+                continue
+            model.available = False
+            model.unavailable_reason = "not reported by the provider's most recent discovery"
+            unavailable += 1
 
         # ADR-0022 §4: every evidence row's `match_state` is re-evaluated on every discovery
         # pass, inside this same transaction. That is what makes evidence imported before a
@@ -235,8 +322,9 @@ def discover_models(
         added=added,
         updated=updated,
         unavailable=unavailable,
-        total=len(descriptors),
+        total=total,
         checked_at=now,
+        unreachable=tuple(unreachable),
     )
 
 
@@ -416,7 +504,10 @@ def registry_overview(database: Database) -> tuple[ModelOverview, ...]:
 
 
 def try_discover_models(
-    database: Database, provider: Provider, *, now: datetime
+    database: Database,
+    providers: Provider | Sequence[ProviderRegistration],
+    *,
+    now: datetime,
 ) -> DiscoveryOutcome | None:
     """Run :func:`discover_models`, returning ``None`` instead of raising on a provider failure.
 
@@ -424,7 +515,7 @@ def try_discover_models(
     because the provider is unreachable — spec §5: LoadCoach starts and serves with no provider.
     """
     try:
-        return discover_models(database, provider, now=now)
+        return discover_models(database, providers, now=now)
     except ProviderError:
         return None
 

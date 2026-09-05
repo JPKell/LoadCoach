@@ -152,14 +152,16 @@ def refresh_models(
 
     from loadcoach.config import load_settings
     from loadcoach.domain.authorization import LOCAL
-    from loadcoach.infrastructure.providers.factory import build_provider
+    from loadcoach.infrastructure.providers.factory import build_registrations
     from loadcoach.services.models import discover_models
 
     loaded = load_settings(config_path=config)
-    provider = build_provider(loaded.settings.provider)
+    registrations = build_registrations(loaded.settings)
     with _open_database(config) as database:
         try:
-            outcome = discover_models(database, provider, now=datetime.now(UTC), principal=LOCAL)
+            outcome = discover_models(
+                database, registrations, now=datetime.now(UTC), principal=LOCAL
+            )
         except ProviderError as exc:
             typer.echo(f"Error: {exc} (PROVIDER_UNAVAILABLE)", err=True)
             raise typer.Exit(4) from exc
