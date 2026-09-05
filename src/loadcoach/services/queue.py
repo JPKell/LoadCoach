@@ -27,7 +27,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, cast
 
 from baseaicore import SuiteError, new_id
-from modelrack import Message, Role
+from modelrack import Message, Role, ToolDefinition
 from sqlalchemy import Integer, case, func, select, update
 from sqlalchemy.exc import IntegrityError
 from weightsdb import UtcDateTime
@@ -52,7 +52,11 @@ from loadcoach.domain.queue_state import (
 )
 from loadcoach.domain.routing.subject import RuntimeOverrides
 from loadcoach.infrastructure.db.models import Job
-from loadcoach.services.execution import GenerateRequest
+from loadcoach.services.execution import (
+    GenerateRequest,
+    tool_definitions_json,
+    tool_definitions_of_json,
+)
 from loadcoach.services.retention import SCRUBBED_MARKER
 from loadcoach.services.routing import load_task_profile
 
@@ -170,6 +174,9 @@ class JobSubmission:
         response_format: ``"text"``, ``"json"`` or ``"json_schema"``, overriding the profile.
         sampling: Overrides for the profile's execution parameters.
         overrides: Routing §10's overrides.
+        tools: Tools the caller offers the model (api.md §4). Persisted with the transcript,
+            because a queued job runs after its submitter has gone and an offer that did not
+            survive the wait would be the silent drop ADR-0075 exists to prevent.
         job_class: The job's class (queue §1).
         priority: A priority within the class's band, or ``None`` for the band's bottom.
         max_wait_seconds: The absolute wait bound, or ``None`` for ``queue.max_wait_seconds``.
@@ -187,6 +194,7 @@ class JobSubmission:
     response_format: str | None = None
     sampling: Mapping[str, Any] = field(default_factory=dict)
     overrides: RuntimeOverrides | None = None
+    tools: tuple[ToolDefinition, ...] = ()
     job_class: JobClass = JobClass.NORMAL
     priority: int | None = None
     max_wait_seconds: int | None = None
@@ -240,6 +248,7 @@ class JobSubmission:
                 "disallow_fallback": overrides.disallow_fallback,
                 "require_evidence": overrides.require_evidence,
             },
+            "tools": tool_definitions_json(self.tools),
             "stream": self.stream,
         }
 
@@ -289,6 +298,7 @@ class JobSubmission:
         return cls(
             task=str(payload["task"]),
             messages=messages,
+            tools=tool_definitions_of_json(payload.get("tools")),
             response_format=cast("str | None", payload.get("response_format")),
             sampling=dict(cast("Mapping[str, Any]", payload.get("sampling", {}))),
             overrides=overrides,
@@ -309,6 +319,7 @@ class JobSubmission:
             response_format=self.response_format,
             sampling=dict(self.sampling),
             overrides=self.overrides,
+            tools=self.tools,
             source=self.source,
             idempotency_key=self.idempotency_key,
             stream=self.stream,

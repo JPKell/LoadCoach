@@ -30,7 +30,7 @@ import anyio
 from baseaicore import SuiteError
 from fastapi import APIRouter, Request
 from mirrorwall import sse_response
-from modelrack import CancellationToken, Message, Role
+from modelrack import CancellationToken, Message, Role, ToolDefinition
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from setspec import GeneratorInfo
 from starlette.responses import StreamingResponse
@@ -73,6 +73,22 @@ _TERMINAL_EVENTS = frozenset({"result", "error"})
 _POLL_SECONDS = 0.05
 
 
+class ToolDefinitionBody(BaseModel):
+    """One tool offered to the model (api.md §4).
+
+    ``parameters`` is a JSON Schema object passed to the provider **unmodified**: LoadCoach does
+    not validate it, rewrite it or reject a keyword it does not recognise (ADR-0041), and it never
+    executes a call — the requested calls come back at ``output.tool_calls`` and running them is
+    the caller's decision.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    description: str = Field(default="")
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
 class MessageBody(BaseModel):
     """One turn of a caller-supplied transcript (api.md §4)."""
 
@@ -100,6 +116,7 @@ class GenerateBody(BaseModel):
     response_format: str | None = Field(default=None, pattern="^(text|json|json_schema)$")
     sampling: dict[str, Any] = Field(default_factory=dict)
     overrides: OverridesBody | None = Field(default=None)
+    tools: list[ToolDefinitionBody] | None = Field(default=None)
     idempotency_key: str | None = Field(default=None, max_length=128)
 
     @model_validator(mode="after")
@@ -138,6 +155,21 @@ def messages_of(body: GenerateBody) -> tuple[Message, ...] | None:
     )
 
 
+def tools_of(body: GenerateBody) -> tuple[ToolDefinition, ...]:
+    """The tools the caller offered, as ModelRack definitions (api.md §4).
+
+    ``parameters`` is copied through verbatim — never validated, rewritten or inferred (ADR-0041).
+    An empty list and ``None`` produce the same empty tuple, so ``tools: []`` imposes nothing and
+    routes exactly as a body with no ``tools`` at all (ADR-0075).
+    """
+    if not body.tools:
+        return ()
+    return tuple(
+        ToolDefinition(name=tool.name, description=tool.description, parameters=tool.parameters)
+        for tool in body.tools
+    )
+
+
 def overrides_of(body: OverridesBody | None) -> RuntimeOverrides | None:
     """Routing §10's overrides from the body, or ``None``."""
     from baseaicore import RuntimeProfile
@@ -166,6 +198,7 @@ def _to_request(body: GenerateBody, *, source: str, stream: bool) -> GenerateReq
         response_format=body.response_format,
         sampling=dict(body.sampling),
         overrides=overrides_of(body.overrides),
+        tools=tools_of(body),
         source=source,
         idempotency_key=body.idempotency_key,
         stream=stream,

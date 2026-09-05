@@ -173,6 +173,20 @@
           "task": {
             "title": "Task",
             "type": "string"
+          },
+          "tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ToolDefinitionBody"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tools"
           }
         },
         "required": [
@@ -317,6 +331,20 @@
           "task": {
             "title": "Task",
             "type": "string"
+          },
+          "tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ToolDefinitionBody"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tools"
           }
         },
         "required": [
@@ -596,6 +624,32 @@
           }
         },
         "title": "TaskProfileConstraints",
+        "type": "object"
+      },
+      "ToolDefinitionBody": {
+        "additionalProperties": false,
+        "description": "One tool offered to the model (api.md \u00a74).\n\n``parameters`` is a JSON Schema object passed to the provider **unmodified**: LoadCoach does\nnot validate it, rewrite it or reject a keyword it does not recognise (ADR-0041), and it never\nexecutes a call \u2014 the requested calls come back at ``output.tool_calls`` and running them is\nthe caller's decision.",
+        "properties": {
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "parameters": {
+            "additionalProperties": true,
+            "title": "Parameters",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ToolDefinitionBody",
         "type": "object"
       },
       "ValidationError": {

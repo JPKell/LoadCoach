@@ -59,6 +59,7 @@ from modelrack import (
     ThinkingDelta,
     TokenDelta,
     ToolCallDelta,
+    ToolDefinition,
 )
 from sqlalchemy import update
 
@@ -164,6 +165,9 @@ class GenerateRequest:
         response_format: ``"text"``, ``"json"`` or ``"json_schema"``, overriding the profile.
         sampling: Overrides for the profile's execution parameters.
         overrides: Routing §10's overrides.
+        tools: Tools the caller offers the model. Passed to the provider unmodified and never
+            executed here (ADR-0041, spec §14). A non-empty value requires ``tool_use`` of every
+            routing candidate for this request (ADR-0075).
         source: The calling application, for the idempotency scope and the job record.
         idempotency_key: Makes a retried POST safe.
         stream: Whether the caller asked for the streaming endpoint. Does **not** change how the
@@ -177,6 +181,7 @@ class GenerateRequest:
     response_format: str | None = None
     sampling: Mapping[str, Any] = field(default_factory=dict)
     overrides: RuntimeOverrides | None = None
+    tools: tuple[ToolDefinition, ...] = ()
     source: str = "anonymous"
     idempotency_key: str | None = None
     stream: bool = False
@@ -194,6 +199,48 @@ class GenerateRequest:
             turns.append(Message(role=Role.SYSTEM, content=self.system))
         turns.append(Message(role=Role.USER, content=self.prompt or ""))
         return tuple(turns)
+
+
+def tool_definitions_json(tools: Sequence[ToolDefinition]) -> list[dict[str, Any]]:
+    """``jobs.request_json``'s form of the tools a caller offered (data model §2).
+
+    Args:
+        tools: The offered definitions.
+
+    Returns:
+        One ``{"name", "description", "parameters"}`` object per tool, in the order offered.
+        ``parameters`` is copied as it arrived — never normalised, sorted or validated (ADR-0041).
+    """
+    return [
+        {"name": tool.name, "description": tool.description, "parameters": dict(tool.parameters)}
+        for tool in tools
+    ]
+
+
+def tool_definitions_of_json(payload: object) -> tuple[ToolDefinition, ...]:
+    """The tools a persisted job was submitted with, read back from ``jobs.request_json``.
+
+    Args:
+        payload: ``request_json["tools"]``, or anything else a row might hold — ``None`` for a job
+            written before the field existed, and the scrub marker's absence for one whose text
+            retention removed.
+
+    Returns:
+        The definitions, or an empty tuple when there were none. A scrubbed or pre-existing row
+        yields no tools rather than raising: the job still explains itself, and a job whose
+        transcript has been removed is not going to be re-executed.
+    """
+    if not isinstance(payload, list):
+        return ()
+    return tuple(
+        ToolDefinition(
+            name=str(entry["name"]),
+            description=str(entry.get("description", "")),
+            parameters=dict(cast("Mapping[str, Any]", entry.get("parameters", {}))),
+        )
+        for entry in payload
+        if isinstance(entry, Mapping) and entry.get("name")
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -618,6 +665,7 @@ def run_attempt(
         identity=_identity_of(subject.facts),
         messages=turns,
         runtime_profile=subject.runtime_profile,
+        tools=request.tools,
         sampling=sampling_for(request, execution_policy),
         response_format=_response_format(base_format, schema),
         timeout_seconds=timeout_seconds,
@@ -1082,6 +1130,7 @@ def reserve_sync_job(
                             }
                             for m in transcript
                         ],
+                        "tools": tool_definitions_json(request.tools),
                         "response_format": request.response_format,
                         "sampling": dict(request.sampling),
                         "stream": request.stream,
@@ -1212,6 +1261,7 @@ def _persist(
                     idempotent=request.idempotency_key is not None,
                     request_json={
                         "task": request.task,
+                        "tools": tool_definitions_json(request.tools),
                         "response_format": request.response_format,
                         "sampling": dict(request.sampling),
                         "stream": request.stream,
@@ -1478,6 +1528,11 @@ def execute(
                 task=request.task,
                 estimated_input_tokens=estimate_input_tokens(caller_text),
                 max_output_tokens=cast("int | None", request.sampling.get("max_output_tokens")),
+                # ADR-0075: an offer of tools is a statement about what this request needs, so a
+                # candidate that cannot use them is a routing rejection with a reason — never a
+                # served request whose tools quietly evaporated, and never a CapabilityUnsupported
+                # from the provider edge after a model has already been chosen.
+                require_capabilities=("tool_use",) if request.tools else (),
                 overrides=request.overrides or RuntimeOverrides(),
             ),
             provider=context.provider_facts,

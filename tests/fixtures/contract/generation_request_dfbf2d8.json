@@ -1,0 +1,141 @@
+{
+  "json_schema_profile": {
+    "identity": "fake/alpha:8b@sha256:aaaaaaaaaaaa",
+    "messages": [
+      {
+        "content": "Extract the fields.",
+        "role": "user",
+        "tool_call_id": null
+      }
+    ],
+    "metadata": {},
+    "prompt": null,
+    "response_format": {
+      "kind": "json",
+      "schema": null
+    },
+    "runtime_profile": {
+      "context_size": 8192,
+      "flash_attention": null,
+      "keep_alive": null,
+      "kv_cache_precision": null
+    },
+    "sampling": {
+      "max_output_tokens": 2048,
+      "repeat_penalty": null,
+      "seed": null,
+      "stop": [],
+      "temperature": 0.0,
+      "top_k": null,
+      "top_p": null
+    },
+    "timeout_seconds": null
+  },
+  "prompt_plain": {
+    "identity": "fake/alpha:8b@sha256:aaaaaaaaaaaa",
+    "messages": [
+      {
+        "content": "Say hello.",
+        "role": "user",
+        "tool_call_id": null
+      }
+    ],
+    "metadata": {},
+    "prompt": null,
+    "response_format": null,
+    "runtime_profile": {
+      "context_size": 4096,
+      "flash_attention": null,
+      "keep_alive": null,
+      "kv_cache_precision": null
+    },
+    "sampling": {
+      "max_output_tokens": 2048,
+      "repeat_penalty": null,
+      "seed": null,
+      "stop": [],
+      "temperature": 0.7,
+      "top_k": null,
+      "top_p": null
+    },
+    "timeout_seconds": null
+  },
+  "prompt_with_system": {
+    "identity": "fake/alpha:8b@sha256:aaaaaaaaaaaa",
+    "messages": [
+      {
+        "content": "You are drafting one section of an article.",
+        "role": "system",
+        "tool_call_id": null
+      },
+      {
+        "content": "Write a 600-word section on local inference privacy.",
+        "role": "user",
+        "tool_call_id": null
+      }
+    ],
+    "metadata": {},
+    "prompt": null,
+    "response_format": null,
+    "runtime_profile": {
+      "context_size": 16384,
+      "flash_attention": null,
+      "keep_alive": null,
+      "kv_cache_precision": null
+    },
+    "sampling": {
+      "max_output_tokens": 256,
+      "repeat_penalty": null,
+      "seed": null,
+      "stop": [],
+      "temperature": 0.4,
+      "top_k": null,
+      "top_p": null
+    },
+    "timeout_seconds": null
+  },
+  "transcript": {
+    "identity": "fake/alpha:8b@sha256:aaaaaaaaaaaa",
+    "messages": [
+      {
+        "content": "Be terse.",
+        "role": "system",
+        "tool_call_id": null
+      },
+      {
+        "content": "One.",
+        "role": "user",
+        "tool_call_id": null
+      },
+      {
+        "content": "Two.",
+        "role": "assistant",
+        "tool_call_id": null
+      },
+      {
+        "content": "Three.",
+        "role": "user",
+        "tool_call_id": null
+      }
+    ],
+    "metadata": {},
+    "prompt": null,
+    "response_format": null,
+    "runtime_profile": {
+      "context_size": 4096,
+      "flash_attention": null,
+      "keep_alive": null,
+      "kv_cache_precision": null
+    },
+    "sampling": {
+      "max_output_tokens": 2048,
+      "repeat_penalty": null,
+      "seed": null,
+      "stop": [],
+      "temperature": 0.7,
+      "top_k": null,
+      "top_p": null
+    },
+    "timeout_seconds": null
+  }
+}

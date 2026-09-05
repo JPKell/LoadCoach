@@ -7,9 +7,30 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Added
+- **`POST /generate` and `POST /jobs` carry tool definitions** (G2). A body may now supply
+  `tools` — a list of `{"name", "description", "parameters"}` — and they reach the provider
+  unmodified: LoadCoach does not validate a tool's `parameters` schema, rewrite it, or execute a
+  call (ADR-0041, spec §14). The calls a model requests come
+  back at `output.tool_calls`, as they have since M4; what did not exist until now was any way to
+  tell the model which tools exist, so a model invented names out of its own vocabulary and every
+  call it made was refused.
+
+  **A request carrying tools requires `tool_use` of every candidate** (ADR-0075). A non-empty
+  `tools` imposes the capability as a hard constraint on that request, on top of whatever the task
+  profile requires, so a candidate whose provider cannot use tools is rejected by routing with
+  `capability_unsupported` and `details.required_by = "request"` — never served a request whose
+  tools quietly evaporate, and never a `CapabilityUnsupported` from the provider edge after a model
+  has already been chosen. `tools: []` is identical to `tools: null` and to the field's absence.
+
+  **Additive within `/api/v1`**: no field removed, no existing field's type changed, no new route.
+  A body with no `tools` builds byte-for-byte the `GenerationRequest` it built at `dfbf2d8`, pinned
+  by a contract golden captured from that commit
+  (`tests/fixtures/contract/generation_request_dfbf2d8.json`).
+
 ### Fixed
 - **The `fake` provider no longer trips `insufficient_vram` on a busy GPU** (E6, found at E4:
-  `E4_HANDOFF.md` §5). `build_provider("fake")` used to construct ModelRack's unscripted
+  `docs/history/E4_HANDOFF.md` §5). `build_provider("fake")` used to construct ModelRack's unscripted
   `FakeProvider()`, whose `DEFAULT_MODEL` declares an 8.5 GB model — so routing's
   `insufficient_vram` hard constraint rejected the only candidate whenever the host had little
   free VRAM, including plain `tools.agent`, unchanged. A provider that exists so the suite and an
@@ -94,7 +115,7 @@ packaging and release standards §3.
   `checks`, the same shape the synchronous response has always rendered. A caller that advances
   on an answer can now tell one the model chose to end from one cut off at the token limit, and
   can read the same facts back for a job it lost track of, instead of inferring either from the
-  text. Surfaced by PromptCadence's Phase 3 (`D2_HANDOFF.md` §2), whose advance contract refuses
+  text. Surfaced by PromptCadence's Phase 3 (`docs/history/D2_HANDOFF.md` §2), whose advance contract refuses
   to read an undeclared finish as success.
 
   **Additive within `/api/v1`**: no field removed, no existing field's type changed, no new API

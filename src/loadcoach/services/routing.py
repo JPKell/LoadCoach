@@ -143,6 +143,9 @@ class RouteRequest:
             not say, and context budgeting is skipped rather than guessed at.
         max_output_tokens: Overrides the profile's allowance when given.
         constraints: Additional constraints, which may only tighten the profile's own.
+        require_capabilities: Capabilities this *request* needs, whatever its task profile
+            requires — a body carrying tools requires ``tool_use`` (ADR-0075). Unioned with the
+            profile's, so it can only narrow the field; it never scores and never loosens.
         overrides: Routing §10's overrides.
     """
 
@@ -150,6 +153,7 @@ class RouteRequest:
     estimated_input_tokens: int | None = None
     max_output_tokens: int | None = None
     constraints: TaskProfileConstraints | None = None
+    require_capabilities: tuple[str, ...] = ()
     overrides: RuntimeOverrides = field(default_factory=RuntimeOverrides)
 
 
@@ -487,6 +491,17 @@ def route(
     started = datetime.now(tz=now.tzinfo)
     profile = load_task_profile(database, request.task)
     constraints = _merged_constraints(profile, request.constraints)
+    # ADR-0075: what the request itself needs, unioned onto what the profile needs. A union can
+    # only narrow, so it cannot collide with `_merged_constraints`' refusal to loosen.
+    request_capabilities = frozenset(request.require_capabilities)
+    if request_capabilities - set(constraints.requires_capabilities):
+        constraints = constraints.model_copy(
+            update={
+                "requires_capabilities": tuple(
+                    sorted(request_capabilities | set(constraints.requires_capabilities))
+                )
+            }
+        )
     execution = profile.execution
     max_output_tokens = request.max_output_tokens or int(
         cast("int", execution.get("max_output_tokens", 1024))
@@ -575,6 +590,7 @@ def route(
                 open_circuit_breakers=open_circuit_breakers,
                 resident_devices=resident_devices or {},
                 circuit_breaker_details=circuit_breaker_details or {},
+                request_capabilities=request_capabilities,
             ),
         )
         if rejection is not None:

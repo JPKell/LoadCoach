@@ -8,8 +8,9 @@ text with nothing, leaving the hashes, the tokens, the timings and the routing i
 full content only when explicitly enabled).
 
 What is scrubbed, on a terminal job older than the retention: ``prompt_text``, ``response_text``,
-``structured_output_json``, ``tool_calls_json``, ``reasoning_summary``, the ``messages`` inside
-``request_json`` (its task, format, sampling and overrides stay, so the job is still explicable),
+``structured_output_json``, ``tool_calls_json``, ``reasoning_summary``, the ``messages`` and the
+offered ``tools`` inside ``request_json`` (its task, format, sampling and overrides stay, so the
+job is still explicable),
 and the ``output``/``reasoning`` of its persisted ``result`` event. A scrubbed job records when,
 so the page and the API can say "content removed by retention" rather than showing nothing.
 """
@@ -93,6 +94,9 @@ def scrub_content(
             request.pop("messages", None)
             request.pop("prompt", None)
             request.pop("system", None)
+            # A tool's description is caller-written prompt content and its parameters describe
+            # the caller's own surface: both go with the transcript, not after it (data model §3).
+            request.pop("tools", None)
             request[SCRUBBED_MARKER] = to_rfc3339(now)
             job.request_json = request
             job.prompt_text = None

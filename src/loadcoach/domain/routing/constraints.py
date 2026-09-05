@@ -351,6 +351,11 @@ class ConstraintInputs:
         circuit_breaker_details: Canonical ID -> the open breaker's record (state, reason,
             expiry), merged into the ``recently_failing`` rejection so the explanation shows
             why the model was skipped and until when (queue §7).
+        request_capabilities: The subset of ``requires_capabilities`` the *request* imposed
+            rather than the task profile — today only ``tool_use``, from a body carrying tools
+            (ADR-0075). Read only to label the rejection ``required_by``, so a caller can tell a
+            profile it chose from an offer it made; it never changes which capabilities apply,
+            because the two sets are unioned before they get here.
     """
 
     min_context_tokens: int = 0
@@ -365,6 +370,7 @@ class ConstraintInputs:
     open_circuit_breakers: frozenset[str] = frozenset()
     resident_devices: Mapping[str, frozenset[int]] = field(default_factory=dict)
     circuit_breaker_details: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    request_capabilities: frozenset[str] = frozenset()
 
 
 _CAPABILITY_SUPPORT_ATTRIBUTE: Final[Mapping[str, str]] = {
@@ -462,7 +468,13 @@ def evaluate_constraints(
             return (
                 Rejection(
                     "capability_unsupported",
-                    {"capability": capability, "provider_kind": facts.provider_kind},
+                    {
+                        "capability": capability,
+                        "provider_kind": facts.provider_kind,
+                        "required_by": "request"
+                        if capability in inputs.request_capabilities
+                        else "task_profile",
+                    },
                 ),
                 (),
                 None,
