@@ -820,6 +820,15 @@ def _failure_outcome(error: ProviderError) -> str:
     return "provider_error"
 
 
+_NO_PREVIOUS_OUTPUT = "(the previous attempt returned no output at all)"
+"""What ``previous_output`` says when the failed attempt produced nothing.
+
+The prompt record is a versioned artefact and is not edited to describe this case (ADR-0012); the
+variable it renders carries the fact instead. An empty string here would leave the correction
+asking the model to preserve the substance of a blank.
+"""
+
+
 def corrective_turns(
     transcript: tuple[Message, ...],
     *,
@@ -834,21 +843,30 @@ def corrective_turns(
 
     Args:
         transcript: The caller's turns.
-        previous_text: What the failed attempt produced.
+        previous_text: What the failed attempt produced. May be empty: a model under JSON mode can
+            spend its whole output budget thinking and return nothing at all, which is how G1 found
+            this function.
         outcome: Why it failed validation.
         schema: The schema the output must satisfy, for the prompt.
 
     Returns:
         ``(turns, correction)`` — the transcript to send and the rendered prompt record.
+
+    Refuses to replay an empty answer as a turn. An assistant message with neither content nor tool
+    calls is one ModelRack rejects, so appending one built a request that could never be sent —
+    and, before this, the refusal escaped mid-execution and left the job ``executing`` with its
+    attempts unwritten. An empty previous answer is instead described inside the correction
+    prompt's ``previous_output``, which is where the model needs it anyway; the prompt record
+    itself is unchanged (ADR-0012 — prompts are versioned, so the wording is not edited here).
     """
     correction = render_corrective_retry(
         problems=_problems_text(outcome),
         schema=json.dumps(schema, indent=2, sort_keys=True) if schema else "{}",
-        previous_output=previous_text,
+        previous_output=previous_text or _NO_PREVIOUS_OUTPUT,
     )
     turns = (
         *transcript,
-        Message(role=Role.ASSISTANT, content=previous_text),
+        *((Message(role=Role.ASSISTANT, content=previous_text),) if previous_text else ()),
         *((Message(role=Role.SYSTEM, content=correction.system),) if correction.system else ()),
         Message(role=Role.USER, content=correction.user),
     )
@@ -921,13 +939,25 @@ def _execute_attempts(
     breakers: CircuitBreakers | None = None,
     residency: Any | None = None,
     residency_inputs: Mapping[str, Any] | None = None,
-) -> tuple[list[AttemptRecord], RankedCandidate | None, _Collected | None, ValidationOutcome]:
+) -> tuple[
+    list[AttemptRecord],
+    RankedCandidate | None,
+    _Collected | None,
+    ValidationOutcome,
+    ValidationError | None,
+]:
     """The synchronous endpoints' loop: try each ranked candidate, retrying correctively.
 
     With a ``breakers`` registry, the loop marks and releases a half-open model's probe exactly
     as the worker's does (F3/M5C-3): ``allow_probe`` is asked once per candidate before its
     first attempt, a refusal while another probe is out skips the candidate, and a probe whose
     attempt is cancelled before the provider reports is handed back.
+
+    Returns the attempts made, the candidate that answered (or ``None``), what it produced, the
+    validation outcome, and **a refusal**: the error raised while a request was being *built*,
+    rather than while it was being answered. A refusal is returned rather than propagated so that
+    the attempts already made are written by the caller's own persistence — the failure G1 hit was
+    not the refusal itself but the rows it took with it (data model §2).
     """
     ranking = routing.explanation.ranking
     candidates = [ranking.primary, *ranking.fallbacks]
@@ -956,21 +986,28 @@ def _execute_attempts(
 
         for _ in range(max_attempts):
             attempt_number += 1
-            outcome = run_attempt(
-                provider,
-                request=request,
-                candidate=candidate,
-                turns=turns,
-                attempt_number=attempt_number,
-                schema=schema,
-                execution_policy=execution_policy,
-                validation_policy=validation_policy,
-                timeout_seconds=timeout_seconds,
-                cancel=cancel,
-                on_chunk=on_chunk,
-                now=now,
-                correction=correction,
-            )
+            try:
+                outcome = run_attempt(
+                    provider,
+                    request=request,
+                    candidate=candidate,
+                    turns=turns,
+                    attempt_number=attempt_number,
+                    schema=schema,
+                    execution_policy=execution_policy,
+                    validation_policy=validation_policy,
+                    timeout_seconds=timeout_seconds,
+                    cancel=cancel,
+                    on_chunk=on_chunk,
+                    now=now,
+                    correction=correction,
+                )
+            except ValidationError as refusal:
+                # The request could not be built: ModelRack refused the transcript, the tools or
+                # the sampling before any provider was called. Stop here and hand the refusal back
+                # with the attempts already made, so the job fails with its history rather than
+                # sitting in `executing` until a watchdog (api.md §10).
+                return records, None, None, validation, refusal
             records.append(outcome.record)
             collected = _Collected(
                 text=outcome.text,
@@ -987,19 +1024,22 @@ def _execute_attempts(
                         # A cancelled probe says nothing about the model: hand it back so the
                         # next job may probe, rather than excluding the model until never.
                         breakers.release_probe(canonical_id)
-                    return records, candidate, collected, validation
+                    return records, candidate, collected, validation, None
                 break  # this candidate is not working; fall back
             assert outcome.validation is not None  # noqa: S101 — set whenever the provider answered
             validation = outcome.validation
             if outcome.passed:
-                return records, candidate, collected, validation
+                return records, candidate, collected, validation, None
             if attempt_number >= max_attempts * len(candidates):
                 break
-            turns, correction = corrective_turns(
-                transcript, previous_text=outcome.text, outcome=validation, schema=schema
-            )
+            try:
+                turns, correction = corrective_turns(
+                    transcript, previous_text=outcome.text, outcome=validation, schema=schema
+                )
+            except ValidationError as refusal:
+                return records, None, None, validation, refusal
 
-    return records, None, None, validation
+    return records, None, None, validation, None
 
 
 def identity_of(facts: ModelFacts) -> ModelIdentity:
@@ -1596,6 +1636,9 @@ def execute(
         NoEligibleModel: Nothing survived the hard constraints; every candidate and its reason is
             in ``details``.
         AllCandidatesFailed: Every ranked candidate was tried and failed.
+        ValidationError: A request LoadCoach assembled — the structured-output corrective retry —
+            was refused before it reached a provider. The job is ``failed`` and every attempt made
+            up to that point is written (api.md §10).
         SchemaUnsupported: The profile's schema uses a keyword the validator cannot check.
     """
     authorize(principal, "write")
@@ -1654,7 +1697,7 @@ def execute(
     if not context.provider_facts.supports_streaming:
         degradations.append(_DEGRADATION_NO_STREAMING)
 
-    records, selected, collected, validation = _execute_attempts(
+    records, selected, collected, validation, refusal = _execute_attempts(
         context.provider,
         request,
         routing,
@@ -1678,6 +1721,28 @@ def execute(
 
     total_ms = int((time.perf_counter() - started) * 1000)
     provider_ms = sum(record.provider_ms or 0 for record in records)
+
+    if refusal is not None:
+        # A request LoadCoach itself assembled was refused before any provider saw it. It is not a
+        # provider failure and not a routing failure — no candidate was rejected and nothing was
+        # called — so the job fails as VALIDATION_ERROR, and it fails *with* its attempts: the
+        # answer that provoked the corrective is only readable because these rows are written.
+        _persist(
+            database,
+            job_id=job_id,
+            request=request,
+            routing=routing,
+            outcome=None,
+            records=records,
+            error=refusal,
+            now=now,
+            sink=context.sink,
+            existing=existing,
+        )
+        _refresh_reliability(
+            database, records, task_profile_id=routing.task_profile.profile_id, now=context.now()
+        )
+        raise refusal
 
     if selected is None or collected is None or collected.result is None:
         failure = AllCandidatesFailed(

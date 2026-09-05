@@ -44,7 +44,21 @@ packaging and release standards §3.
   with; a row written before the field existed reads back exactly as it did.
 
 ### Fixed
-- **The `fake` provider no longer trips `insufficient_vram` on a busy GPU** (E6, found at E4:
+- **The corrective retry no longer crashes on an empty answer, and a refused request writes its
+  attempts** (G2, found at G1: `docs/history/G1_HANDOFF.md` §9.2). `corrective_turns` appended
+  `Message(ASSISTANT, content=previous_text)` unconditionally, so a model that answered with
+  nothing — a reasoning model under JSON mode does, about half the time — produced an assistant
+  turn ModelRack refuses. The refusal escaped mid-execution: `/generate` returned
+  `VALIDATION_ERROR`, the job stayed `executing` until a watchdog or a cancel, and **its attempts
+  were never written**, which is why the `finish_reason` behind those empty answers could not be
+  recovered afterwards.
+
+  Two changes, and they are separate. An empty previous answer is now described inside the
+  correction prompt's `previous_output` instead of being replayed as a turn (the prompt record
+  itself is unchanged — prompts are versioned, ADR-0012). And a request refused while it is being
+  *built* now **fails the job with every attempt already made committed**, `error_code`
+  `VALIDATION_ERROR`, `completed_at` set. It is not a provider failure and not a routing failure:
+  nothing was called and no candidate was rejected. (E6, found at E4:
   `docs/history/E4_HANDOFF.md` §5). `build_provider("fake")` used to construct ModelRack's unscripted
   `FakeProvider()`, whose `DEFAULT_MODEL` declares an 8.5 GB model — so routing's
   `insufficient_vram` hard constraint rejected the only candidate whenever the host had little
