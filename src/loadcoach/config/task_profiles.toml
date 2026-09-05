@@ -557,6 +557,15 @@ allow_remote_providers = false
 
 [task_profiles."tools.plan".execution]
 temperature = 0.1
+# max_output_tokens stays at 4096, measured rather than assumed (G2, gate E). A reasoning model
+# under `response_format = "json"` spends this budget thinking and can return an empty document:
+# gpt-oss:20b on the reference machine, given PromptCadence's planner.draft 1.1.0 prompt, answered
+# nothing 1 time in 6 at 4096 and 3 times in 6 at 8192 — every empty answer `done_reason=length`
+# with eval_count exactly equal to the budget, and median latency tripling from 58 s to 171 s.
+# Raising the budget therefore buys a longer wait and *more* empty answers, not fewer: the model
+# fills whatever it is given. The lever that would work is a thinking control, and ModelRack's
+# Ollama adapter declares `thinking_control` while exposing no request-side way to ask for it
+# (G2 handoff §8). Until it does, the corrective retry is what absorbs an empty draft.
 max_output_tokens = 4096
 response_format = "json"
 max_attempts = 3

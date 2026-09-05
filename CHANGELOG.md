@@ -43,6 +43,30 @@ packaging and release standards §3.
   failure). `jobs.request_json` carries the calls, so a queued job replays what it was submitted
   with; a row written before the field existed reads back exactly as it did.
 
+### Changed
+- **`tools.plan`'s output budget stays at 4096, measured** (G2, gate E). G1 reported that
+  gpt-oss:20b returns an empty document under this profile about half the time and left the
+  question of what to do about it to LoadCoach. Measured against the real model on the reference
+  machine with PromptCadence's `planner.draft` 1.1.0 prompt (2.1k characters, six samples per
+  setting, straight through Ollama so nothing but the budget varied):
+
+  | `max_output_tokens` | empty | rate | median latency | every empty answer |
+  |---|---|---|---|---|
+  | 4096 (shipped) | 1 / 6 | 17 % | 58 s | `done_reason=length`, `eval_count` 4096 |
+  | 8192 | 3 / 6 | 50 % | 171 s | `done_reason=length`, `eval_count` 8192 |
+
+  Doubling the budget tripled the median latency and made the empty rate worse, because the model
+  fills whatever budget it is given with reasoning and simply runs out later. The profile is therefore
+  unchanged, with the numbers recorded beside it in `task_profiles.toml`. This also answers the
+  question G1 could not: **the finish reason behind an empty planning answer is `length`**, with
+  `eval_count` exactly equal to the budget.
+
+  The lever that would work is a thinking control. ModelRack's Ollama adapter declares
+  `thinking_control = True` in its capabilities but exposes no request-side way to ask for it —
+  neither `SamplingParameters` nor the chat body carries Ollama's `think` key, and
+  `runtime_profile.provider_options` merges into `options`, where `think` does not live. Recorded
+  as a finding for ModelRack; no task-profile field is added for a control that cannot be sent.
+
 ### Fixed
 - **The corrective retry no longer crashes on an empty answer, and a refused request writes its
   attempts** (G2, found at G1: `docs/history/G1_HANDOFF.md` §9.2). `corrective_turns` appended
