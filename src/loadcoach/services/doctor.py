@@ -260,6 +260,68 @@ def _provider(settings: Settings) -> list[Finding]:
     return findings
 
 
+def _adapters(settings: Settings) -> list[Finding]:
+    """Report the adapter directory: what is unusable, and what is waiting for a person.
+
+    ADR-0061 rule 5's failure is a *loud* one — a renamed or edited artifact takes its adapter out
+    of service, named by ``doctor``, until a rescan. This is where it is named. With no
+    ``[adapters] directory`` configured the feature is off and there is nothing to report, which
+    is the intended state of every deployment that has never heard of adapters (rule 2).
+    """
+    from loadcoach.infrastructure.adapters import read_directory
+
+    directory = settings.adapters.path
+    if directory is None:
+        return []
+    if not directory.is_dir():
+        return [
+            Finding(
+                "CONFIGURATION_ERROR",
+                "warn",
+                f"[adapters] directory {directory} does not exist",
+                "create it, or clear [adapters] directory to turn adapters off",
+            )
+        ]
+    reading = read_directory(directory)
+    findings: list[Finding] = []
+    for entry in reading.entries:
+        if not entry.available:
+            findings.append(
+                Finding(
+                    "CONFIGURATION_ERROR",
+                    "warn",
+                    f"adapter {entry.name!r} is unavailable: {entry.unavailable_reason}",
+                    "run `loadcoach adapters scan` and review the draft",
+                )
+            )
+    for path, problem in reading.invalid:
+        findings.append(
+            Finding(
+                "CONFIGURATION_ERROR",
+                "warn",
+                f"manifest {path.name} could not be read: {problem}",
+                "fix the manifest, or delete it and rescan",
+            )
+        )
+    for path in reading.unmanifested:
+        findings.append(
+            Finding(
+                "CONFIGURATION_ERROR",
+                "warn",
+                f"{path.name} has no manifest, so nothing registers it",
+                "run `loadcoach adapters scan`, then review and keep the draft",
+            )
+        )
+    if not findings:
+        available = len(reading.available)
+        waiting = len(reading.drafts)
+        detail = f"{available} adapter(s) available in {directory}"
+        if waiting:
+            detail += f"; {waiting} draft(s) awaiting review"
+        findings.append(Finding("CONFIGURATION_ERROR", "ok", detail))
+    return findings
+
+
 def _models_and_profiles(database: Database, settings: Settings) -> list[Finding]:
     from loadcoach.services.models import list_registry
     from loadcoach.services.task_profiles import list_stored_task_profiles
@@ -545,6 +607,7 @@ def diagnose(*, config_path: str | None = None) -> Diagnosis:
     findings.extend(database_findings)
     findings.extend(_exposure(settings, database))
     findings.extend(_provider(settings))
+    findings.extend(_adapters(settings))
     if database is not None:
         try:
             findings.extend(_models_and_profiles(database, settings))

@@ -169,6 +169,11 @@ def build_registrations(settings: Settings) -> tuple[ProviderRegistration, ...]:
     Args:
         settings: The resolved application configuration.
 
+    Where ``[adapters] directory`` is configured, every registration whose provider declares
+    ``adapter_hot_swap`` is handed the adapters that directory holds (ADR-0061 rule 3). Empty
+    directory, empty configuration or a provider that cannot hot-swap: nothing is offered, and
+    nothing about the registration changes.
+
     Returns:
         One :class:`ProviderRegistration` per configured provider. Never empty: with no
         configuration at all, the singular block's defaults are one Ollama registration, which is
@@ -180,7 +185,7 @@ def build_registrations(settings: Settings) -> tuple[ProviderRegistration, ...]:
     """
     named = settings.providers.registrations
     if named:
-        return tuple(
+        built = tuple(
             ProviderRegistration(
                 name=name,
                 kind=registration.kind,
@@ -189,15 +194,44 @@ def build_registrations(settings: Settings) -> tuple[ProviderRegistration, ...]:
             )
             for name, registration in sorted(named.items())
         )
-    singular = settings.provider
-    return (
-        ProviderRegistration(
-            name=singular.kind,
-            kind=singular.kind,
-            is_remote=False,
-            provider=_build_one(singular.as_registration(), field="provider.kind"),
-        ),
-    )
+    else:
+        singular = settings.provider
+        built = (
+            ProviderRegistration(
+                name=singular.kind,
+                kind=singular.kind,
+                is_remote=False,
+                provider=_build_one(singular.as_registration(), field="provider.kind"),
+            ),
+        )
+    _offer_adapters(built, settings)
+    return built
+
+
+def _offer_adapters(registrations: tuple[ProviderRegistration, ...], settings: Settings) -> None:
+    """Hand every hot-swapping provider the adapters the operator's directory holds.
+
+    The conversion from a reviewed ``model.adapter_manifest`` into ModelRack's
+    :class:`~modelrack.adapters.AdapterRegistration` happens **here, in the application**:
+    ModelRack never reads the directory (ADR-0061 rule 3), and this is the one place that gap is
+    bridged. A provider that declares no ``adapter_hot_swap`` is skipped rather than asked and
+    refused — a remote endpoint is not a misconfiguration to report, it is simply not a provider
+    adapters can reach, which is what makes ADR-0065's local-only invariant hold by construction.
+
+    Unavailable entries never reach a provider: an adapter whose artifact no longer matches its
+    manifest is refused at the directory, before anything could serve it.
+    """
+    directory = settings.adapters.path
+    if directory is None:
+        return
+    from loadcoach.infrastructure.adapters import read_directory, registrations_from
+
+    adapters = registrations_from(read_directory(directory).available)
+    if not adapters:
+        return
+    for registration in registrations:
+        if registration.provider.capabilities().adapter_hot_swap:
+            registration.provider.register_adapters(adapters)
 
 
 def _build_one(settings: ProviderRegistrationSettings, *, field: str) -> Provider:

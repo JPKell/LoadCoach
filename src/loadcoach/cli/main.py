@@ -12,6 +12,7 @@ from typing import Annotated
 
 import typer
 
+from loadcoach.cli.commands import adapters as adapters_commands
 from loadcoach.cli.commands import config as config_commands
 from loadcoach.cli.commands import db as db_commands
 from loadcoach.cli.commands import evidence as evidence_commands
@@ -67,6 +68,11 @@ app.command(name="generate", help="Route a task and execute it now.")(generate_c
 app.add_typer(config_commands.app, name="config", help="Configuration inspection and management.")
 app.add_typer(db_commands.app, name="db", help="Database migration and maintenance.")
 app.add_typer(models_commands.app, name="models", help="Model discovery and inspection.")
+app.add_typer(
+    adapters_commands.app,
+    name="adapters",
+    help="The adapter registry: a directory and reviewed manifests.",
+)
 app.add_typer(tasks_commands.app, name="tasks", help="Task profile inspection and validation.")
 app.add_typer(
     route_commands.app, name="route", help="Explain a routing decision without executing it."

@@ -62,6 +62,14 @@ Cross-provider policy, plus the ``[providers.<name>]`` registrations themselves.
 |---|---|---|---|---|---|---|---|---|
 | `providers.allow_remote` | `LOADCOACH_PROVIDERS__ALLOW_REMOTE` | `bool` | `False` | — | no | **config-only:** Permits egress to a remote provider. | `False` | Permit a remote provider at all — an explicit, deliberate opt-in. |
 
+## `[adapters]`
+
+``[adapters]`` — the operator's directory of adapter artifacts and their manifests.
+
+| Key | Environment variable | Type | Default | Range | Runtime-changeable | Security | Example | Description |
+|---|---|---|---|---|---|---|---|---|
+| `adapters.directory` | `LOADCOACH_ADAPTERS__DIRECTORY` | `str` | `''` | — | no | — | `'~/models/adapters'` | Directory holding adapter artifacts and their reviewed manifests. Empty — the default — turns adapters off entirely; nothing is scanned, registered or routed. |
+
 ## `[execution]`
 
 ``[execution]`` — concurrency, timeout and retry policy for job execution (Phase 4-5).

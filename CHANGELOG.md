@@ -8,6 +8,28 @@ packaging and release standards §3.
 ## [Unreleased]
 
 ### Added
+- **The adapter registry is an operator's directory and a reviewed manifest** (ADR-0061).
+  `[adapters] directory` — empty by default, and **empty means the whole feature is off**. The
+  directory holds artifacts and one reviewed `model.adapter_manifest` 1.0 per adapter, read and
+  validated through SetSpec rather than re-defined; the conversion into ModelRack's
+  `AdapterRegistration` happens here, in the application, because ModelRack never reads a
+  directory. Every registration whose provider declares `adapter_hot_swap` is offered what the
+  directory holds, so a provider that cannot hot-swap — every remote one — is never handed an
+  adapter at all.
+
+  **Identity is the artifact hash and the path is a locator.** A renamed artifact whose manifest
+  still names the old path makes that adapter unavailable, named, until a rescan; an *edited*
+  artifact is a different adapter and is refused, because measurements attached to the old hash
+  must never be re-attributed to new weights. Both are fail-closed, and `loadcoach doctor` names
+  each one.
+
+  `loadcoach adapters scan|list|show`. **`scan` drafts; a person keeps**: it hashes each artifact,
+  reads a sibling `adapter_config.json` for a base *name* (never a proof), writes
+  `data_classification: confidential` so a reviewed value can only be relaxed on purpose, and
+  leaves `declared_capabilities` empty because a capability claim decides what gets benchmarked
+  and routed and is a person's assertion, not a scanner's guess. A draft is never registered —
+  enforced by its `.manifest.draft.json` suffix, not by a flag inside the document.
+
 - **Providers are registered by name and kind** (LC-E1, ADR-0055). `[providers.<name>]` blocks each
   carry a `kind`, their connection settings and a **declared** `remote` flag — never inferred from
   the kind or the URL, so an OpenAI-compatible endpoint on loopback is local and the same kind

@@ -31,6 +31,7 @@ __all__ = [
     "EXAMPLE_CONFIG_TOML",
     "ENV_PREFIX",
     "LOOPBACK_HOSTS",
+    "AdaptersSettings",
     "ConfigurationError",
     "EvidenceSettings",
     "ExecutionSettings",
@@ -439,6 +440,32 @@ class ProvidersSettings(BaseModel):
         return self
 
 
+class AdaptersSettings(BaseModel):
+    """``[adapters]`` — the operator's directory of adapter artifacts and their manifests.
+
+    Opt-in, per application (ADR-0061 rule 2): **empty means the whole feature is off**, and a
+    deployment that has never heard of adapters is unaffected by every part of it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    directory: str = Field(
+        default="",
+        description=(
+            "Directory holding adapter artifacts and their reviewed manifests. Empty — the "
+            "default — turns adapters off entirely; nothing is scanned, registered or routed."
+        ),
+        examples=["~/models/adapters"],
+    )
+
+    @property
+    def path(self) -> Path | None:
+        """The configured directory as a path, or ``None`` when the feature is off."""
+        if not self.directory.strip():
+            return None
+        return Path(self.directory).expanduser()
+
+
 class ExecutionSettings(BaseModel):
     """``[execution]`` — concurrency, timeout and retry policy for job execution (Phase 4-5)."""
 
@@ -740,6 +767,7 @@ class Settings(BaseModel):
     storage: StorageSettings = Field(default_factory=StorageSettings)
     provider: ProviderSettings = Field(default_factory=ProviderSettings)
     providers: ProvidersSettings = Field(default_factory=ProvidersSettings)
+    adapters: AdaptersSettings = Field(default_factory=AdaptersSettings)
     execution: ExecutionSettings = Field(default_factory=ExecutionSettings)
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
     queue: QueueSettings = Field(default_factory=QueueSettings)
@@ -1042,6 +1070,9 @@ timeout_seconds = 300.0
 
 [providers]
 allow_remote = false        # policy: may *any* remote registration be routed to at all
+
+[adapters]
+directory = ""              # empty = adapters are off entirely (ADR-0061)
 
 [execution]
 max_concurrent_jobs = 1         # raise only on multi-GPU or CPU-only setups
