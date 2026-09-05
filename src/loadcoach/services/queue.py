@@ -54,6 +54,8 @@ from loadcoach.domain.routing.subject import RuntimeOverrides
 from loadcoach.infrastructure.db.models import Job
 from loadcoach.services.execution import (
     GenerateRequest,
+    message_json,
+    messages_of_json,
     tool_definitions_json,
     tool_definitions_of_json,
 )
@@ -61,7 +63,7 @@ from loadcoach.services.retention import SCRUBBED_MARKER
 from loadcoach.services.routing import load_task_profile
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping
     from datetime import datetime
 
     from baseaicore import RuntimeProfile
@@ -223,14 +225,7 @@ class JobSubmission:
         profile = None if overrides is None else overrides.runtime_profile
         return {
             "task": self.task,
-            "messages": [
-                {
-                    "role": turn.role.value,
-                    "content": turn.content,
-                    "tool_call_id": turn.tool_call_id,
-                }
-                for turn in self.transcript()
-            ],
+            "messages": [message_json(turn) for turn in self.transcript()],
             "response_format": self.response_format,
             "sampling": dict(self.sampling),
             "overrides": None
@@ -287,14 +282,7 @@ class JobSubmission:
                 disallow_fallback=bool(raw_overrides.get("disallow_fallback", False)),
                 require_evidence=bool(raw_overrides.get("require_evidence", False)),
             )
-        messages = tuple(
-            Message(
-                role=Role(str(turn["role"])),
-                content=str(turn["content"]),
-                tool_call_id=cast("str | None", turn.get("tool_call_id")),
-            )
-            for turn in cast("Sequence[Mapping[str, Any]]", payload.get("messages", ()))
-        )
+        messages = messages_of_json(payload.get("messages"))
         return cls(
             task=str(payload["task"]),
             messages=messages,

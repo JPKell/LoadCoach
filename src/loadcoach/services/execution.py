@@ -29,6 +29,7 @@ import hashlib
 import json
 import logging
 import time
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -58,6 +59,7 @@ from modelrack import (
     StreamFailed,
     ThinkingDelta,
     TokenDelta,
+    ToolCall,
     ToolCallDelta,
     ToolDefinition,
 )
@@ -82,7 +84,7 @@ from loadcoach.services.routing import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Sequence
     from contextlib import AbstractContextManager
     from pathlib import Path
 
@@ -199,6 +201,95 @@ class GenerateRequest:
             turns.append(Message(role=Role.SYSTEM, content=self.system))
         turns.append(Message(role=Role.USER, content=self.prompt or ""))
         return tuple(turns)
+
+
+def message_json(message: Message) -> dict[str, Any]:
+    """``jobs.request_json``'s form of one transcript turn (data model §2).
+
+    Args:
+        message: The turn.
+
+    Returns:
+        ``role``, ``content`` and ``tool_call_id`` as they have always been written, plus
+        ``tool_calls`` on an assistant turn that requested any. The key is omitted where there are
+        none, so a transcript without tool turns persists exactly the bytes it persisted before the
+        wire carried them.
+    """
+    payload: dict[str, Any] = {
+        "role": message.role.value,
+        "content": message.content,
+        "tool_call_id": message.tool_call_id,
+    }
+    if message.tool_calls:
+        payload["tool_calls"] = [
+            {
+                "id": call.id,
+                "name": call.name,
+                "arguments": call.raw_arguments
+                if call.raw_arguments is not None
+                else dict(call.arguments),
+            }
+            for call in message.tool_calls
+        ]
+    return payload
+
+
+def messages_of_json(payload: object) -> tuple[Message, ...]:
+    """The transcript of a persisted job, read back from ``jobs.request_json``.
+
+    Args:
+        payload: ``request_json["messages"]``, or anything else a row might hold — a job whose
+            text retention removed has no ``messages`` key at all.
+
+    Returns:
+        The turns, with an assistant turn's ``tool_calls`` restored so a queued job replays what
+        it was submitted with. Empty when the key is missing.
+
+    Raises:
+        ValidationError: Through :class:`~modelrack.types.Message`, if a persisted turn breaks one
+            of its role rules. Unreachable for a row this application wrote, because the web layer
+            refuses such a body before the row exists.
+    """
+    if not isinstance(payload, list):
+        return ()
+    return tuple(
+        Message(
+            role=Role(str(turn["role"])),
+            content=str(turn["content"]),
+            tool_call_id=cast("str | None", turn.get("tool_call_id")),
+            tool_calls=tool_calls_of_json(turn.get("tool_calls")),
+        )
+        for turn in cast("Sequence[Mapping[str, Any]]", payload)
+    )
+
+
+def tool_calls_of_json(payload: object) -> tuple[ToolCall, ...]:
+    """The calls an assistant turn requested, read back from a persisted message.
+
+    Args:
+        payload: A message's ``tool_calls`` list, or ``None``.
+
+    Returns:
+        The calls. A string ``arguments`` is restored as ``raw_arguments`` with empty parsed
+        arguments, which is how a call the model malformed was carried in: the record keeps what
+        was asked for rather than an empty mapping that says the model asked for nothing.
+    """
+    if not isinstance(payload, list):
+        return ()
+    calls: list[ToolCall] = []
+    for entry in payload:
+        if not isinstance(entry, Mapping):
+            continue
+        arguments = entry.get("arguments", {})
+        calls.append(
+            ToolCall(
+                id=str(entry["id"]),
+                name=str(entry["name"]),
+                arguments={} if isinstance(arguments, str) else dict(arguments),
+                raw_arguments=arguments if isinstance(arguments, str) else None,
+            )
+        )
+    return tuple(calls)
 
 
 def tool_definitions_json(tools: Sequence[ToolDefinition]) -> list[dict[str, Any]]:
@@ -1122,14 +1213,7 @@ def reserve_sync_job(
                     else now + timedelta(hours=ttl_hours),
                     request_json={
                         "task": request.task,
-                        "messages": [
-                            {
-                                "role": m.role.value,
-                                "content": m.content,
-                                "tool_call_id": m.tool_call_id,
-                            }
-                            for m in transcript
-                        ],
+                        "messages": [message_json(m) for m in transcript],
                         "tools": tool_definitions_json(request.tools),
                         "response_format": request.response_format,
                         "sampling": dict(request.sampling),

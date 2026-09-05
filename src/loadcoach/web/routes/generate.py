@@ -27,10 +27,10 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import anyio
-from baseaicore import SuiteError
+from baseaicore import SuiteError, ValidationError
 from fastapi import APIRouter, Request
 from mirrorwall import sse_response
-from modelrack import CancellationToken, Message, Role, ToolDefinition
+from modelrack import CancellationToken, Message, Role, ToolCall, ToolDefinition
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from setspec import GeneratorInfo
 from starlette.responses import StreamingResponse
@@ -73,6 +73,22 @@ _TERMINAL_EVENTS = frozenset({"result", "error"})
 _POLL_SECONDS = 0.05
 
 
+class ToolCallBody(BaseModel):
+    """One tool call an assistant turn requested, replayed on the wire (api.md §4).
+
+    ``arguments`` is the parsed argument object, or the raw text when the model's arguments were
+    not a JSON object. The raw form is kept rather than smoothed into an empty mapping: a call the
+    model malformed stays diagnosable, and replaying it as "no arguments" would tell the model it
+    asked for something it did not.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    arguments: dict[str, Any] | str = Field(default_factory=dict)
+
+
 class ToolDefinitionBody(BaseModel):
     """One tool offered to the model (api.md §4).
 
@@ -97,6 +113,7 @@ class MessageBody(BaseModel):
     role: str = Field(pattern="^(system|user|assistant|tool)$")
     content: str
     tool_call_id: str | None = Field(default=None)
+    tool_calls: list[ToolCallBody] | None = Field(default=None)
 
 
 class GenerateBody(BaseModel):
@@ -145,13 +162,74 @@ def source_of(request: Request) -> str:
     return header[:64] if header else "anonymous"
 
 
+def _tool_calls_of(turn: MessageBody) -> tuple[ToolCall, ...]:
+    """One turn's requested calls as ModelRack values (api.md §4)."""
+    if not turn.tool_calls:
+        return ()
+    return tuple(
+        ToolCall(
+            id=call.id,
+            name=call.name,
+            arguments={} if isinstance(call.arguments, str) else call.arguments,
+            raw_arguments=call.arguments if isinstance(call.arguments, str) else None,
+        )
+        for call in turn.tool_calls
+    )
+
+
 def messages_of(body: GenerateBody) -> tuple[Message, ...] | None:
-    """The caller's transcript as ModelRack messages, or ``None`` for the prompt form."""
+    """The caller's transcript as ModelRack messages, or ``None`` for the prompt form.
+
+    Args:
+        body: The validated request body.
+
+    Returns:
+        The transcript, with each assistant turn's ``tool_calls`` carried natively, or ``None``
+        for the prompt form.
+
+    Raises:
+        ValidationError: With ``details.fields`` naming the offending turn, for any transcript the
+            wire refuses (api.md §4): ``tool_calls`` on a non-assistant turn, a ``tool`` turn with
+            no ``tool_call_id``, a turn with neither content nor calls — ModelRack's own three
+            rules, surfaced here as a ``VALIDATION_ERROR`` rather than reaching the provider — and
+            a ``tool_call_id`` naming no call in an earlier assistant turn, which is LoadCoach's
+            own. An unmatched id is a caller bug that a provider would otherwise turn into a
+            confusing model failure.
+    """
     if body.messages is None:
         return None
-    return tuple(
-        Message(role=Role(turn.role), content=turn.content, tool_call_id=turn.tool_call_id)
-        for turn in body.messages
+    turns: list[Message] = []
+    offered: set[str] = set()
+    for index, turn in enumerate(body.messages):
+        calls = _tool_calls_of(turn)
+        try:
+            turns.append(
+                Message(
+                    role=Role(turn.role),
+                    content=turn.content,
+                    tool_calls=calls,
+                    tool_call_id=turn.tool_call_id,
+                )
+            )
+        except ValidationError as exc:
+            field = str(exc.details.get("field", "role"))
+            raise _refused(index, field, exc.message) from exc
+        if turn.role == "tool" and turn.tool_call_id not in offered:
+            raise _refused(
+                index,
+                "tool_call_id",
+                f"no earlier assistant turn requested the call {turn.tool_call_id!r}; a tool "
+                "result answers a call the model made.",
+            )
+        offered.update(call.id for call in calls)
+    return tuple(turns)
+
+
+def _refused(index: int, field: str, problem: str) -> ValidationError:
+    """The one shape a refused transcript reaches the caller in (api.md §10)."""
+    return ValidationError(
+        "The transcript is not internally consistent.",
+        details={"fields": [{"path": f"messages[{index}].{field}", "problem": problem}]},
     )
 
 

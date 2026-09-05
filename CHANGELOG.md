@@ -28,6 +28,21 @@ packaging and release standards §3.
   by a contract golden captured from that commit
   (`tests/fixtures/contract/generation_request_dfbf2d8.json`).
 
+- **A transcript carries an assistant turn's tool calls** (G2). `messages[].tool_calls` — a list of
+  `{"id", "name", "arguments"}` — replays what a model asked for, so a turn that answered with
+  calls and no text goes back on the wire as it happened instead of being rendered as text. That
+  turn is the one that could not be replayed at all before: ModelRack refuses an assistant message
+  with neither content nor calls. `arguments` may be the parsed object or the raw text the model
+  produced, and the raw form is kept as `raw_arguments` rather than smoothed into an empty mapping.
+
+  The transcript's consistency is checked at the edge and refused as `VALIDATION_ERROR` with
+  `details.fields` naming the turn: `tool_calls` on a non-assistant turn, a `tool` turn with no
+  `tool_call_id`, a turn with neither content nor calls (ModelRack's three rules, surfaced rather
+  than reaching the provider), and a `tool_call_id` naming no call in an earlier assistant turn
+  (LoadCoach's own — an unmatched id is a caller bug a provider would turn into a confusing model
+  failure). `jobs.request_json` carries the calls, so a queued job replays what it was submitted
+  with; a row written before the field existed reads back exactly as it did.
+
 ### Fixed
 - **The `fake` provider no longer trips `insufficient_vram` on a busy GPU** (E6, found at E4:
   `docs/history/E4_HANDOFF.md` §5). `build_provider("fake")` used to construct ModelRack's unscripted
