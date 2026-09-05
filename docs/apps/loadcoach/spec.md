@@ -236,7 +236,16 @@ PROVIDER_UNAVAILABLE      CONTEXT_LIMIT_EXCEEDED     MAX_WAIT_EXCEEDED
 PROVIDER_TIMEOUT          CAPABILITY_UNSUPPORTED     EVIDENCE_IMPORT_FAILED
 PROVIDER_PROTOCOL_ERROR   ALL_CANDIDATES_FAILED      SCHEMA_VERSION_UNSUPPORTED
 PROVIDER_REJECTED         GENERATION_CANCELLED       EVIDENCE_SOURCE_REFUSED
+VALIDATION_ERROR
 ```
+
+`VALIDATION_ERROR` is a **request** that could not be accepted, and it is distinct from
+`VALIDATION_FAILED`, which is a model *answer* that failed the task profile's validation policy. It
+carries `details.fields` — `{"path", "problem"}` per offending field — whether the body failed the
+schema or failed one of the transcript rules in [api.md §4](api.md). A transcript LoadCoach itself
+assembles can also be refused: the corrective retry is built from a previous answer, and a request
+ModelRack refuses at construction fails the job with its attempts written, rather than leaving it
+`executing` (api.md §10).
 
 Every error ModelRack can raise has exactly one mapping here, so no provider failure reaches a caller
 as `INTERNAL_ERROR`:
@@ -250,6 +259,7 @@ as `INTERNAL_ERROR`:
 | `ModelNotFound` | `MODEL_NOT_FOUND` | 404 |
 | `ContextLimitExceeded` | `CONTEXT_LIMIT_EXCEEDED` | 422 |
 | `CapabilityUnsupported` | `CAPABILITY_UNSUPPORTED` | 422 |
+| `ValidationError` | `VALIDATION_ERROR` (the refused field in `details.fields`) | 400 |
 | `GenerationCancelled` | `GENERATION_CANCELLED` — terminal, never retried | 200 with a cancelled job |
 
 `EVIDENCE_SOURCE_REFUSED` is returned when an import URL fails the fetch allowlist
@@ -288,7 +298,12 @@ Behavioural rules:
   binding additionally requires `server.allowed_hosts`. This is the application most likely to be
   exposed, so it is also the one most exposed to DNS rebinding when it is not.
 * Tool definitions supplied by callers are passed to the provider and returned; **LoadCoach never
-  executes a tool call**.
+  executes a tool call**, and never validates a tool's `parameters` schema
+  ([ADR-0041](../../adr/0041-a-callers-schema-does-not-travel-through-a-router.md)). A tool's
+  `description` is caller-written prompt content and reaches the model's context unmodified, on the
+  same terms as `system` and `prompt`. A request offering tools requires `tool_use` of every routing
+  candidate ([ADR-0075](../../adr/0075-a-request-carrying-tools-requires-tool-use-of-every-candidate.md)),
+  so an offer is never silently discarded.
 * Per-token rate limits and queue depth caps prevent a single caller from starving others.
 * Remote providers require explicit opt-in and are marked as egress in the UI and in every routing
   explanation that selects one.

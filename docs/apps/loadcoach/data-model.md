@@ -134,6 +134,9 @@ idempotency_expires_at NULL                 -- UNIQUE (source, idempotency_key);
                                             -- queue.idempotency_ttl_hours (default 24) so a key is
                                             -- not reserved forever
 request_json                       -- prompt/messages by reference or hash, sampling, constraints, overrides
+                                   -- messages carry tool_calls; the offered tools carry name,
+                                   -- description and parameters (api.md §4) so a queued job
+                                   -- replays the transcript and the offer it was submitted with
 prompt_hash · prompt_text TEXT NULL   -- text only when content storage is enabled
 response_hash · response_text TEXT NULL
 structured_output_json NULL · tool_calls_json NULL
@@ -238,6 +241,16 @@ every rate's denominator excludes them, because a cancelled attempt says nothing
 `task_profile_id` is the profile's string id, as on `jobs`, so statistics outlive a profile being
 retired from configuration.
 
+**An attempt row is written for every provider call, and a request refused before one is made ends
+the job.** LoadCoach assembles one transcript of its own — the structured-output corrective retry
+— and ModelRack can refuse it (an assistant turn with neither content nor tool calls is the case
+found at G1). The refusal is not an attempt: no provider was called, so there is no row to write
+for it. What must not happen is the loss of the rows for the attempts that *were* made: the job
+moves to `failed` with `error_code = VALIDATION_ERROR` and every `job_attempts` row up to that
+point is committed with its `outcome`, `finish_reason` and usage. Before this, such a job stayed
+`executing` until a watchdog or a cancel and its attempts were never persisted, which made the
+`finish_reason` behind an empty answer unrecoverable.
+
 ### `residency`
 ```text
 id ULID PK · model_id FK · gpu_index INT NOT NULL
@@ -263,6 +276,7 @@ As in FreeWeight ([FreeWeight Data Model](../freeweight/data-model.md)).
 | Job events | With the job | Pruned with the job |
 | Routing decisions and candidates | Forever (`explanation_retention_days = 0`) | The explainability promise depends on this; pruning is opt-in and warns |
 | Prompt/response text | Not stored unless enabled | Hashes always stored |
+| Tool definitions and tool calls | With the transcript | `request_json.tools` is caller-written prompt content and `request_json.messages[].tool_calls` is model output; both are removed by the same scrub that removes the transcript, and `tool_calls_json` with them |
 | Capability evidence | Upserted on re-import | Rows absent from a **complete** bundle are marked `superseded`, not deleted; an incremental bundle removes nothing ([ADR-0022 §5](../../adr/0022-capability-evidence-record-contract.md)) |
 | Reliability stats | Rolling windows | Recomputed; `all` window never pruned |
 

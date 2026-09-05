@@ -60,13 +60,92 @@ looks wrong.
   "constraints": {"max_latency_seconds": 120},
   "overrides": {"model": null, "runtime_profile": null},
   "priority": {"class": "normal"},
+  "tools": null,
   "idempotency_key": "01J9K…"
 }
 ```
 
 Exactly one of `prompt` (+ optional `system`) or `messages` is supplied; supplying both is a
 `VALIDATION_ERROR`. `messages` is a list of `{"role": "system"|"user"|"assistant"|"tool",
-"content": str, "tool_call_id": str|null}`.
+"content": str, "tool_call_id": str|null, "tool_calls": list|null}`.
+
+#### Tools on the request
+
+```json
+{
+  "task": "tools.agent.local_fast",
+  "messages": [
+    {"role": "user", "content": "List the files in ./notes."},
+    {"role": "assistant", "content": "",
+     "tool_calls": [{"id": "ollama-17052f91-0", "name": "list_dir",
+                     "arguments": {"path": "./notes"}}]},
+    {"role": "tool", "content": "a.md\nb.md", "tool_call_id": "ollama-17052f91-0"}
+  ],
+  "tools": [
+    {"name": "list_dir",
+     "description": "List the entries of a directory inside the workspace.",
+     "parameters": {"type": "object", "properties": {"path": {"type": "string"}},
+                    "required": ["path"]}}
+  ]
+}
+```
+
+**`tools` offers the model a set of tools; LoadCoach never executes one.** It is a router, not an
+executor — ModelRack's spec §14 rule inherited verbatim. A requested call comes back at
+`output.tool_calls` and the decision to run it belongs entirely to the caller, which is also the
+only party that knows what a tool does.
+
+* **`parameters` is passed to the provider unmodified.** LoadCoach does not validate it against
+  JSON Schema, rewrite it, infer one, or reject a keyword it does not recognise — the same rule
+  that keeps a caller's response schema out of the router
+  ([ADR-0041](../../adr/0041-a-callers-schema-does-not-travel-through-a-router.md)). A schema
+  carrying vendor keywords survives byte-for-byte.
+* **`description` is prompt content and it is the caller's to write.** LoadCoach sends it
+  unmodified, exactly as it sends `system` and `prompt` (§4's promise above). It reaches the
+  model's context, so a caller that accepts tool descriptions from elsewhere is accepting prompt
+  content from elsewhere.
+* **A request carrying tools requires `tool_use` of every candidate.** A non-empty `tools` imposes
+  the `tool_use` hard constraint on *this request*, on top of whatever the task profile requires,
+  so a candidate whose provider has not declared tool calling is rejected by routing with a reason
+  rather than served a request whose tools quietly evaporated
+  ([ADR-0075](../../adr/0075-a-request-carrying-tools-requires-tool-use-of-every-candidate.md)).
+  When nothing survives, the error is `NO_ELIGIBLE_MODEL` and each candidate's rejection is
+  `capability_unsupported` with `details.capability = "tool_use"` and
+  `details.required_by = "request"` — `"task_profile"` where the profile asked for it. Weights do
+  not move: this is a filter, never a score.
+* **`tools: []` is `tools: null` is absent.** An empty list offers nothing, so it imposes nothing;
+  a caller that computed an empty tool set gets exactly the request it would have sent without the
+  field.
+
+#### Tool calls on a message
+
+`tool_calls` on an **assistant** turn replays what the model asked for, so a transcript with tool
+turns goes back on the wire as it happened. Each entry is
+`{"id": str, "name": str, "arguments": object|str}`: `id` and `name` are non-empty; `arguments` is
+the parsed argument object, or the raw text when the model's arguments were not a JSON object —
+which is kept rather than smoothed to `{}` so a malformed call stays diagnosable.
+
+The wire's consistency rules, each a `VALIDATION_ERROR` naming the field:
+
+| Refused | Field | Why |
+|---|---|---|
+| `tool_calls` on a non-assistant turn | `messages[i].tool_calls` | A call is something the model requests, never something sent to it |
+| A `tool` turn with no `tool_call_id` | `messages[i].tool_call_id` | Two outstanding calls cannot be matched to their results without it |
+| A turn with neither `content` nor `tool_calls` | `messages[i].content` | An empty turn tells the model nothing and costs context to send |
+| A `tool_call_id` naming no call in an earlier assistant turn | `messages[i].tool_call_id` | An unmatched id is a caller bug; a provider turns it into a confusing model failure instead |
+
+The first three are ModelRack's own refusals, surfaced here rather than reaching the provider; the
+fourth is LoadCoach's, and it is the reason a transcript is checked at the edge rather than at the
+model.
+
+**The response's `output.tool_calls` and the request's `tool_calls` are different shapes.**
+`output.tool_calls` renders the provider's stream as it arrived — one entry per delta, carrying
+`call_index`, `id`, `name` and `arguments_fragment`, so a call whose arguments came in three
+deltas is three entries. The request's form is one entry per call, assembled. A caller replaying a
+turn groups the fragments by `id` (or by `call_index` where the provider sent none) and
+concatenates `arguments_fragment` in arrival order. The asymmetry is deliberate for now: the
+streamed form is what `POST /generate/stream`'s `tool_call` frames must carry, and collapsing it
+in the response would be a breaking change to a `1.0` field.
 
 **LoadCoach sends the caller's text to the provider unmodified.** It does not prepend a system prompt
 of its own, does not substitute the task profile's wording, and does not rewrite the request. The only
@@ -256,6 +335,16 @@ Standard envelope. Codes as listed in the [spec §13](spec.md), with these prese
 * `INSUFFICIENT_RESOURCES` includes the estimate and what was free.
 * `VALIDATION_FAILED` includes the failing field paths and the attempt count.
 * `ALL_CANDIDATES_FAILED` includes each attempt with its model and error.
+* `VALIDATION_ERROR` includes `details.fields`, a list of `{"path", "problem"}` — the same shape
+  whether the body failed the schema or failed one of §4's transcript rules, so a caller reads one
+  place for the field that was wrong.
+* **A request refused while an attempt is being built fails the job with its attempts written.**
+  A transcript LoadCoach itself assembles — the structured-output corrective retry — can be
+  refused by ModelRack before any provider is called. The job becomes `failed` with
+  `error_code = VALIDATION_ERROR`; the attempts already made are persisted with their
+  `finish_reason`, so the answer that caused the corrective is readable afterwards. It is not a
+  provider failure and not a routing failure: no candidate was rejected and no provider was
+  reached. The job never stays `executing` waiting for a watchdog.
 
 ## 11. Authentication
 
@@ -323,3 +412,7 @@ a source past it is refused with `QUEUE_FULL` naming the source, its active coun
    `POST /generate` and queued jobs never carry it.
 8. Send `system` and `prompt` (or `messages`) as the text you want the model to see. LoadCoach does
    not modify it, so your own prompt-version provenance stays true.
+9. Offer only the tools the caller is actually willing to run. LoadCoach returns the calls a model
+   asks for and executes none of them; a definition you send is a tool you have decided to honour,
+   and its `description` is prompt content going into the model's context. Assemble
+   `output.tool_calls`' fragments before replaying them as a turn's `tool_calls` (§4).

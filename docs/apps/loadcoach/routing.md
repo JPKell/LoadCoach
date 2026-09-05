@@ -137,12 +137,20 @@ Applied in this order; the first failure records the rejection and stops evaluat
 | **Served** context < `min_context_tokens` | `context_too_small` | Resolved profile + provider |
 | Task profile needs a context the provider will not be asked to serve | `context_not_configurable` | `ProviderCapabilities.context_configurable` |
 | Estimated context need > served context | `context_limit_exceeded` | Request + resolved profile |
-| Missing a required capability (tools, structured output, vision) | `capability_unsupported` | Provider + declared capabilities |
+| Missing a required capability (tools, structured output, vision) | `capability_unsupported` | Provider + declared capabilities, and the request itself ([ADR-0075](../../adr/0075-a-request-carrying-tools-requires-tool-use-of-every-candidate.md)) |
 | Estimated VRAM need > free VRAM + headroom on **every** device | `insufficient_vram` | SweatMeter + estimate, evaluated per GPU ([ADR-0027](../../adr/0027-multi-gpu-semantics.md)) |
 | Estimated RAM need > free RAM | `insufficient_ram` | SweatMeter |
 | Capability score below `min_capability_scores` | `below_minimum_score` | Evidence |
 | Model in `exclude_models`, or provider is remote while remote is disallowed | `excluded_by_policy` | Profile + config |
 | Circuit breaker open for this model | `recently_failing` | Reliability stats |
+
+A required capability comes from one of two places, and the rejection says which: the task
+profile's `requires_capabilities`, or the request itself — a `POST /generate` body carrying a
+non-empty `tools` requires `tool_use` of every candidate for that request alone
+([ADR-0075](../../adr/0075-a-request-carrying-tools-requires-tool-use-of-every-candidate.md)). The
+two are unioned, never traded off, and `capability_unsupported`'s detail carries
+`required_by = "task_profile" | "request"` so a caller can tell a profile it chose from an offer it
+made. A request-level capability filters; it never scores.
 
 Every rejection is stored with the numbers that caused it (`needs 14.2 GB, 9.8 GB free on GPU 0,
 7.1 GB free on GPU 1`), because "nothing was eligible" is useless without them. Advertised context is
@@ -150,7 +158,7 @@ never a constraint input; a model that advertises 131 072 tokens and will be ser
 by `context_too_small`, not admitted and silently truncated.
 
 `kind = "fake"` declares a small model by default so a fake-provider journey never trips
-`insufficient_vram` on its own (E6, `E6_HANDOFF.md`); `[provider.fake]`'s `size_bytes`, `layers`,
+`insufficient_vram` on its own (E6, `docs/history/E6_HANDOFF.md`); `[provider.fake]`'s `size_bytes`, `layers`,
 `kv_heads` and `head_dim` — set all four together, never a subset, since the KV term dominates
 `size_bytes` at any interesting context length — let an operator provoke this rejection on purpose
 and inspect the full `estimate` block it produces.
