@@ -458,6 +458,14 @@ is never done silently — it requires an explicit request option.
 Every override appears in the explanation, so a surprising decision can always be traced to the
 instruction that caused it.
 
+A request's own `data_classification` (api.md §4) is not an override and does not appear in this
+table: it selects nothing and relaxes nothing. It is one input to the
+`adapter_classification_conflict` constraint in §4, where the effective classification is
+`max(caller, adapter)` ([ADR-0065](../../adr/0065-an-adapter-is-classified-and-local-only.md)
+rule 2). Because the join is a `max()`, a declaration can only make a candidate *less* eligible; a
+caller that declares nothing is treated as contributing nothing, which is the fail-closed direction
+— the adapter's own classification still governs on its own.
+
 `adapter` without `model` is legal and means "this adapter, on whichever base can serve it": the
 compatible bases are scored normally and the pin selects among their adapter subjects. `adapter`
 with `model` names one subject exactly. **A pin does not bypass `require_adapter_evidence`'s

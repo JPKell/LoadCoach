@@ -60,11 +60,23 @@ looks wrong.
   "constraints": {"max_latency_seconds": 120},
   "overrides": {"model": null, "runtime_profile": null, "adapter": null,
                 "ignore_residency": false},
+  "data_classification": null,
   "priority": {"class": "normal"},
   "tools": null,
   "idempotency_key": "01J9K…"
 }
 ```
+
+`data_classification` is the caller's own declaration — `"public"`, `"internal"` or
+`"confidential"` — and it is **optional**. LoadCoach joins it with the classification of any adapter
+that serves the request, `max(caller, adapter)` over the ordered vocabulary
+([ADR-0065](../../adr/0065-an-adapter-is-classified-and-local-only.md) rule 2), and records the
+result as the attempt's `effective_data_classification` and in the detail of any
+`adapter_classification_conflict` rejection. Absent — which every 1.0 caller is — it contributes
+nothing and the effective classification is the adapter's own, exactly as before; a value outside
+the vocabulary is a `VALIDATION_ERROR` rather than a silently ignored field. It never widens
+anything: the join can only raise the classification, never lower it, so a caller cannot declare its
+way past a refusal.
 
 Exactly one of `prompt` (+ optional `system`) or `messages` is supplied; supplying both is a
 `VALIDATION_ERROR`. `messages` is a list of `{"role": "system"|"user"|"assistant"|"tool",
