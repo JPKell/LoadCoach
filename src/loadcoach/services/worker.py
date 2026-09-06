@@ -1014,7 +1014,8 @@ class Worker:
         probe_skipped: list[str] = []
         while index is not None:
             candidate = candidates[index]
-            canonical_id = candidate.subject.facts.canonical_id
+            # The breaker keys on the subject (ADR-0067).
+            canonical_id = candidate.subject.subject_canonical_id
             # Queue §7 admits "a single low-priority job" through a half-open breaker, and
             # routing-time exclusion cannot enforce that alone: two workers can both route
             # while the breaker is half-open and unmarked, then each arrive here believing the
@@ -1903,9 +1904,14 @@ def _adapter_id_of(candidate: RankedCandidate) -> str | None:
 
 
 def _adapter_key_of(candidate: RankedCandidate) -> str:
-    """The subject key a residency row carries: the adapter's name, or ``""`` for a bare base."""
+    """The subject key a keyed row carries: the adapter's row id, or ``""`` for a bare base.
+
+    It repeats ``adapter_id`` on purpose (ADR-0080 rule 5): the foreign key is nullable and would
+    go ``NULL`` if the adapter row were ever removed, and a unique key that moved when that
+    happened would merge two subjects' history.
+    """
     adapter = candidate.subject.adapter
-    return "" if adapter is None else adapter.name
+    return "" if adapter is None else adapter.adapter_id
 
 
 def build_runtime(

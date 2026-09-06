@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from weightsdb import upsert
 
 from loadcoach.domain.circuit_breaker import AttemptSample
@@ -35,6 +35,7 @@ from loadcoach.domain.reliability import (
     reliability_factor,
 )
 from loadcoach.infrastructure.db.models import (
+    Adapter,
     Feedback,
     Job,
     JobAttempt,
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
     from loadcoach.services.database import Database
 
 __all__ = [
+    "subject_id_of",
     "ReliabilityEntry",
     "attempt_outcomes",
     "breaker_samples",
@@ -68,9 +70,14 @@ __all__ = [
 
 
 def attempt_outcomes(
-    session: Session, *, model_id: str, task_profile_id: str
+    session: Session, *, model_id: str, task_profile_id: str, adapter_key: str = ""
 ) -> list[AttemptOutcome]:
-    """Every completed attempt on ``model_id`` for jobs of ``task_profile_id``."""
+    """Every completed attempt on one **subject** for jobs of ``task_profile_id``.
+
+    The subject, not the base (ADR-0067): ``adapter_key`` is the adapter's row id, and ``""`` —
+    the default, and every attempt written before 1.1 — is the bare base. Nothing is pooled across
+    the two, which is the whole point: one bad adapter must not take its base out of service.
+    """
     rows = session.execute(
         select(
             JobAttempt.completed_at,
@@ -81,6 +88,7 @@ def attempt_outcomes(
         .join(Job, Job.id == JobAttempt.job_id)
         .where(
             JobAttempt.model_id == model_id,
+            func.coalesce(JobAttempt.adapter_id, "") == adapter_key,
             Job.task_profile_id == task_profile_id,
             JobAttempt.completed_at.is_not(None),
         )
@@ -95,9 +103,9 @@ def attempt_outcomes(
 
 
 def feedback_outcomes(
-    session: Session, *, model_id: str, task_profile_id: str
+    session: Session, *, model_id: str, task_profile_id: str, adapter_key: str = ""
 ) -> list[FeedbackOutcome]:
-    """Every feedback record on a job that ran on ``model_id`` for ``task_profile_id``."""
+    """Every feedback record on a job that ran on one subject for ``task_profile_id``."""
     rows = session.execute(
         select(
             Feedback.updated_at,
@@ -107,7 +115,11 @@ def feedback_outcomes(
             Feedback.validation_passed,
         )
         .join(Job, Job.id == Feedback.job_id)
-        .where(Job.selected_model_id == model_id, Job.task_profile_id == task_profile_id)
+        .where(
+            Job.selected_model_id == model_id,
+            func.coalesce(Job.selected_adapter_id, "") == adapter_key,
+            Job.task_profile_id == task_profile_id,
+        )
     ).all()
     return [
         FeedbackOutcome(
@@ -126,6 +138,7 @@ def _write_windows(
     *,
     model_id: str,
     task_profile_id: str,
+    adapter_key: str,
     stats: Iterable[WindowStats],
     now: datetime,
 ) -> None:
@@ -135,6 +148,8 @@ def _write_windows(
             ReliabilityStat,
             {
                 "model_id": model_id,
+                "adapter_id": adapter_key or None,
+                "adapter_key": adapter_key,
                 "task_profile_id": task_profile_id,
                 "window": window.window,
                 "attempts": window.attempts,
@@ -156,14 +171,19 @@ def _write_windows(
                 "mean_quality": window.mean_quality,
                 "updated_at": now,
             },
-            index_elements=["model_id", "task_profile_id", "window"],
+            index_elements=["model_id", "adapter_key", "task_profile_id", "window"],
         )
 
 
 def recompute_pair(
-    database: Database, *, model_id: str, task_profile_id: str, now: datetime
+    database: Database,
+    *,
+    model_id: str,
+    task_profile_id: str,
+    adapter_key: str = "",
+    now: datetime,
 ) -> dict[str, WindowStats]:
-    """Recompute the three window rows for one ``(model, task_profile)`` from its raw rows.
+    """Recompute the three window rows for one ``(subject, task_profile)`` from its raw rows.
 
     The incremental path: called once per terminal attempt and once per feedback record, for the
     one pair the event touched. The breaker columns are left alone — they belong to
@@ -173,14 +193,19 @@ def recompute_pair(
         database: The application's database handle.
         model_id: The model's registry ULID.
         task_profile_id: The profile's string id.
+        adapter_key: The subject's adapter row id, or ``""`` for the bare base (ADR-0067).
         now: The evaluation instant every window is measured back from.
 
     Returns:
         The freshly computed statistics keyed by window name.
     """
     with database.write() as session:
-        attempts = attempt_outcomes(session, model_id=model_id, task_profile_id=task_profile_id)
-        feedback = feedback_outcomes(session, model_id=model_id, task_profile_id=task_profile_id)
+        attempts = attempt_outcomes(
+            session, model_id=model_id, task_profile_id=task_profile_id, adapter_key=adapter_key
+        )
+        feedback = feedback_outcomes(
+            session, model_id=model_id, task_profile_id=task_profile_id, adapter_key=adapter_key
+        )
         stats = {
             window.name: compute_stats(attempts, feedback, window=window, now=now)
             for window in WINDOWS
@@ -189,35 +214,52 @@ def recompute_pair(
             session,
             model_id=model_id,
             task_profile_id=task_profile_id,
+            adapter_key=adapter_key,
             stats=stats.values(),
             now=now,
         )
     return stats
 
 
-def known_pairs(session: Session) -> set[tuple[str, str]]:
-    """Every ``(model_id, task_profile_id)`` that has an attempt, a verdict, or a stats row."""
+def known_pairs(session: Session) -> set[tuple[str, str, str]]:
+    """Every ``(model_id, task_profile_id, adapter_key)`` with an attempt, verdict or stats row.
+
+    The triple, not the pair, since 1.1: statistics key on the subject (ADR-0067), and a bare base
+    carries ``""`` — which is what every row written before adapters existed carries.
+    """
     attempted = session.execute(
-        select(JobAttempt.model_id, Job.task_profile_id)
+        select(
+            JobAttempt.model_id,
+            Job.task_profile_id,
+            func.coalesce(JobAttempt.adapter_id, ""),
+        )
         .join(Job, Job.id == JobAttempt.job_id)
         .where(JobAttempt.model_id.is_not(None))
         .distinct()
     ).all()
     judged = session.execute(
-        select(Job.selected_model_id, Job.task_profile_id)
+        select(
+            Job.selected_model_id,
+            Job.task_profile_id,
+            func.coalesce(Job.selected_adapter_id, ""),
+        )
         .join(Feedback, Feedback.job_id == Job.id)
         .where(Job.selected_model_id.is_not(None))
         .distinct()
     ).all()
     stored = session.execute(
-        select(ReliabilityStat.model_id, ReliabilityStat.task_profile_id).distinct()
+        select(
+            ReliabilityStat.model_id,
+            ReliabilityStat.task_profile_id,
+            ReliabilityStat.adapter_key,
+        ).distinct()
     ).all()
-    pairs: set[tuple[str, str]] = set()
+    pairs: set[tuple[str, str, str]] = set()
     for result in (attempted, judged, stored):
         for row in result:
-            model_id, task_profile_id = row[0], row[1]
+            model_id, task_profile_id, adapter_key = row[0], row[1], row[2]
             if model_id is not None:
-                pairs.add((str(model_id), str(task_profile_id)))
+                pairs.add((str(model_id), str(task_profile_id), str(adapter_key or "")))
     return pairs
 
 
@@ -229,8 +271,14 @@ def recompute_all(database: Database, *, now: datetime) -> int:
     """
     with database.read() as session:
         pairs = sorted(known_pairs(session))
-    for model_id, task_profile_id in pairs:
-        recompute_pair(database, model_id=model_id, task_profile_id=task_profile_id, now=now)
+    for model_id, task_profile_id, adapter_key in pairs:
+        recompute_pair(
+            database,
+            model_id=model_id,
+            task_profile_id=task_profile_id,
+            adapter_key=adapter_key,
+            now=now,
+        )
     return len(pairs)
 
 
@@ -257,55 +305,74 @@ def _stats_of(row: ReliabilityStat) -> WindowStats:
     )
 
 
-def stats_for(database: Database, *, model_id: str, task_profile_id: str) -> dict[str, WindowStats]:
-    """The stored rows for one pair, keyed by window; missing windows are absent from the map."""
+def stats_for(
+    database: Database, *, model_id: str, task_profile_id: str, adapter_key: str = ""
+) -> dict[str, WindowStats]:
+    """The stored rows for one subject, keyed by window; missing windows are absent from the map."""
     with database.read() as session:
         rows = session.execute(
             select(ReliabilityStat).where(
                 ReliabilityStat.model_id == model_id,
+                ReliabilityStat.adapter_key == adapter_key,
                 ReliabilityStat.task_profile_id == task_profile_id,
             )
         ).scalars()
         return {row.window: _stats_of(row) for row in rows}
 
 
-def factors_for_task(database: Database, *, task_profile_id: str) -> dict[str, ReliabilityFactor]:
-    """Every model's :class:`ReliabilityFactor` for one task profile, keyed by model ULID.
+def factors_for_task(
+    database: Database, *, task_profile_id: str
+) -> dict[tuple[str, str], ReliabilityFactor]:
+    """Every **subject**'s :class:`ReliabilityFactor` for one profile, keyed ``(model, adapter)``.
 
-    One query for the profile's rows, then the pure factor per model: the read routing makes on
-    every decision (data model §4's lookup, on the uniqueness index). A model with no rows is
-    simply absent, and routing treats absence as neutral.
+    One query for the profile's rows, then the pure factor per subject: the read routing makes on
+    every decision (data model §4's lookup, on the uniqueness index). A subject with no rows is
+    simply absent, and routing treats absence as neutral — an adapter therefore starts neutral
+    rather than inheriting its base's history, which is the cost ADR-0067 accepts and reports as
+    ``low_evidence`` rather than hiding.
     """
     with database.read() as session:
         rows = session.execute(
             select(ReliabilityStat).where(ReliabilityStat.task_profile_id == task_profile_id)
         ).scalars()
-        by_model: dict[str, dict[str, WindowStats]] = {}
+        by_subject: dict[tuple[str, str], dict[str, WindowStats]] = {}
         for row in rows:
-            by_model.setdefault(row.model_id, {})[row.window] = _stats_of(row)
-    return {model_id: reliability_factor(windows) for model_id, windows in by_model.items()}
+            by_subject.setdefault((row.model_id, row.adapter_key), {})[row.window] = _stats_of(row)
+    return {subject: reliability_factor(windows) for subject, windows in by_subject.items()}
 
 
 def breaker_samples(database: Database, *, since: datetime) -> dict[str, list[AttemptSample]]:
-    """Attempt outcomes per model since ``since``, for the circuit breaker (queue §7).
+    """Attempt outcomes per **subject** since ``since``, for the circuit breaker (queue §7).
 
     P5's ``breaker_source`` seam, now fed from here: the sample's success flag is
     :func:`~loadcoach.domain.reliability.counts_as_success`, the one rule the statistics use, so
     a breaker verdict and the Reliability page can never disagree about what failed. The window
     the breaker evaluates (ten minutes) is far shorter than any statistics window, so the samples
     are the raw attempt rows rather than the rolled-up counts.
+
+    The key is the subject string, not the base's canonical ID (ADR-0067): a failing
+    ``(base, adapterA)`` opens **its own** breaker and leaves the bare base and every sibling
+    adapter servable. An attempt that ran bare keys on the canonical ID byte for byte, so a
+    deployment with no adapters produces exactly the map it always did.
     """
     with database.read() as session:
         rows = session.execute(
-            select(Model.canonical_id, JobAttempt.completed_at, JobAttempt.outcome)
+            select(
+                Model.canonical_id,
+                JobAttempt.subject_canonical_id,
+                JobAttempt.completed_at,
+                JobAttempt.outcome,
+            )
             .join(Model, Model.id == JobAttempt.model_id)
             .where(JobAttempt.completed_at > since, JobAttempt.outcome != "cancelled")
         ).all()
     samples: dict[str, list[AttemptSample]] = {}
-    for canonical_id, completed_at, outcome in rows:
+    for canonical_id, subject_canonical_id, completed_at, outcome in rows:
         if completed_at is None:
             continue
-        samples.setdefault(canonical_id, []).append(
+        # An attempt written before 1.1 has no subject string; it ran on a bare base, whose
+        # subject string *is* the canonical ID (ADR-0058 §3).
+        samples.setdefault(subject_canonical_id or canonical_id, []).append(
             AttemptSample(at=completed_at, succeeded=counts_as_success(outcome))
         )
     return samples
@@ -314,27 +381,34 @@ def breaker_samples(database: Database, *, since: datetime) -> dict[str, list[At
 def record_breaker_verdicts(
     database: Database, verdicts: Iterable[BreakerVerdict], *, now: datetime
 ) -> int:
-    """Persist each model's breaker verdict onto its ``reliability_stats`` rows (data model §2).
+    """Persist each **subject's** breaker verdict onto its ``reliability_stats`` rows.
 
     The breaker lives in the serving process; these columns are how a one-shot command, the
-    Reliability page and ``GET /reliability`` show its state and reason without it. A model with
+    Reliability page and ``GET /reliability`` show its state and reason without it. A subject with
     no rows yet has nothing to annotate and is skipped.
+
+    ``BreakerVerdict.canonical_id`` carries the **subject** string since 1.1 (ADR-0067), so a
+    verdict about ``(base, adapterA)`` annotates that subject's rows and leaves the bare base's
+    alone — the row a person reads is the row the breaker decided about.
 
     Returns:
         How many rows were updated.
     """
-    by_canonical = {verdict.canonical_id: verdict for verdict in verdicts}
-    if not by_canonical:
+    by_subject = {verdict.canonical_id: verdict for verdict in verdicts}
+    if not by_subject:
         return 0
     updated = 0
     with database.write() as session:
         rows = session.execute(
-            select(ReliabilityStat, Model.canonical_id)
+            select(ReliabilityStat, Model.canonical_id, Adapter)
             .join(Model, Model.id == ReliabilityStat.model_id)
-            .where(Model.canonical_id.in_(list(by_canonical)))
+            .outerjoin(Adapter, Adapter.id == ReliabilityStat.adapter_id)
         ).all()
-        for row, canonical_id in rows:
-            verdict = by_canonical[canonical_id]
+        for row, canonical_id, adapter in rows:
+            subject = subject_id_of(canonical_id, adapter)
+            verdict = by_subject.get(subject)
+            if verdict is None:
+                continue
             row.circuit_state = verdict.state.value
             row.circuit_opened_at = verdict.opened_at
             row.circuit_reason = verdict.reason
@@ -343,13 +417,33 @@ def record_breaker_verdicts(
     return updated
 
 
+def subject_id_of(canonical_id: str, adapter: Adapter | None) -> str:
+    """Return the canonical subject string for a model row and the adapter applied to it.
+
+    One place, so a subject written by routing, a breaker key and a reliability row can never be
+    spelled two ways. With no adapter the answer is the canonical ID byte for byte (ADR-0058 §3).
+    """
+    if adapter is None:
+        return canonical_id
+    from baseaicore import AdapterIdentity
+
+    suffix = AdapterIdentity(
+        name=adapter.name, artifact_digest=adapter.artifact_sha256
+    ).canonical_suffix
+    return f"{canonical_id}{suffix}"
+
+
 @dataclass(frozen=True, slots=True)
 class ReliabilityEntry:
-    """One ``(model, task_profile)`` as ``GET /reliability`` and the Reliability page show it.
+    """One ``(subject, task_profile)`` as ``GET /reliability`` and the Reliability page show it.
 
     Attributes:
         model_id: The model's registry ULID.
         canonical_id: The model's canonical ID.
+        subject_canonical_id: The subject's canonical string — byte-for-byte ``canonical_id`` for
+            a bare base, and the base plus the adapter's suffix otherwise (ADR-0058 §3). Statistics
+            key on this, not on the base (ADR-0067).
+        adapter_name: The adapter this subject applies, or ``None`` for the bare base.
         task_profile_id: The profile.
         windows: The stored statistics keyed by window; a missing window is an empty one.
         factor: The reliability factor routing applies to this pair right now.
@@ -370,13 +464,20 @@ class ReliabilityEntry:
     circuit_opened_at: datetime | None
     circuit_reason: str | None
     updated_at: datetime
+    subject_canonical_id: str = ""
+    adapter_name: str | None = None
 
     def as_json(self) -> dict[str, Any]:
         """The API record: every statistic bounded, every absence with its reason."""
         from baseaicore.timeutil import to_rfc3339
 
         return {
-            "model": {"canonical_id": self.canonical_id, "model_ref": self.model_id},
+            "model": {
+                "canonical_id": self.canonical_id,
+                "subject_canonical_id": self.subject_canonical_id or self.canonical_id,
+                "model_ref": self.model_id,
+                "adapter": self.adapter_name,
+            },
             "task_profile_id": self.task_profile_id,
             "windows": {name: stats.as_json() for name, stats in self.windows.items()},
             "factor": self.factor.as_json(),
@@ -406,24 +507,38 @@ def reliability_report(
         canonical_id: Restrict to one model, or ``None`` for all.
 
     Returns:
-        Entries ordered by canonical ID then profile. A pair is present once any window row
-        exists for it; the windows it has no row for are reported empty, not omitted.
+        Entries ordered by subject string then profile — so an adapter subject sorts immediately
+        after the base it runs on. A subject is present once any window row exists for it; the
+        windows it has no row for are reported empty, not omitted.
     """
-    query = select(ReliabilityStat, Model.canonical_id).join(
-        Model, Model.id == ReliabilityStat.model_id
+    query = (
+        select(ReliabilityStat, Model.canonical_id, Adapter)
+        .join(Model, Model.id == ReliabilityStat.model_id)
+        .outerjoin(Adapter, Adapter.id == ReliabilityStat.adapter_id)
     )
     if task_profile_id is not None:
         query = query.where(ReliabilityStat.task_profile_id == task_profile_id)
     if canonical_id is not None:
         query = query.where(Model.canonical_id == canonical_id)
-    grouped: dict[tuple[str, str, str], list[ReliabilityStat]] = {}
+    grouped: dict[tuple[str, str, str, str, str | None], list[ReliabilityStat]] = {}
     with database.read() as session:
-        for row, model_canonical_id in session.execute(query).all():
-            grouped.setdefault((model_canonical_id, row.task_profile_id, row.model_id), []).append(
-                row
+        for row, model_canonical_id, adapter in session.execute(query).all():
+            key = (
+                subject_id_of(model_canonical_id, adapter),
+                row.task_profile_id,
+                row.model_id,
+                model_canonical_id,
+                None if adapter is None else adapter.name,
             )
+            grouped.setdefault(key, []).append(row)
         entries: list[ReliabilityEntry] = []
-        for (model_canonical_id, profile, model_id), rows in sorted(grouped.items()):
+        for (
+            subject,
+            profile,
+            model_id,
+            model_canonical_id,
+            adapter_name,
+        ), rows in sorted(grouped.items(), key=lambda item: item[0][:3]):
             windows = {row.window: _stats_of(row) for row in rows}
             for window in WINDOWS:
                 windows.setdefault(window.name, WindowStats(window=window.name))
@@ -432,6 +547,8 @@ def reliability_report(
                 ReliabilityEntry(
                     model_id=model_id,
                     canonical_id=model_canonical_id,
+                    subject_canonical_id=subject,
+                    adapter_name=adapter_name,
                     task_profile_id=profile,
                     windows=windows,
                     factor=reliability_factor(windows),

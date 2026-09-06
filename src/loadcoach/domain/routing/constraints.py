@@ -342,15 +342,15 @@ class ConstraintInputs:
             incapacity (routing §5).
         snapshot: The telemetry the VRAM and RAM constraints read.
         vram_headroom_bytes: Per-device reserve (ADR-0027 §2).
-        open_circuit_breakers: Canonical IDs currently excluded by the breaker. Populated by
-            Phase 5's breaker over ``job_attempts`` outcomes; P7 drives it from
-            ``reliability_stats``.
+        open_circuit_breakers: **Subject** strings currently excluded by the breaker (ADR-0067) —
+            byte-for-byte the canonical ID for a bare base. Populated by Phase 5's breaker over
+            ``job_attempts`` outcomes; P7 drives it from ``reliability_stats``.
         resident_devices: Canonical ID -> devices the model is resident on. A resident model
             fits on its device whatever the estimate says — its memory is already allocated —
             which is the one exception to "an unknown estimate does not fit" (queue §5).
-        circuit_breaker_details: Canonical ID -> the open breaker's record (state, reason,
+        circuit_breaker_details: Subject string -> the open breaker's record (state, reason,
             expiry), merged into the ``recently_failing`` rejection so the explanation shows
-            why the model was skipped and until when (queue §7).
+            why the subject was skipped and until when (queue §7).
         require_adapter_evidence: Whether an adapter subject must carry measured evidence for
             ``top_weighted_capability`` before routed selection may reach it (ADR-0064 rule 3,
             default on). A pin is not routed selection and is not filtered by it — the caller
@@ -568,9 +568,11 @@ def evaluate_constraints(
         if adapter_rejection is not None:
             return adapter_rejection, fits, None
 
-    if facts.canonical_id in inputs.open_circuit_breakers:
+    # Keyed on the **subject** (ADR-0067): a failing (base, adapterA) never breaks its base and
+    # never breaks a sibling adapter. For a bare base the subject string is the canonical ID.
+    if subject.subject_canonical_id in inputs.open_circuit_breakers:
         detail: dict[str, object] = {"circuit_breaker": "open"}
-        detail.update(inputs.circuit_breaker_details.get(facts.canonical_id, {}))
+        detail.update(inputs.circuit_breaker_details.get(subject.subject_canonical_id, {}))
         return (Rejection("recently_failing", detail), fits, None)
 
     return None, fits, target_gpu_index

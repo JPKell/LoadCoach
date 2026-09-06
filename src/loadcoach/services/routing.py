@@ -704,7 +704,12 @@ def route(
                     base_switch_penalty=policy.base_switch_penalty,
                     ignore_residency=request.overrides.ignore_residency,
                     remote_cost_factor=policy.remote_cost_factor,
-                    reliability=reliability.get(facts.model_id, neutral_factor()),
+                    # Keyed on the subject (ADR-0067): an adapter never borrows its base's
+                    # numbers, and never lends it its own.
+                    reliability=reliability.get(
+                        (facts.model_id, "" if adapter is None else adapter.adapter_id),
+                        neutral_factor(),
+                    ),
                 ),
                 estimated_vram_bytes=estimate.total_bytes,
                 target_gpu_index=target_gpu_index,

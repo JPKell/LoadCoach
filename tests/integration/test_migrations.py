@@ -439,12 +439,12 @@ def test_migration_0006_adds_feedback_and_reliability_stats_and_nothing_else() -
 
     The reliability lookup's query plan is asserted the same way the evidence lookup's was in
     ``0005``: data model §4 requires it to use ``(model_id, task_profile_id, window)``, which is
-    the uniqueness key — a point lookup, never a scan.
+    the uniqueness key — a point lookup, never a scan. Stops at 0006, because 0012 moves that key
+    onto the subject and this test is about the shape 0006 created.
     """
     with temporary_sqlite() as engine:
         runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
-        runner.upgrade(backup=False)
-        assert runner.check_parity(Base.metadata).matches
+        runner.upgrade(revision="0006", backup=False)
 
         with engine.connect() as connection:
             names = {
@@ -966,6 +966,78 @@ def test_migration_0011_round_trips_on_sqlite() -> None:
             columns = {row[1] for row in connection.execute(text("PRAGMA table_info(residency)"))}
         assert "adapter_key" not in columns
         assert {"id", "model_id", "gpu_index", "loaded_at", "resident"} <= columns
+
+        runner.upgrade(backup=False)
+        assert runner.is_at_head()
+        assert runner.check_parity(Base.metadata).matches
+
+
+def test_migration_0012_keys_reliability_on_the_subject_and_keeps_existing_statistics() -> None:
+    """ADR-0067's migration: existing rows are base subjects, and not one count moves.
+
+    The rows written before 1.1 were computed from attempts on a bare base, because no adapter
+    could be applied — so `adapter_key = ''` is a fact about them rather than a default chosen to
+    make the migration run.
+    """
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(revision="0011", backup=False)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO models (id, provider_kind, provider_model_name, canonical_id, "
+                    "identity_confidence, first_seen_at, last_seen_at, available) VALUES "
+                    "('01M0000000000000000000MDL', 'ollama', 'qwen3.5:9b', "
+                    "'ollama/qwen3.5:9b@sha256:1f3a9c4e2b70', 'digest', "
+                    "'2026-09-05 00:00:00+00:00', '2026-09-05 00:00:00+00:00', 1)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO reliability_stats (id, model_id, task_profile_id, window, "
+                    "attempts, successes, validation_passes, errors, timeouts, cancellations, "
+                    "latency_count, output_token_count, tokens_per_second_count, feedback_count, "
+                    "quality_count, circuit_state, updated_at) VALUES "
+                    "('01M0000000000000000000STA', '01M0000000000000000000MDL', 'code.review', "
+                    "'7d', 40, 38, 37, 2, 0, 1, 40, 40, 40, 5, 5, 'closed', "
+                    "'2026-09-05 00:00:00+00:00')"
+                )
+            )
+
+        runner.upgrade(backup=False)
+        assert runner.is_at_head()
+        assert runner.check_parity(Base.metadata).matches
+
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT adapter_key, adapter_id, attempts, successes, validation_passes "
+                    "FROM reliability_stats"
+                )
+            ).one()
+            info = {
+                row_[1]: (row_[3], row_[4])
+                for row_ in connection.execute(text("PRAGMA table_info(reliability_stats)"))
+            }
+
+    assert row == ("", None, 40, 38, 37)
+    assert info["adapter_key"] == (1, "''")
+
+
+def test_migration_0012_round_trips_on_sqlite() -> None:
+    """Down to 0011 and back: the subject key goes and returns."""
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(backup=False)
+        runner.downgrade(revision="0011")
+
+        assert runner.current() == "0011"
+        with engine.connect() as connection:
+            columns = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(reliability_stats)"))
+            }
+        assert "adapter_key" not in columns
+        assert {"id", "model_id", "task_profile_id", "window", "attempts"} <= columns
 
         runner.upgrade(backup=False)
         assert runner.is_at_head()

@@ -773,6 +773,13 @@ class ReliabilityStat(Base):
     only thing that produces the values. The uniqueness key is also data model §4's required
     lookup index — the reliability read routing makes is a point lookup on it.
 
+    **The key is the subject, not the base** (ADR-0067): a failing ``(base, adapterA)`` opens its
+    own breaker and leaves the bare base and every sibling adapter servable. ``adapter_key`` is the
+    adapter's row id, or the empty string for the bare base — never ``NULL``, because ``NULL``s in
+    a unique index are distinct and a key that admits duplicates is not a key (ADR-0080 rule 5).
+    The 20-sample minimum applies per subject, so an adapter carries ``low_evidence`` until it has
+    earned its own numbers: fragmentation is reported, never filled in from a neighbour.
+
     The five ``*_count`` columns are ADR-0016 rule 6: a statistic is reported with the sample
     count that produced it, and an ``acceptance_rate`` over two verdicts must read differently
     from one over two hundred. ``circuit_state``, ``circuit_opened_at`` and ``circuit_reason``
@@ -782,7 +789,7 @@ class ReliabilityStat(Base):
 
     __tablename__ = "reliability_stats"
     __table_args__ = (
-        UniqueConstraint("model_id", "task_profile_id", "window"),
+        UniqueConstraint("model_id", "adapter_key", "task_profile_id", "window"),
         # `window` is reserved in PostgreSQL; the quotes make the text valid on both dialects
         # (M5C-15). Must match migration 0006's text or check_parity refuses.
         CheckConstraint("\"window\" IN ('7d', '30d', 'all')", name="window"),
@@ -792,6 +799,10 @@ class ReliabilityStat(Base):
     model_id: Mapped[str] = mapped_column(
         String(26), ForeignKey("models.id", ondelete="CASCADE"), nullable=False
     )
+    adapter_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("adapters.id", ondelete="SET NULL"), nullable=True
+    )
+    adapter_key: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     task_profile_id: Mapped[str] = mapped_column(String, nullable=False)
     window: Mapped[str] = mapped_column(String, nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

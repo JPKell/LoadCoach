@@ -58,6 +58,19 @@ packaging and release standards §3.
   adapter* after a rename, and `subject_canonical_id`, the string written at decision time so an
   explanation still reads correctly after the directory has changed underneath it. Existing rows
   are backfilled from `models.canonical_id`, which is what a bare base's subject string is.
+- **Reliability and the circuit breaker key on the subject, never the base** (ADR-0067). A failing
+  `(base, adapterA)` is deprioritized and eventually broken **as that subject**: it never breaks
+  the bare base and never breaks a sibling adapter, which is the whole point — one bad adapter must
+  not take a base and its four other adapters out of service. `reliability_stats`' uniqueness moves
+  to `(model_id, adapter_key, task_profile_id, window)` (migration `0012`), the breaker's samples
+  and verdicts key on the subject string, and `GET /reliability` reports one entry per subject,
+  ordered so an adapter sorts immediately after the base it runs on.
+
+  Existing rows are base subjects and the migration says so rather than guessing: every one was
+  computed from attempts on a bare base, because no adapter could be applied, and not a single
+  count moves. The cost is sample fragmentation, and it is reported rather than hidden — the
+  20-sample minimum applies per subject, so an adapter carries `low_evidence` until it has earned
+  its own numbers, and nothing is pooled from a neighbour to fill the gap.
 - **Residency is two-level: the base is the expensive switch** (ADR-0066). The factor is
   `1 + prefer_resident_bonus` for a candidate on the resident base **whatever adapter it names**,
   `1 - base_switch_penalty` for one that would need its own base loaded while another is resident,

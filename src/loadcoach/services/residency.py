@@ -321,8 +321,11 @@ class ResidencyService:
             gpu_index: The device it is resident on.
             now: The instant, which becomes the idle clock's origin.
             adapter_id: The adapter that ran, or ``None`` for the bare base.
-            adapter_key: That adapter's subject key — the empty string for the bare base, never
-                ``NULL``, because the unique key includes it (ADR-0080 rule 5).
+            adapter_key: That adapter's subject key: the adapter's row id, or the empty string
+                for the bare base — never ``NULL``, because the unique key includes it
+                (ADR-0080 rule 5). It repeats ``adapter_id`` deliberately: the foreign key goes
+                ``NULL`` if the adapter row is ever removed, and the key must not move when it
+                does.
         """
         with self._database.write() as session:
             row = session.execute(

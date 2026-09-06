@@ -950,7 +950,7 @@ def _make_resident(
                 None if candidate.subject.adapter is None else candidate.subject.adapter.adapter_id
             ),
             adapter_key=(
-                "" if candidate.subject.adapter is None else candidate.subject.adapter.name
+                "" if candidate.subject.adapter is None else candidate.subject.adapter.adapter_id
             ),
         )
     except Exception:  # noqa: BLE001 — see the docstring: never a precondition
@@ -1009,7 +1009,9 @@ def _execute_attempts(
     for candidate in candidates:
         if candidate is None:
             continue
-        canonical_id = candidate.subject.facts.canonical_id
+        # The breaker keys on the subject (ADR-0067), which for a bare base is the canonical
+        # ID byte for byte.
+        canonical_id = candidate.subject.subject_canonical_id
         _make_resident(candidate, residency=residency, now=now, **(residency_inputs or {}))
         holds_probe = False
         if breakers is not None:

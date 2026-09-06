@@ -25,7 +25,7 @@ from sqlalchemy import select
 
 from loadcoach.config import Settings
 from loadcoach.domain.routing.subject import ProviderFacts, RuntimeOverrides
-from loadcoach.infrastructure.db.models import Adapter, RoutingCandidate
+from loadcoach.infrastructure.db.models import Adapter, Model, RoutingCandidate
 from loadcoach.infrastructure.providers.factory import ProviderRegistration
 from loadcoach.services.adapters import (
     AdapterNotFound,
@@ -515,3 +515,74 @@ def test_the_pin_is_recorded_in_the_persisted_overrides(database: Any, tmp_path:
     overrides = cast("dict[str, Any]", result.explanation.payload["overrides"])
     assert overrides["adapter"] == "terse"
     assert overrides["ignore_residency"] is True
+
+
+# --------------------------------------------------------------------------------------------
+# Reliability keys on the subject (gate G)
+# --------------------------------------------------------------------------------------------
+
+
+def test_a_failing_adapter_opens_its_own_breaker_and_leaves_its_base_servable(
+    database: Any, tmp_path: Path
+) -> None:
+    """ADR-0067: one bad adapter must not take a base and its siblings out of service."""
+    directory = tmp_path / "adapters"
+    directory.mkdir()
+    _write_adapter(directory, "terse")
+    _write_adapter(directory, "pirate")
+    sync_adapters(database, _settings(directory), now=NOW)
+    facts = adapter_facts_by_base_name(database)[BASE_NAME]
+    terse = next(entry for entry in facts if entry.name == "terse")
+    with database.read() as session:
+        model = session.execute(select(Model)).scalars().one()
+    broken_subject = f"{model.canonical_id}{terse.canonical_suffix}"
+
+    result = route(
+        database,
+        RouteRequest(task="general.chat", estimated_input_tokens=100),
+        provider=_facts(adapter_hot_swap=True, adapters_registered=True),
+        policy=RoutingPolicy(require_adapter_evidence=False),
+        open_circuit_breakers=frozenset({broken_subject}),
+        circuit_breaker_details={broken_subject: {"reason": "3 of 3 failed"}},
+        now=NOW,
+        persist=False,
+    )
+
+    servable = {
+        candidate.subject.subject_canonical_id for candidate in result.explanation.ranking.ordered
+    }
+    rejected = {
+        item.subject.subject_canonical_id: item.rejection.reason
+        for item in result.explanation.rejected
+    }
+    assert model.canonical_id in servable
+    assert any("+pirate@" in subject for subject in servable)
+    assert rejected[broken_subject] == "recently_failing"
+
+
+def test_statistics_are_kept_per_subject_and_never_pooled(database: Any, tmp_path: Path) -> None:
+    """The cost A-10 accepts, asserted: an adapter starts neutral rather than inheriting a base."""
+    from loadcoach.services.reliability import factors_for_task, recompute_pair
+
+    directory = tmp_path / "adapters"
+    directory.mkdir()
+    _write_adapter(directory, "terse")
+    sync_adapters(database, _settings(directory), now=NOW)
+    (terse,) = adapter_facts_by_base_name(database)[BASE_NAME]
+    with database.read() as session:
+        model_id = session.execute(select(Model)).scalars().one().id
+
+    recompute_pair(database, model_id=model_id, task_profile_id="general.chat", now=NOW)
+    recompute_pair(
+        database,
+        model_id=model_id,
+        task_profile_id="general.chat",
+        adapter_key=terse.adapter_id,
+        now=NOW,
+    )
+
+    factors = factors_for_task(database, task_profile_id="general.chat")
+    assert (model_id, "") in factors
+    assert (model_id, terse.adapter_id) in factors
+    # Both are neutral with no attempts, and — the point — they are two rows, not one.
+    assert factors[(model_id, "")].value == factors[(model_id, terse.adapter_id)].value == 1.0

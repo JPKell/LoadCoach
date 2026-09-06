@@ -219,9 +219,7 @@ def test_alternating_adapters_on_one_base_load_it_once_and_write_one_residency_r
     _write_adapter(directory, "pirate")
     sync_adapters(database, _settings(directory), now=NOW)
     with database.read() as session:
-        adapter_ids = {
-            row.name: row.id for row in session.execute(select(Adapter)).scalars().all()
-        }
+        adapter_ids = {row.name: row.id for row in session.execute(select(Adapter)).scalars().all()}
         model = session.execute(select(Model)).scalars().one()
         model_id, canonical_id = model.id, model.canonical_id
         identity = ModelIdentity(
@@ -246,7 +244,7 @@ def test_alternating_adapters_on_one_base_load_it_once_and_write_one_residency_r
             headroom_bytes=0,
             now=NOW,
             adapter_id=adapter_ids[pinned],
-            adapter_key=pinned,
+            adapter_key=adapter_ids[pinned],
         )
         for pinned in ("terse", "pirate", "terse")
     ]
@@ -259,5 +257,5 @@ def test_alternating_adapters_on_one_base_load_it_once_and_write_one_residency_r
     (row,) = rows
     assert row.resident
     # One episode, and it names the subject that last ran on it rather than one row per adapter.
-    assert row.adapter_key == "terse"
+    assert row.adapter_key == adapter_ids["terse"]
     assert row.adapter_id == adapter_ids["terse"]
