@@ -31,7 +31,7 @@ from baseaicore import SuiteError, ValidationError
 from fastapi import APIRouter, Request
 from mirrorwall import sse_response
 from modelrack import CancellationToken, Message, Role, ToolCall, ToolDefinition
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from setspec import GeneratorInfo
 from starlette.responses import StreamingResponse
 
@@ -135,6 +135,43 @@ class GenerateBody(BaseModel):
     overrides: OverridesBody | None = Field(default=None)
     tools: list[ToolDefinitionBody] | None = Field(default=None)
     idempotency_key: str | None = Field(default=None, max_length=128)
+    data_classification: str | None = Field(
+        default=None,
+        description=(
+            "The caller's own data classification. Joined with any serving adapter's by max() "
+            "(ADR-0065 rule 2). Optional: absent contributes nothing, which is what every 1.0 "
+            "caller sends."
+        ),
+    )
+
+    @field_validator("data_classification")
+    @classmethod
+    def _known_classification(cls, value: str | None) -> str | None:
+        """Refuse a classification outside the ordered vocabulary.
+
+        Args:
+            value: The caller's declaration, or ``None``.
+
+        Returns:
+            ``value`` unchanged when it names a :class:`baseaicore.DataClassification` level.
+
+        Raises:
+            ValueError: The value is not one of the vocabulary's levels. Refused rather than
+                ignored: a caller that misspelled its own classification would otherwise be
+                treated as having declared nothing, which is the one direction that can only
+                lower the effective classification.
+        """
+        from baseaicore import DataClassification
+
+        if value is None:
+            return None
+        try:
+            DataClassification(value)
+        except ValueError:
+            levels = ", ".join(level.value for level in DataClassification)
+            message = f"data_classification must be one of: {levels}; got {value!r}"
+            raise ValueError(message) from None
+        return value
 
     @model_validator(mode="after")
     def _exactly_one_form(self) -> GenerateBody:
@@ -279,6 +316,7 @@ def _to_request(body: GenerateBody, *, source: str, stream: bool) -> GenerateReq
         sampling=dict(body.sampling),
         overrides=overrides_of(body.overrides),
         tools=tools_of(body),
+        data_classification=body.data_classification,
         source=source,
         idempotency_key=body.idempotency_key,
         stream=stream,

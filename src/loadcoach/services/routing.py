@@ -153,6 +153,11 @@ class RouteRequest:
             requires — a body carrying tools requires ``tool_use`` (ADR-0075). Unioned with the
             profile's, so it can only narrow the field; it never scores and never loosens.
         overrides: Routing §10's overrides.
+        data_classification: The caller's own declaration. **Not an override** — it selects
+            nothing and relaxes nothing; it is one input to the
+            ``adapter_classification_conflict`` constraint, where the effective classification is
+            ``max(caller, adapter)`` (ADR-0065 rule 2). Because the join is a ``max()``, a
+            declaration can only make an adapter candidate *less* eligible, never more.
     """
 
     task: str
@@ -161,6 +166,7 @@ class RouteRequest:
     constraints: TaskProfileConstraints | None = None
     require_capabilities: tuple[str, ...] = ()
     overrides: RuntimeOverrides = field(default_factory=RuntimeOverrides)
+    data_classification: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -678,6 +684,7 @@ def route(
                     policy.require_adapter_evidence and pinned_adapter is None
                 ),
                 top_weighted_capability=top_weighted,
+                caller_data_classification=request.data_classification,
             ),
         )
         if rejection is not None:

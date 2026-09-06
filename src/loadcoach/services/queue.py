@@ -186,6 +186,9 @@ class JobSubmission:
         idempotent: Whether lost-lease recovery may re-run the job. Plain generation is; a job
             with a caller-supplied side effect is not (queue §3).
         idempotency_key: Makes a retried submission safe, scoped per ``source``.
+        data_classification: The caller's own declaration, joined with any serving adapter's by
+            ``max()`` (ADR-0065 rule 2). Persisted with the transcript for the same reason
+            ``tools`` is: a queued job runs after its submitter has gone.
         source: The calling application, for the idempotency scope and the job record.
         stream: Whether the caller wants token deltas on the job's stream.
     """
@@ -203,6 +206,7 @@ class JobSubmission:
     max_wait_seconds: int | None = None
     idempotent: bool = True
     idempotency_key: str | None = None
+    data_classification: str | None = None
     source: str = "anonymous"
     stream: bool = False
 
@@ -233,6 +237,12 @@ class JobSubmission:
             if overrides is None
             else {
                 "model": overrides.model,
+                # A queued job's submission is rebuilt from this payload and from nothing else, so
+                # an override missing here is an override silently dropped between submission and
+                # execution. For `adapter` that is precisely the bare-base fallback ADR-0064
+                # rule 4 forbids, on the queued path, with no error anywhere.
+                "adapter": overrides.adapter,
+                "ignore_residency": overrides.ignore_residency,
                 "runtime_profile": None
                 if profile is None
                 else {
@@ -245,6 +255,7 @@ class JobSubmission:
                 "require_evidence": overrides.require_evidence,
             },
             "tools": tool_definitions_json(self.tools),
+            "data_classification": self.data_classification,
             "stream": self.stream,
         }
 
@@ -279,9 +290,11 @@ class JobSubmission:
             )
             overrides = RuntimeOverrides(
                 model=raw_overrides.get("model"),
+                adapter=raw_overrides.get("adapter"),
                 runtime_profile=profile,
                 disallow_fallback=bool(raw_overrides.get("disallow_fallback", False)),
                 require_evidence=bool(raw_overrides.get("require_evidence", False)),
+                ignore_residency=bool(raw_overrides.get("ignore_residency", False)),
             )
         messages = messages_of_json(payload.get("messages"))
         return cls(
@@ -291,6 +304,7 @@ class JobSubmission:
             response_format=cast("str | None", payload.get("response_format")),
             sampling=dict(cast("Mapping[str, Any]", payload.get("sampling", {}))),
             overrides=overrides,
+            data_classification=cast("str | None", payload.get("data_classification")),
             job_class=job_class,
             priority=priority,
             max_wait_seconds=max_wait_seconds,
@@ -309,6 +323,7 @@ class JobSubmission:
             sampling=dict(self.sampling),
             overrides=self.overrides,
             tools=self.tools,
+            data_classification=self.data_classification,
             source=self.source,
             idempotency_key=self.idempotency_key,
             stream=self.stream,

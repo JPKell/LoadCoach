@@ -66,7 +66,7 @@ from modelrack import (
 from sqlalchemy import update
 
 from loadcoach.domain.authorization import Principal, authorize
-from loadcoach.domain.routing.constraints import free_vram_by_gpu
+from loadcoach.domain.routing.constraints import free_vram_by_gpu, join_classification
 from loadcoach.domain.routing.context_budget import estimate_input_tokens
 from loadcoach.domain.routing.subject import ProviderFacts, RuntimeOverrides
 from loadcoach.domain.validation import (
@@ -184,6 +184,9 @@ class GenerateRequest:
         tools: Tools the caller offers the model. Passed to the provider unmodified and never
             executed here (ADR-0041, spec §14). A non-empty value requires ``tool_use`` of every
             routing candidate for this request (ADR-0075).
+        data_classification: The caller's own declaration, joined with any serving adapter's by
+            ``max()`` (ADR-0065 rule 2). ``None`` when the caller declared none, which contributes
+            nothing rather than being guessed at.
         source: The calling application, for the idempotency scope and the job record.
         idempotency_key: Makes a retried POST safe.
         stream: Whether the caller asked for the streaming endpoint. Does **not** change how the
@@ -198,6 +201,7 @@ class GenerateRequest:
     sampling: Mapping[str, Any] = field(default_factory=dict)
     overrides: RuntimeOverrides | None = None
     tools: tuple[ToolDefinition, ...] = ()
+    data_classification: str | None = None
     source: str = "anonymous"
     idempotency_key: str | None = None
     stream: bool = False
@@ -862,6 +866,7 @@ def run_attempt(
             started_at,
             now(),
             collected,
+            caller_data_classification=request.data_classification,
             outcome="cancelled" if cancelled else _failure_outcome(collected.failure),
             error=collected.failure,
             correction=correction,
@@ -884,6 +889,7 @@ def run_attempt(
         started_at,
         now(),
         collected,
+        caller_data_classification=request.data_classification,
         outcome="completed" if passed else "validation_failed",
         validation=validation,
         correction=correction,
@@ -1202,6 +1208,7 @@ def _record(
     completed_at: datetime,
     collected: _Collected,
     *,
+    caller_data_classification: str | None,
     outcome: str,
     error: ProviderError | None = None,
     validation: ValidationOutcome | None = None,
@@ -1217,10 +1224,14 @@ def _record(
         adapter_id=None if adapter is None else adapter.adapter_id,
         adapter_name=None if adapter is None else adapter.name,
         adapter_data_classification=None if adapter is None else adapter.data_classification,
-        # LoadCoach takes no caller classification today, so the join is the adapter's own value
-        # (ADR-0065 rule 2's max() with an absent left-hand side). Recorded rather than derived
-        # later, because the manifest can change and the attempt cannot.
-        effective_data_classification=None if adapter is None else adapter.data_classification,
+        # ADR-0065 rule 2's join, recorded rather than derived later: the manifest can change and
+        # the attempt cannot. `None` with no adapter — there is no adapter classification to join
+        # with, and an attempt served by bare weights makes no statement about adapter egress.
+        effective_data_classification=(
+            None
+            if adapter is None
+            else join_classification(caller_data_classification, adapter.data_classification)
+        ),
         runtime_profile_hash=candidate.subject.runtime_profile_hash,
         rank=candidate.rank,
         outcome=outcome,
@@ -1825,6 +1836,7 @@ def execute(
                 # from the provider edge after a model has already been chosen.
                 require_capabilities=("tool_use",) if request.tools else (),
                 overrides=request.overrides or RuntimeOverrides(),
+                data_classification=request.data_classification,
             ),
             provider=context.provider_facts,
             provider_facts_by_name=context.provider_facts_by_name,

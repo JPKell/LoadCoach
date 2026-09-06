@@ -78,6 +78,7 @@ def _submission(body: JobBody, *, source: str) -> JobSubmission:
         response_format=body.response_format,
         sampling=dict(body.sampling),
         overrides=overrides_of(body.overrides),
+        data_classification=body.data_classification,
         job_class=JobClass(body.job_class),
         priority=body.priority,
         max_wait_seconds=body.max_wait_seconds,

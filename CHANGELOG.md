@@ -29,6 +29,16 @@ still holding — and G2's tool wire, which is what makes model-directed sandbox
 on a real provider at all.
 
 ### Added
+- **A caller may declare its own data classification, and the effective classification is the join**
+  (ADR-0065 rule 2). `POST /generate` and `POST /jobs` take an optional `data_classification` —
+  `public`, `internal` or `confidential` — and LoadCoach records `max(caller, adapter)` as the
+  attempt's `effective_data_classification` and in the detail of any
+  `adapter_classification_conflict` rejection, where `caller_classification` was previously always
+  `null`. The field is **optional** and a body that omits it behaves byte-identically to before it
+  existed, because the join with an absent left-hand side is the adapter's own value. A value
+  outside the vocabulary is refused rather than ignored: ignoring it is the one direction that can
+  only *lower* the effective classification. Nothing about the field widens anything — a `max()`
+  can only make an adapter candidate less eligible, never more.
 - **`kind = "llamacpp"` is a provider LoadCoach can construct.** It launches and supervises its own
   server over a directory of GGUF weights (`model_directory`, required — a wrong directory is a
   server serving weights nobody asked for, and there is no default worth guessing; plus optional
@@ -137,6 +147,12 @@ on a real provider at all.
   `list_adapters()` snapshot, which moves while a restart is pending.
 
 ### Fixed
+- **A queued job no longer loses its `adapter` and `ignore_residency` overrides.** A leased job's
+  submission is rebuilt from `jobs.request_json` and from nothing else, and neither field was
+  written to it or read back — so an adapter pin submitted through `POST /jobs` was silently
+  dropped between submission and execution and the request was answered by the **bare base**, which
+  is precisely the fallback ADR-0064 rule 4 forbids, with no error anywhere. Found while wiring
+  IdeaPress's per-stage pins, whose long stages all go through the queue.
 - **A migration that adds a foreign key no longer deletes stored routing candidates.** Adding a
   constraint to an existing SQLite table is a table rebuild, and dropping `routing_decisions`
   with `foreign_keys=ON` cascades through `routing_candidates` — the explainability promise

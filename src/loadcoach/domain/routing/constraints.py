@@ -43,6 +43,7 @@ __all__ = [
     "estimate_vram",
     "evaluate_constraints",
     "free_vram_by_gpu",
+    "join_classification",
     "kv_bytes_per_token",
     "sortable_estimate",
 ]
@@ -656,7 +657,7 @@ def _check_adapter(subject: ExecutionSubject, inputs: ConstraintInputs) -> Rejec
         # egress class its registration declared, and a caller holding a bare provider handle has
         # only the provider's. An adapter never rides an egress, whichever of the two says so.
         caller = inputs.caller_data_classification
-        effective = _join_classification(caller, adapter.data_classification)
+        effective = join_classification(caller, adapter.data_classification)
         return Rejection(
             "adapter_classification_conflict",
             {
@@ -675,7 +676,7 @@ def _check_adapter(subject: ExecutionSubject, inputs: ConstraintInputs) -> Rejec
     return None
 
 
-def _join_classification(caller: str | None, adapter: str) -> str:
+def join_classification(caller: str | None, adapter: str) -> str:
     """Return ``max(caller, adapter)`` over the ordered classification vocabulary (ADR-0065 rule 2).
 
     An unreadable or absent caller declaration contributes nothing rather than being guessed at:
