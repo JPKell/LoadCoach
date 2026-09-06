@@ -7,7 +7,34 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-09-05
+
+LoadCoach 1.1: **LA2** — more than one provider, an operator's adapter directory, adapter subjects
+that route and pin like any other candidate, and a residency model in which switching adapters on a
+warm base is free. Phase 10 of the
+[development plan](docs/apps/loadcoach/development-plan.md).
+
+**The exit was demonstrated, not argued.** Three requests pinning three LoRA adapters on one base
+were answered by **one** `llama-server` process — asserted from the supervisor's pid, from
+`list_resident`, and from three visibly different answers to one prompt — and every attempt
+recorded the subject that answered. The same weights registered a second time under a registration
+**declared** remote left three `adapter_classification_conflict` rows in `routing_candidates`, each
+carrying the classification arithmetic, while the bare base stayed servable: I16 and I19, proved
+where the behaviour lives.
+
+**Two unreleased fixes ship in this release rather than riding silently:** `2c7d740` — a
+synchronous generation records the model it made resident, so the *next* request can apply the
+residency exception instead of being refused `insufficient_vram` by memory the previous one is
+still holding — and G2's tool wire, which is what makes model-directed sandboxed tool use reachable
+on a real provider at all.
+
 ### Added
+- **`kind = "llamacpp"` is a provider LoadCoach can construct.** It launches and supervises its own
+  server over a directory of GGUF weights (`model_directory`, required — a wrong directory is a
+  server serving weights nobody asked for, and there is no default worth guessing; plus optional
+  `state_dir` and `server_path`). It is the only kind that can hot-swap adapters, and therefore the
+  only kind an adapter subject can ever be served by, which is what makes ADR-0065's local-only
+  rule hold by construction rather than by a check.
 - **Adapter subjects are routing candidates, and three new constraints reject them by name**
   (ADR-0058, ADR-0064, ADR-0065, ADR-0079, ADR-0080). A candidate is now the triple
   `(identity, adapter | none, resolved runtime profile)`. Where a registration's provider declares
