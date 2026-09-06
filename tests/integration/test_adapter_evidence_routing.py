@@ -254,3 +254,77 @@ def test_a_bases_evidence_never_reaches_an_adapter_subject(
     adapter_rows = [row for row in _candidates(database) if row.adapter_id is not None]
     assert len(adapter_rows) == 2
     assert all(row.rejection_reason == "adapter_unmeasured" for row in adapter_rows)
+
+
+def test_adapters_sync_registers_the_directory_and_binds_what_was_waiting(
+    tmp_path: Path,
+    golden_bundle_11: dict[str, Any],
+    wrap_bundle: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`loadcoach adapters sync` is the command for the sequence an operator actually performs.
+
+    Import a bundle, review a manifest, expect the evidence to attach. Before this command the
+    attaching happened as a side effect of the next routed decision, which is not something a
+    person can be told to run.
+    """
+    import json as json_module
+
+    from typer.testing import CliRunner
+
+    from loadcoach.cli.main import app as cli
+
+    database_path = tmp_path / "sync.sqlite3"
+    database = Database.from_url(f"sqlite:///{database_path}")
+    ensure_ready(database, auto_migrate=True)
+    import_task_profiles(database, read_task_profiles_file(), now=NOW)
+    discover_models(
+        database,
+        (
+            ProviderRegistration(
+                name="local",
+                kind="fake",
+                is_remote=False,
+                provider=FakeProvider(FakeScript(models=(_model(),))),
+                adapters_registered=True,
+            ),
+        ),
+        now=NOW,
+    )
+    identity = _local_identity(database)
+    directory = tmp_path / "adapters"
+    directory.mkdir()
+    _write_adapter(directory, "terse", base_name=BASE_NAME)
+    from loadcoach.infrastructure.adapters.directory import sha256_of
+
+    digest = sha256_of(directory / "terse.gguf")
+    bundle = _bundle(
+        golden_bundle_11,
+        identity=identity,
+        adapter={
+            "name": "terse",
+            "artifact_digest": digest,
+            "source_digest": None,
+            "canonical_suffix": f"+terse@{digest[:19]}",
+        },
+        profile_hash="whatever-this-test-does-not-route",
+    )
+    outcome = import_bundle(database, wrap_bundle(bundle, minor=1), now=NOW)
+    assert outcome.unmatched == len(WEIGHTED), "the adapter is not registered yet"
+    database.close()
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'[storage]\ndatabase_url = "sqlite:///{database_path}"\n\n'
+        f'[adapters]\ndirectory = "{directory}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LOADCOACH_CONFIG", str(config))
+
+    result = CliRunner().invoke(cli, ["adapters", "sync", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json_module.loads(result.stdout)
+    assert payload["adapters"] == 1
+    assert payload["evidence"]["bound"] == len(WEIGHTED)
+    assert payload["evidence"]["unmatched"] == 0

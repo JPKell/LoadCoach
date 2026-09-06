@@ -1,22 +1,26 @@
-"""loadcoach.cli.commands.adapters — ``loadcoach adapters scan|list|show`` (spec §7.2).
+"""loadcoach.cli.commands.adapters — ``loadcoach adapters scan|sync|list|show`` (spec §7.2).
 
-``scan`` drafts; a human keeps (ADR-0061 rule 4). ``list`` and ``show`` report what the directory
-holds and what each provider makes of it. Only ``typer`` and ``json`` load at import time (CLI
-standards §12).
+``scan`` drafts; a human keeps (ADR-0061 rule 4). ``sync`` registers what they kept. ``list`` and
+``show`` report what the directory holds and what each provider makes of it. Only ``typer`` and
+``json`` load at import time (CLI standards §12).
 """
 
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Annotated
 
 import typer
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from loadcoach.config import LoadedSettings
     from loadcoach.infrastructure.providers.factory import ProviderRegistration
+    from loadcoach.services.database import Database
 
-__all__ = ["app", "list_adapters", "scan", "show"]
+__all__ = ["app", "list_adapters", "scan", "show", "sync"]
 
 app = typer.Typer(help="The adapter registry: an operator's directory and reviewed manifests.")
 
@@ -29,6 +33,21 @@ def _load(config: str | None) -> LoadedSettings:
     except ConfigurationError as exc:
         typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
         raise typer.Exit(3) from exc
+
+
+@contextmanager
+def _open_database(loaded: LoadedSettings) -> Iterator[Database]:
+    """Open the configured database for the one command that writes rows."""
+    from loadcoach.services.database import Database
+
+    storage = loaded.settings.storage
+    if storage.database_url is None:  # pragma: no cover — StorageSettings always fills this in
+        typer.echo("Error: no database_url configured (CONFIGURATION_ERROR)", err=True)
+        raise typer.Exit(3)
+    with Database.from_url(
+        storage.database_url, statement_timeout_ms=storage.statement_timeout_ms
+    ) as database:
+        yield database
 
 
 def _registrations(loaded: LoadedSettings) -> tuple[ProviderRegistration, ...]:
@@ -91,6 +110,59 @@ def scan(
         )
     elif not outcome.skipped:
         typer.echo("no adapter artifacts found.")
+
+
+@app.command("sync")
+def sync(
+    config: Annotated[str | None, typer.Option("--config", help="Path to config.toml.")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Machine-readable output.")] = False,
+) -> None:
+    """Register the reviewed manifests, and bind any evidence that was waiting for them.
+
+    The directory is the registry and this table is its projection, so nothing here is a decision:
+    the same pass runs when the server starts and before every routed decision. It exists as a
+    command because the sequence an operator actually performs — import a bundle, review a manifest,
+    expect the evidence to attach — otherwise depends on a routing call happening next, which is a
+    side effect rather than an instruction.
+    """
+    from datetime import UTC, datetime
+
+    from loadcoach.services.adapters import sync_adapters
+    from loadcoach.services.evidence import evidence_overview
+
+    loaded = _load(config)
+    with _open_database(loaded) as database:
+        registered = sync_adapters(database, loaded.settings, now=datetime.now(UTC))
+        overview = evidence_overview(
+            database, configured_url=loaded.settings.evidence.freeweight_url.strip()
+        )
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "adapters": registered,
+                    "evidence": {
+                        "rows": overview.rows,
+                        "bound": overview.bound,
+                        "unmatched": overview.unmatched,
+                        "ambiguous": overview.ambiguous,
+                    },
+                },
+                indent=2,
+            )
+        )
+        return
+
+    if registered == 0:
+        typer.echo("no adapters registered ([adapters] directory is empty, or holds no manifest).")
+    else:
+        typer.echo(f"{registered} adapter(s) registered from the reviewed manifests.")
+    if overview.rows:
+        typer.echo(
+            f"evidence: {overview.bound} bound, {overview.unmatched} unmatched, "
+            f"{overview.ambiguous} ambiguous, of {overview.rows} row(s)."
+        )
 
 
 @app.command("list")
