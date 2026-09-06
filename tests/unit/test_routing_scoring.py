@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from baseaicore import RuntimeProfile
 
 from loadcoach.domain.routing.scoring import (
@@ -283,3 +284,88 @@ def test_resolve_capability_is_a_pure_function_of_its_arguments() -> None:
     first = resolve_capability(**args)  # type: ignore[arg-type]  # a homogeneous kwargs dict cannot be typed more precisely without repeating the signature
     second = resolve_capability(**args)  # type: ignore[arg-type]  # same call, asserting purity
     assert first == second
+
+
+def _residency_subject(canonical_id: str, *, adapter: str | None = None) -> ExecutionSubject:
+    """A minimal subject for the residency arithmetic: only the base identity and adapter matter."""
+    from loadcoach.domain.routing.subject import AdapterFacts
+
+    facts = ModelFacts(
+        model_id="01M",
+        canonical_id=canonical_id,
+        provider_kind="llamacpp",
+        provider_model_name=canonical_id.split("/")[1].split("@")[0],
+    )
+    return ExecutionSubject(
+        facts=facts,
+        provider=ProviderFacts(adapter_hot_swap=adapter is not None),
+        runtime_profile=RuntimeProfile(),
+        served_context=ServedContext(tokens=4096, source="configured"),
+        adapter=(
+            None
+            if adapter is None
+            else AdapterFacts(
+                adapter_id="01A",
+                name=adapter,
+                artifact_digest="sha256:" + "9" * 64,
+                base_model_name="qwen",
+            )
+        ),
+    )
+
+
+BASE_A = "llamacpp/qwen@sha256:" + "1" * 64
+BASE_B = "llamacpp/gemma@sha256:" + "2" * 64
+
+
+def test_an_adapter_switch_on_the_resident_base_pays_nothing() -> None:
+    """ADR-0066: what occupies a device is the base, so every adapter on it scores as resident."""
+    resident = frozenset({BASE_A})
+
+    bare = adjustment_factors(_residency_subject(BASE_A), resident_models=resident)
+    with_terse = adjustment_factors(
+        _residency_subject(BASE_A, adapter="terse"), resident_models=resident
+    )
+    with_pirate = adjustment_factors(
+        _residency_subject(BASE_A, adapter="pirate"), resident_models=resident
+    )
+
+    assert bare.residency == with_terse.residency == with_pirate.residency == 1.05
+    assert with_terse.residency_detail is not None
+    assert with_terse.residency_detail["level"] == "resident_base"
+
+
+def test_a_base_switch_pays_the_penalty_exactly_once() -> None:
+    factors = adjustment_factors(
+        _residency_subject(BASE_B), resident_models=frozenset({BASE_A}), base_switch_penalty=0.10
+    )
+
+    assert factors.residency == pytest.approx(0.90)
+    assert factors.residency_detail is not None
+    assert factors.residency_detail["level"] == "base_switch"
+    assert factors.residency_detail["base_switch_penalty"] == 0.10
+
+
+def test_nothing_resident_is_neutral_and_never_a_penalty() -> None:
+    """Residency unknown and residency empty are the same evidence: there is no swap to charge."""
+    factors = adjustment_factors(_residency_subject(BASE_B), resident_models=frozenset())
+
+    assert factors.residency == 1.0
+    assert factors.residency_detail is not None
+    assert factors.residency_detail["level"] == "nothing_resident"
+
+
+def test_ignore_residency_zeroes_both_terms_and_says_so() -> None:
+    resident = frozenset({BASE_A})
+
+    on_base = adjustment_factors(
+        _residency_subject(BASE_A), resident_models=resident, ignore_residency=True
+    )
+    off_base = adjustment_factors(
+        _residency_subject(BASE_B), resident_models=resident, ignore_residency=True
+    )
+
+    assert on_base.residency == off_base.residency == 1.0
+    assert on_base.residency_detail is not None
+    assert on_base.residency_detail["ignore_residency"] is True
+    assert on_base.residency_detail["level"] == "ignored"

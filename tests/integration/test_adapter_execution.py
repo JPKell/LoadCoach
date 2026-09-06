@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from baseaicore import ModelDescriptor, ModelIdentity
+from baseaicore import ModelDescriptor, ModelIdentity, RuntimeProfile
 from modelrack import (
     GenerationRequest,
     GenerationResult,
@@ -199,3 +199,65 @@ def test_a_bare_execution_names_no_adapter_anywhere(wired: Any) -> None:
     assert attempt.adapter_id is None
     assert attempt.adapter_data_classification is None
     assert attempt.subject_canonical_id == "fake/qwen2.5:1.5b@sha256:" + "b" * 12
+
+
+def test_alternating_adapters_on_one_base_load_it_once_and_write_one_residency_row(
+    wired: Any, tmp_path: Path
+) -> None:
+    """Gate F, at the LoadCoach boundary: an adapter switch is not a load (ADR-0066, ADR-0038).
+
+    Driven through the residency service directly, with a device to be resident on — the executor
+    only reaches it when admission chose a GPU, and a machine with none has no residency to test.
+    The live proof against a real `llama-server` is I16.
+    """
+    from loadcoach.config import ResidencySettings
+    from loadcoach.infrastructure.db.models import Adapter, Model, Residency
+    from loadcoach.services.residency import ResidencyService
+
+    database, provider = wired
+    directory = tmp_path / "adapters"
+    _write_adapter(directory, "pirate")
+    sync_adapters(database, _settings(directory), now=NOW)
+    with database.read() as session:
+        adapter_ids = {
+            row.name: row.id for row in session.execute(select(Adapter)).scalars().all()
+        }
+        model = session.execute(select(Model)).scalars().one()
+        model_id, canonical_id = model.id, model.canonical_id
+        identity = ModelIdentity(
+            provider_kind=model.provider_kind,
+            provider_model_name=model.provider_model_name,
+            artifact_digest=model.artifact_digest,
+        )
+    residency = ResidencyService(
+        database, provider, settings=ResidencySettings(), clock=lambda: NOW
+    )
+
+    outcomes = [
+        residency.ensure_loaded(
+            model_id=model_id,
+            canonical_id=canonical_id,
+            identity=identity,
+            profile=RuntimeProfile(),
+            gpu_index=0,
+            in_use_model_ids=frozenset(),
+            required_bytes=None,
+            free_bytes=None,
+            headroom_bytes=0,
+            now=NOW,
+            adapter_id=adapter_ids[pinned],
+            adapter_key=pinned,
+        )
+        for pinned in ("terse", "pirate", "terse")
+    ]
+
+    assert [outcome.loaded for outcome in outcomes] == [True, False, False]
+    assert [outcome.already_resident for outcome in outcomes] == [False, True, True]
+    assert not any(outcome.evicted for outcome in outcomes)
+    with database.read() as session:
+        rows = list(session.execute(select(Residency)).scalars().all())
+    (row,) = rows
+    assert row.resident
+    # One episode, and it names the subject that last ran on it rather than one row per adapter.
+    assert row.adapter_key == "terse"
+    assert row.adapter_id == adapter_ids["terse"]

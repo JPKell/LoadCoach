@@ -946,6 +946,12 @@ def _make_resident(
             free_bytes=(free_bytes_by_gpu or {}).get(candidate.target_gpu_index),
             headroom_bytes=vram_headroom_bytes,
             now=now(),
+            adapter_id=(
+                None if candidate.subject.adapter is None else candidate.subject.adapter.adapter_id
+            ),
+            adapter_key=(
+                "" if candidate.subject.adapter is None else candidate.subject.adapter.name
+            ),
         )
     except Exception:  # noqa: BLE001 — see the docstring: never a precondition
         logger.warning("residency.sync_record_failed", extra={"canonical_id": facts.canonical_id})

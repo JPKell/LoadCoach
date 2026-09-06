@@ -48,6 +48,7 @@ _Facts = ModelFacts(
 class _Subject:
     facts = _Facts
     runtime_profile = object()
+    adapter = None  # a bare base: the subject's adapter axis, unset (ADR-0058)
 
 
 class _Candidate:

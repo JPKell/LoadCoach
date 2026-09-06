@@ -58,6 +58,20 @@ packaging and release standards §3.
   adapter* after a rename, and `subject_canonical_id`, the string written at decision time so an
   explanation still reads correctly after the directory has changed underneath it. Existing rows
   are backfilled from `models.canonical_id`, which is what a bare base's subject string is.
+- **Residency is two-level: the base is the expensive switch** (ADR-0066). The factor is
+  `1 + prefer_resident_bonus` for a candidate on the resident base **whatever adapter it names**,
+  `1 - base_switch_penalty` for one that would need its own base loaded while another is resident,
+  and exactly `1.0` where nothing is resident — residency unknown and residency empty are the same
+  evidence, and there is no swap to charge for. `overrides.ignore_residency` zeroes both terms and
+  is recorded, not merely acted on: every candidate carries a `residency_detail` naming the level
+  applied and both knobs' values, in the explanation and in `routing_candidates`
+  (migration `0011`).
+
+  An adapter switch on a resident base writes no residency row and triggers no unload: the episode
+  already there is updated to name the subject that last used it (`adapter_id` and `adapter_key`,
+  which the unique key now includes). `adapter_key` is the empty string for a bare base rather than
+  `NULL`, because `NULL`s in a unique index do not constrain and a key that admits duplicates is
+  not a key (ADR-0080 rule 5) — a deliberate wart, documented beside the key it exists for.
 - **`[routing] base_switch_penalty`** (default `0.10`, chosen and not measured) and
   **`[routing] require_adapter_evidence`** (default `true`).
 - **`RuntimeProfile.adapters_registered` is set, never guessed** (ADR-0074): `True` for a

@@ -197,6 +197,8 @@ class ResidencyService:
         free_bytes: int | None,
         headroom_bytes: int,
         now: datetime,
+        adapter_id: str | None = None,
+        adapter_key: str = "",
     ) -> LoadOutcome:
         """Make ``identity`` resident on ``gpu_index`` before a job executes on it.
 
@@ -216,9 +218,14 @@ class ResidencyService:
             free_bytes: The device's free memory as telemetry reports it, or ``None``.
             headroom_bytes: The per-device reserve.
             now: The instant.
+            adapter_id: The adapter this execution will apply, or ``None`` for the bare base.
+                Recorded on the row; it never decides whether a load happens, because what
+                occupies a device is the base (ADR-0066, ADR-0038).
+            adapter_key: That adapter's subject key, ``""`` for the bare base.
 
         Returns:
-            The :class:`LoadOutcome`.
+            The :class:`LoadOutcome`. ``already_resident`` covers an adapter switch on a resident
+            base, which is the case that must never trigger an unload.
         """
         if not self.manageable:
             return LoadOutcome(
@@ -229,7 +236,9 @@ class ResidencyService:
         on_device = [entry for entry in self.resident() if entry.gpu_index == gpu_index]
         for entry in on_device:
             if entry.model_id == model_id:
-                self.record_use(model_id, gpu_index, now)
+                self.record_use(
+                    model_id, gpu_index, now, adapter_id=adapter_id, adapter_key=adapter_key
+                )
                 return LoadOutcome(loaded=False, already_resident=True, evicted=())
 
         evicted: list[str] = []
@@ -262,6 +271,8 @@ class ResidencyService:
             session.add(
                 Residency(
                     model_id=model_id,
+                    adapter_id=adapter_id,
+                    adapter_key=adapter_key,
                     gpu_index=gpu_index,
                     loaded_at=now,
                     last_used_at=now,
@@ -290,8 +301,29 @@ class ResidencyService:
             return None
         return None
 
-    def record_use(self, model_id: str, gpu_index: int, now: datetime) -> None:
-        """Touch ``last_used_at`` for the model on the device — the idle clock's origin."""
+    def record_use(
+        self,
+        model_id: str,
+        gpu_index: int,
+        now: datetime,
+        *,
+        adapter_id: str | None = None,
+        adapter_key: str = "",
+    ) -> None:
+        """Touch ``last_used_at``, and record which subject used it (ADR-0066).
+
+        An adapter switch on a resident base is **not** a load: no row is written and nothing is
+        unloaded — the row that is already there is updated to say which subject last ran on it.
+        That is the whole of what makes the residency factor free across adapters.
+
+        Args:
+            model_id: The resident base's registry ULID.
+            gpu_index: The device it is resident on.
+            now: The instant, which becomes the idle clock's origin.
+            adapter_id: The adapter that ran, or ``None`` for the bare base.
+            adapter_key: That adapter's subject key — the empty string for the bare base, never
+                ``NULL``, because the unique key includes it (ADR-0080 rule 5).
+        """
         with self._database.write() as session:
             row = session.execute(
                 select(Residency).where(
@@ -302,6 +334,8 @@ class ResidencyService:
             ).scalar_one_or_none()
             if row is not None:
                 row.last_used_at = now
+                row.adapter_id = adapter_id
+                row.adapter_key = adapter_key
 
     # ------------------------------------------------------------------------------ evicting
 

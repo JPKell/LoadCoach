@@ -119,6 +119,11 @@ def _candidate_payload(candidate: RankedCandidate) -> dict[str, Any]:
         "target_gpu_index": candidate.target_gpu_index,
         "capabilities": [score.as_json() for score in candidate.fit.capabilities],
         "factors": candidate.factors.as_json(),
+        "residency_detail": (
+            None
+            if candidate.factors.residency_detail is None
+            else dict(candidate.factors.residency_detail)
+        ),
     }
 
 

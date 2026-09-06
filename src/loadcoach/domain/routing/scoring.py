@@ -481,6 +481,10 @@ class AdjustmentFactors:
     and one line saying why — present whether the factor is live or neutral, because routing §6
     says each factor's value *and inputs* are recorded, and a neutral factor's input is the
     sample count that kept it neutral.
+
+    ``residency_detail`` is the same discipline applied to the two-level residency term
+    (ADR-0066): which level was applied, both knobs' values, and whether ``ignore_residency``
+    zeroed them. Its value depends on configuration a reader of a stored decision does not have.
     """
 
     reliability: float = 1.0
@@ -488,6 +492,7 @@ class AdjustmentFactors:
     residency: float = 1.0
     cost: float = 1.0
     reliability_detail: Mapping[str, Any] | None = None
+    residency_detail: Mapping[str, Any] | None = None
 
     @property
     def product(self) -> float:
@@ -504,6 +509,8 @@ class AdjustmentFactors:
         }
         if self.reliability_detail is not None:
             document["reliability_detail"] = dict(self.reliability_detail)
+        if self.residency_detail is not None:
+            document["residency_detail"] = dict(self.residency_detail)
         return document
 
 
@@ -512,6 +519,8 @@ def adjustment_factors(
     *,
     resident_models: frozenset[str] = frozenset(),
     prefer_resident_bonus: float = 0.05,
+    base_switch_penalty: float = 0.10,
+    ignore_residency: bool = False,
     remote_cost_factor: float = 0.9,
     reliability: float | ReliabilityFactor = 1.0,
     availability: float = 1.0,
@@ -525,9 +534,15 @@ def adjustment_factors(
 
     Args:
         subject: The candidate.
-        resident_models: Canonical IDs currently loaded. Empty until residency tracking exists.
+        resident_models: Canonical IDs of the **bases** currently loaded. What occupies a device
+            is a base process; an adapter switch on one is free (ADR-0066).
         prefer_resident_bonus: The residency bonus, deliberately small — it breaks ties, it does
             not override capability.
+        base_switch_penalty: What a candidate pays when a *different* base is resident and this
+            one would have to be loaded. Chosen, not measured: twice the bonus, so a base switch
+            is never decided by the tie-break the bonus exists to be (routing §6.1).
+        ignore_residency: Zero both terms for this call. The factor becomes exactly ``1.0`` for
+            every candidate, and the fact is recorded rather than merely acted on.
         remote_cost_factor: The multiplier for a remote provider. 1.0 for local, always.
         reliability: From production evidence; neutral until the minimum sample count.
         availability: From queue load; neutral until there is a queue.
@@ -535,15 +550,54 @@ def adjustment_factors(
     Returns:
         The four factors, each within routing §6's documented range.
     """
-    resident = subject.facts.canonical_id in resident_models
     if isinstance(reliability, ReliabilityFactor):
         value, detail = reliability.value, reliability.as_json()
     else:
         value, detail = reliability, None
+    residency, level = _residency_term(
+        subject,
+        resident_models=resident_models,
+        prefer_resident_bonus=prefer_resident_bonus,
+        base_switch_penalty=base_switch_penalty,
+        ignore_residency=ignore_residency,
+    )
     return AdjustmentFactors(
         reliability=value,
         availability=availability,
-        residency=1.0 + prefer_resident_bonus if resident else 1.0,
+        residency=residency,
         cost=remote_cost_factor if subject.facts.is_remote else 1.0,
         reliability_detail=detail,
+        residency_detail={
+            "level": level,
+            "resident_bases": sorted(resident_models),
+            "prefer_resident_bonus": prefer_resident_bonus,
+            "base_switch_penalty": base_switch_penalty,
+            "ignore_residency": ignore_residency,
+        },
     )
+
+
+def _residency_term(
+    subject: ExecutionSubject,
+    *,
+    resident_models: frozenset[str],
+    prefer_resident_bonus: float,
+    base_switch_penalty: float,
+    ignore_residency: bool,
+) -> tuple[float, str]:
+    """Return the two-level residency factor and the name of the level applied (routing §6.1).
+
+    Three levels, and the middle one is not a rounding of the others: a candidate on the resident
+    base earns the bonus *whatever adapter it names*, because an adapter switch is not a load; a
+    candidate whose base is not resident **while another base is** pays the penalty, because
+    something would have to be unloaded and something else read from disk; and where nothing is
+    resident — or residency is unknown, which is the same evidence — the factor is exactly 1.0,
+    since there is no swap to charge for.
+    """
+    if ignore_residency:
+        return 1.0, "ignored"
+    if subject.facts.canonical_id in resident_models:
+        return 1.0 + prefer_resident_bonus, "resident_base"
+    if resident_models:
+        return 1.0 - base_switch_penalty, "base_switch"
+    return 1.0, "nothing_resident"

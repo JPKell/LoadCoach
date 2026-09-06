@@ -177,7 +177,9 @@ def test_migration_0004_adds_residency_and_fixes_the_claim_index_direction() -> 
     """
     with temporary_sqlite() as engine:
         runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
-        runner.upgrade(backup=False)
+        # Stops at 0004: `residency` gains its adapter columns at 0011, and this test is about
+        # the shape 0004 created.
+        runner.upgrade(revision="0004", backup=False)
         with engine.connect() as connection:
             names = {
                 row[0]
@@ -914,6 +916,56 @@ def test_migration_0010_round_trips_on_sqlite() -> None:
             jobs = {row[1] for row in connection.execute(text("PRAGMA table_info(jobs)"))}
         assert "selected_adapter_id" not in jobs
         assert {"id", "state", "task_profile_id"} <= jobs
+
+        runner.upgrade(backup=False)
+        assert runner.is_at_head()
+        assert runner.check_parity(Base.metadata).matches
+
+
+def test_migration_0011_moves_the_residency_key_onto_the_subject() -> None:
+    """ADR-0066 and ADR-0080 rule 5: the key includes the adapter, and it is never NULL.
+
+    The empty-string sentinel is the assertion that matters. A `NULL` in a unique index does not
+    constrain on either dialect, so two bare-base episodes with the same `loaded_at` would both be
+    admitted and the key would stop being a key.
+    """
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(backup=False)
+        assert runner.check_parity(Base.metadata).matches
+
+        with engine.connect() as connection:
+            info = {
+                row[1]: (row[3], row[4])
+                for row in connection.execute(text("PRAGMA table_info(residency)"))
+            }
+            table_sql = connection.execute(
+                text("SELECT sql FROM sqlite_master WHERE name = 'residency'")
+            ).scalar_one()
+            candidates = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(routing_candidates)"))
+            }
+
+    notnull, default = info["adapter_key"]
+    assert notnull == 1
+    assert default == "''"
+    assert info["adapter_id"][0] == 0
+    assert "adapter_key" in table_sql and "loaded_at" in table_sql
+    assert "residency_detail_json" in candidates
+
+
+def test_migration_0011_round_trips_on_sqlite() -> None:
+    """Down to 0010 and back: the adapter columns and the old key return unchanged."""
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(backup=False)
+        runner.downgrade(revision="0010")
+
+        assert runner.current() == "0010"
+        with engine.connect() as connection:
+            columns = {row[1] for row in connection.execute(text("PRAGMA table_info(residency)"))}
+        assert "adapter_key" not in columns
+        assert {"id", "model_id", "gpu_index", "loaded_at", "resident"} <= columns
 
         runner.upgrade(backup=False)
         assert runner.is_at_head()

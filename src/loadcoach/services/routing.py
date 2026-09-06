@@ -701,6 +701,8 @@ def route(
                     subject,
                     resident_models=resident_models,
                     prefer_resident_bonus=policy.prefer_resident_bonus,
+                    base_switch_penalty=policy.base_switch_penalty,
+                    ignore_residency=request.overrides.ignore_residency,
                     remote_cost_factor=policy.remote_cost_factor,
                     reliability=reliability.get(facts.model_id, neutral_factor()),
                 ),
@@ -971,6 +973,11 @@ def _persist(
                         score.as_json() for score in candidate.fit.capabilities
                     ],
                     factors_json=candidate.factors.as_json(),
+                    residency_detail_json=(
+                        None
+                        if candidate.factors.residency_detail is None
+                        else dict(candidate.factors.residency_detail)
+                    ),
                     rejected=False,
                     created_at=now,
                 )

@@ -447,6 +447,7 @@ class RoutingCandidate(Base):
     estimated_vram_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     capability_breakdown_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
     factors_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    residency_detail_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
     rejected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     rejection_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     rejection_detail_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
@@ -694,6 +695,14 @@ class Residency(Base):
     twice has two rows, which is what makes load counts and idle times readable after the fact.
     ``max_resident_models`` is interpreted per ``gpu_index``.
 
+    Residency is **two-level** (ADR-0066): what occupies a device is the base process, and the
+    adapter columns record which subject last used it. An adapter switch on a resident base is not
+    a load and writes no new row — it updates ``last_used_at`` — which is what makes the residency
+    factor free across adapters and expensive across bases. ``adapter_key`` carries the empty
+    string rather than ``NULL`` for the bare base, because SQL treats ``NULL``s in a unique index
+    as distinct and a key that admits duplicates is not a key (ADR-0080 rule 5); ``adapter_id`` is
+    the real foreign key beside it.
+
     ``vram_bytes`` and ``vram_bytes_unavailable_reason`` follow
     :func:`weightsdb.measurement_columns`: a provider that cannot report device memory leaves the
     value ``NULL`` and the reason set, so "not measured" and "not measurable here" stay
@@ -702,7 +711,7 @@ class Residency(Base):
 
     __tablename__ = "residency"
     __table_args__ = (
-        UniqueConstraint("model_id", "gpu_index", "loaded_at"),
+        UniqueConstraint("model_id", "adapter_key", "gpu_index", "loaded_at"),
         Index("ix_residency_resident_gpu_index", "resident", "gpu_index"),
     )
 
@@ -710,6 +719,10 @@ class Residency(Base):
     model_id: Mapped[str] = mapped_column(
         String(26), ForeignKey("models.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    adapter_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("adapters.id", ondelete="SET NULL"), nullable=True
+    )
+    adapter_key: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     gpu_index: Mapped[int] = mapped_column(Integer, nullable=False)
     loaded_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
     last_used_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)

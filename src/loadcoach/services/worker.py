@@ -1155,6 +1155,8 @@ class Worker:
             free_bytes=free,
             headroom_bytes=runtime.policy.vram_headroom_bytes,
             now=runtime.clock(),
+            adapter_id=_adapter_id_of(candidate),
+            adapter_key=_adapter_key_of(candidate),
         )
         if outcome.evicted:
             runtime.resources_changed.set()
@@ -1164,7 +1166,11 @@ class Worker:
         residency = self.runtime.residency
         if residency is not None and candidate.target_gpu_index is not None:
             residency.record_use(
-                candidate.subject.facts.model_id, candidate.target_gpu_index, self.runtime.clock()
+                candidate.subject.facts.model_id,
+                candidate.target_gpu_index,
+                self.runtime.clock(),
+                adapter_id=_adapter_id_of(candidate),
+                adapter_key=_adapter_key_of(candidate),
             )
 
     def _start_executing(
@@ -1888,6 +1894,18 @@ class Scheduler:
             self.runtime.sweep_retention(now)
         except Exception:  # noqa: BLE001 — a failed sweep runs again next minute
             logger.warning("retention.sweep_failed", exc_info=True)
+
+
+def _adapter_id_of(candidate: RankedCandidate) -> str | None:
+    """The adapter row a candidate's subject names, or ``None`` for a bare base."""
+    adapter = candidate.subject.adapter
+    return None if adapter is None else adapter.adapter_id
+
+
+def _adapter_key_of(candidate: RankedCandidate) -> str:
+    """The subject key a residency row carries: the adapter's name, or ``""`` for a bare base."""
+    adapter = candidate.subject.adapter
+    return "" if adapter is None else adapter.name
 
 
 def build_runtime(
