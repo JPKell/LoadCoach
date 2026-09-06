@@ -162,7 +162,9 @@ def explain(
         except NoEligibleModel as exc:
             typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
             for candidate in exc.details.get("candidates", []):
-                typer.echo(f"  {candidate['canonical_id']}: {candidate['reason']}", err=True)
+                typer.echo(
+                    f"  {candidate['subject_canonical_id']}: {candidate['reason']}", err=True
+                )
             raise typer.Exit(4) from exc
 
     payload = result.explanation.payload
@@ -211,7 +213,7 @@ def _print_human(payload: dict[str, object]) -> None:
     evidence = cast("dict[str, Any]", payload["evidence_summary"])
     typer.echo(f"evidence  {evidence['source']}")
     for candidate in cast("list[dict[str, Any]]", payload["candidates"]):
-        typer.echo(f"  #{candidate['rank']} {candidate['canonical_id']}")
+        typer.echo(f"  #{candidate['rank']} {candidate['subject_canonical_id']}")
         for capability in candidate["capabilities"]:
             score = capability["score"]
             rendered = "absent" if score is None else f"{score:.3f}"

@@ -1635,7 +1635,8 @@ class CapabilityCoverage:
 
     Attributes:
         capability_id: The capability.
-        models: How many distinct models carry evidence for it.
+        models: How many distinct **subjects** carry evidence for it — a base and an adapter
+            subject measured on it are two (ADR-0085), because they are two measurements.
         bound: How many of those records score.
         stale: How many carry a staleness badge.
         best_score: The highest score among **bound** records — the one routing could use.
@@ -1664,6 +1665,10 @@ def capability_coverage(database: Database) -> tuple[CapabilityCoverage, ...]:
         One row per capability with evidence, ordered by capability ID. A capability with no
         evidence has **no row**: an empty coverage table is an honest "nothing measured", and a
         row of zeroes would read as "measured at zero".
+
+        ``models`` counts **subjects**, not bases: a base and two adapter subjects measured on it
+        are three things that were measured, and collapsing them to one would report a coverage
+        this store does not have (ADR-0085).
     """
     with database.read() as session:
         rows = session.query(CapabilityEvidence).all()
@@ -1677,7 +1682,7 @@ def capability_coverage(database: Database) -> tuple[CapabilityCoverage, ...]:
         coverage.append(
             CapabilityCoverage(
                 capability_id=capability_id,
-                models=len({row.canonical_id for row in group}),
+                models=len({(row.canonical_id, row.adapter_artifact_digest) for row in group}),
                 bound=len(bound),
                 stale=sum(1 for row in group if row.stale),
                 best_score=None if best is None else best.score,

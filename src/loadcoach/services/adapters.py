@@ -23,6 +23,7 @@ from loadcoach.infrastructure.adapters import (
     read_directory,
 )
 from loadcoach.infrastructure.db.models import Adapter
+from loadcoach.services.evidence import rebind_evidence_in
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -266,6 +267,13 @@ def sync_adapters(database: Database, settings: Settings, *, now: datetime) -> i
     a stored decision names it by foreign key, and deleting the row would orphan an explanation
     that must stay readable (ADR-0080).
 
+    **Evidence is re-bound in the same transaction**, because this pass is discovery for the
+    subject's second axis. Imported evidence measured on ``(base, adapterA)`` waits ``unmatched``
+    until this registry can hold that adapter, and ADR-0022 §4 requires it to bind on the next
+    discovery pass **with no re-import** — so the scan that first sees the adapter is the pass that
+    has to do it. Left to the model discovery pass, the record would sit unmatched until something
+    unrelated happened to the model registry.
+
     Args:
         database: The application's database handle.
         settings: The resolved configuration. With ``[adapters] directory`` empty this is a no-op
@@ -314,6 +322,8 @@ def sync_adapters(database: Database, settings: Settings, *, now: datetime) -> i
                     "no reviewed manifest in the configured directory names this artifact any "
                     "more; the row is kept because stored decisions name it"
                 )
+        session.flush()
+        rebind_evidence_in(session)
     return len(reading.entries)
 
 

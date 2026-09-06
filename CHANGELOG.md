@@ -33,6 +33,17 @@ packaging and release standards §3.
   **subject** rather than the base, so two measurements on one base read as two things.
 
 ### Fixed
+- **An adapter scan re-binds evidence.** `sync_adapters` now re-evaluates every evidence row's
+  binding in its own transaction, because a directory scan is discovery for the subject's second
+  axis. Imported evidence for an adapter this operator had not yet reviewed used to sit `unmatched`
+  until something unrelated happened to the *model* registry; it now binds on the pass that first
+  sees the adapter, with no re-import ([ADR-0022](docs/adr/0022-capability-evidence-record-contract.md) §4).
+- `loadcoach route explain` prints each candidate's **subject**, not its base, so three candidates
+  on one base no longer render as the same line three times.
+- Evidence coverage counts **subjects** rather than models: a base and two adapter subjects
+  measured on it are three things that were measured.
+
+### Fixed
 - **The 1.1 migrations run on PostgreSQL, not only on SQLite.** Three defects, each invisible on
   SQLite and each fatal on PostgreSQL, found by CI's PostgreSQL job and reproduced locally
   against `postgres:16`:
