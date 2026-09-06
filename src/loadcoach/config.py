@@ -348,6 +348,11 @@ class ProviderSettings(BaseModel):
             fake=self.fake,
         )
 
+    @property
+    def name(self) -> str:
+        """The singular block's registration name: its kind (ADR-0077 rule 1)."""
+        return self.kind
+
 
 class ProviderRegistrationSettings(BaseModel):
     """One ``[providers.<name>]`` block: a provider LoadCoach registers, by name and kind.
@@ -378,6 +383,28 @@ class ProviderRegistrationSettings(BaseModel):
             "local, and the same kind pointed at a hosted API is remote (ADR-0055 rule 4)."
         ),
         examples=[False],
+    )
+    model_directory: str = Field(
+        default="",
+        description=(
+            "For kind='llamacpp': the directory of GGUF weights this server serves. Required "
+            "for that kind, meaningless for every other — a llama.cpp registration launches and "
+            "supervises its own server rather than talking to one that is already running."
+        ),
+        examples=["~/models/llm"],
+    )
+    state_dir: str = Field(
+        default="",
+        description=(
+            "For kind='llamacpp': where the supervisor keeps its per-server state and the "
+            "artifact-digest file (ADR-0071). Empty uses `<data_dir>/llamacpp/<name>`."
+        ),
+        examples=[""],
+    )
+    server_path: str = Field(
+        default="llama-server",
+        description="For kind='llamacpp': the server binary, found on PATH by default.",
+        examples=["llama-server"],
     )
     fake: FakeProviderSettings = Field(
         default_factory=FakeProviderSettings,

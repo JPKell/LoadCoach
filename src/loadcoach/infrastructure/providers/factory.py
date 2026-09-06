@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from baseaicore import ConfigurationError
@@ -36,15 +37,18 @@ __all__ = [
     "build_registrations",
 ]
 
-SUPPORTED_PROVIDER_KINDS: frozenset[str] = frozenset({"ollama", "fake"})
+SUPPORTED_PROVIDER_KINDS: frozenset[str] = frozenset({"ollama", "llamacpp", "fake"})
 """``provider.kind`` values this phase can construct.
 
 ``"ollama"`` is the production adapter (spec §5: "a model provider (Ollama by default)").
 ``"fake"`` constructs :class:`~modelrack.testing.FakeProvider` so the running application — not
 just its unit tests — can be exercised with no GPU, no Ollama and no network.
-``openai_compatible``, ``llamacpp`` and ``vllm`` are valid :class:`~baseaicore.ProviderKind`
-members but have no adapter wired here yet; naming one is a configuration error today, not a
-silent fallback to Ollama.
+``"llamacpp"`` constructs :class:`~modelrack.providers.llamacpp.LlamaCppProvider`, which launches
+and supervises its own server over a directory of GGUF weights — the one provider kind that can
+hot-swap adapters (ADR-0062), and therefore the only kind an adapter subject can ever be served
+by. ``openai_compatible`` and ``vllm`` are valid :class:`~baseaicore.ProviderKind` members but
+have no adapter wired here yet; naming one is a configuration error today, not a silent fallback
+to Ollama.
 """
 
 # E6: ModelRack's `DEFAULT_MODEL` declares an 8.5 GB model, so an unscripted `FakeProvider()`
@@ -197,7 +201,7 @@ def build_registrations(settings: Settings) -> tuple[ProviderRegistration, ...]:
                 name=name,
                 kind=registration.kind,
                 is_remote=registration.remote,
-                provider=_build_one(registration, field=f"providers.{name}.kind"),
+                provider=_build_one(registration, field=f"providers.{name}.kind", name=name),
             )
             for name, registration in sorted(named.items())
         )
@@ -208,7 +212,9 @@ def build_registrations(settings: Settings) -> tuple[ProviderRegistration, ...]:
                 name=singular.kind,
                 kind=singular.kind,
                 is_remote=False,
-                provider=_build_one(singular.as_registration(), field="provider.kind"),
+                provider=_build_one(
+                    singular.as_registration(), field="provider.kind", name=singular.kind
+                ),
             ),
         )
     return _offer_adapters(built, settings)
@@ -250,8 +256,10 @@ def _offer_adapters(
     return tuple(offered)
 
 
-def _build_one(settings: ProviderRegistrationSettings, *, field: str) -> Provider:
+def _build_one(settings: ProviderRegistrationSettings, *, field: str, name: str = "") -> Provider:
     """Construct one registration's provider, naming ``field`` in any refusal."""
+    if settings.kind == "llamacpp":
+        return _build_llamacpp(settings, field=field, name=name)
     if settings.kind == "ollama":
         from modelrack.providers.ollama import OllamaProvider
 
@@ -264,6 +272,49 @@ def _build_one(settings: ProviderRegistrationSettings, *, field: str) -> Provide
         f"{field}={settings.kind!r} is not supported; expected one of "
         f"{sorted(SUPPORTED_PROVIDER_KINDS)!r}.",
         details={"field": field, "value": settings.kind},
+    )
+
+
+def _build_llamacpp(settings: ProviderRegistrationSettings, *, field: str, name: str) -> Provider:
+    """Construct a supervised llama.cpp server for one registration (ADR-0062).
+
+    Args:
+        settings: That registration's block.
+        field: The configuration key to name in a refusal.
+        name: The registration's name, which the default state directory is scoped by so two
+            registrations never share a supervisor's state.
+
+    Returns:
+        The provider. Launches nothing here: a server starts when a model is first loaded.
+
+    Raises:
+        ConfigurationError: ``model_directory`` is empty. There is no default worth guessing —
+            a wrong directory is a server serving weights nobody asked for — and an empty one is
+            the case an operator hits by copying a block, so it is named rather than defaulted.
+    """
+    from modelrack.providers.llamacpp import LlamaCppProvider
+
+    directory = settings.model_directory.strip()
+    if not directory:
+        key = field.removesuffix(".kind")
+        raise ConfigurationError(
+            f"{key}.model_directory is required for kind='llamacpp': the server is launched over "
+            "a directory of GGUF weights, and there is no default worth guessing.",
+            details={"field": f"{key}.model_directory"},
+        )
+    state = settings.state_dir.strip()
+    if state:
+        state_path = Path(state).expanduser()
+    else:
+        from loadcoach.config import data_dir
+
+        state_path = data_dir() / "llamacpp" / (name or settings.kind)
+    state_path.mkdir(parents=True, exist_ok=True)
+    return LlamaCppProvider(
+        Path(directory).expanduser(),
+        state_dir=state_path,
+        server_path=settings.server_path,
+        timeout=settings.timeout_seconds,
     )
 
 
