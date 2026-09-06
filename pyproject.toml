@@ -22,16 +22,12 @@ classifiers = [
 # This repository originates weightsdb (Phase 1) and mirrorwall (Phase 4) as extractions; both packages are consumed from those phases onward.
 dependencies = [
     # 0.4.2 is ADR-0074's `RuntimeProfile.adapters_registered`, which Phase 10 sets on every
-    # llama.cpp candidate. TODO: re-pin on publish -- 0.4.2 is built and verified but not yet on
-    # PyPI, so the local venv satisfies this with an editable install of ~/ai/suite/py/BaseAiCore.
+    # llama.cpp candidate.
     "baseaicore>=0.4.2,<0.5",
     # 0.5 is the floor for `model.adapter_manifest` 1.0, which the adapter registry reads rather
     # than re-defining (ADR-0061). Widened to admit 0.6 with the rest of the 0.6 movement.
     "setspec>=0.5,<0.7",
     # 0.7 is `LlamaCppProvider`, `list_adapters()`, `register_adapters()` and `adapter_hot_swap`.
-    # TODO: re-pin on publish -- ModelRack's __about__.py still says 0.6.0 because H1 held the bump
-    # until LA1's exit can be demonstrated, so the local venv satisfies this with an editable
-    # install of ~/ai/suite/py/ModelRack and pip warns about the number, not the API.
     "modelrack>=0.7,<0.8",
     "sweatmeter>=0.4,<0.5",
     "weightsdb>=0.2,<0.3",
