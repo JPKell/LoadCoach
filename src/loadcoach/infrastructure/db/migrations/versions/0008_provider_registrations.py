@@ -46,7 +46,7 @@ def upgrade() -> None:
             sa.Column("provider_name", sa.String(), nullable=False, server_default="")
         )
         batch_op.add_column(
-            sa.Column("is_remote", sa.Boolean(), nullable=False, server_default=sa.text("0"))
+            sa.Column("is_remote", sa.Boolean(), nullable=False, server_default=sa.false())
         )
 
 

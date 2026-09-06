@@ -789,7 +789,15 @@ class ReliabilityStat(Base):
 
     __tablename__ = "reliability_stats"
     __table_args__ = (
-        UniqueConstraint("model_id", "adapter_key", "task_profile_id", "window"),
+        # Named explicitly: the convention would generate a 64-character identifier, one over
+        # PostgreSQL's 63-character limit, and the migration would fail on that dialect alone.
+        UniqueConstraint(
+            "model_id",
+            "adapter_key",
+            "task_profile_id",
+            "window",
+            name="uq_reliability_stats_subject_profile_window",
+        ),
         # `window` is reserved in PostgreSQL; the quotes make the text valid on both dialects
         # (M5C-15). Must match migration 0006's text or check_parity refuses.
         CheckConstraint("\"window\" IN ('7d', '30d', 'all')", name="window"),

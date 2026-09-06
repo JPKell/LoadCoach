@@ -48,16 +48,14 @@ def upgrade() -> None:
             "uq_reliability_stats_model_id_task_profile_id_window", type_="unique"
         )
         batch_op.create_unique_constraint(
-            "uq_reliability_stats_model_id_adapter_key_task_profile_id_window",
+            "uq_reliability_stats_subject_profile_window",
             ["model_id", "adapter_key", "task_profile_id", "window"],
         )
 
 
 def downgrade() -> None:
     with op.batch_alter_table("reliability_stats", schema=None) as batch_op:
-        batch_op.drop_constraint(
-            "uq_reliability_stats_model_id_adapter_key_task_profile_id_window", type_="unique"
-        )
+        batch_op.drop_constraint("uq_reliability_stats_subject_profile_window", type_="unique")
         batch_op.create_unique_constraint(
             "uq_reliability_stats_model_id_task_profile_id_window",
             ["model_id", "task_profile_id", "window"],

@@ -39,6 +39,7 @@ Batch mode for the SQLite reason revisions 0003, 0007 and 0008 record.
 from __future__ import annotations
 
 import sqlalchemy as sa
+import weightsdb
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -60,13 +61,13 @@ def upgrade() -> None:
         sa.Column("base_model_name", sa.String(), nullable=False),
         sa.Column("base_artifact_digest", sa.String(), nullable=True),
         sa.Column("base_identity_confidence", sa.String(), nullable=False),
-        sa.Column("declared_capabilities_json", sa.JSON(), nullable=True),
+        sa.Column("declared_capabilities_json", weightsdb.PortableJSON(), nullable=True),
         sa.Column("data_classification", sa.String(), nullable=False),
         sa.Column("adapter_format", sa.String(), nullable=False),
-        sa.Column("manifest_json", sa.JSON(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("first_seen_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("last_seen_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("manifest_json", weightsdb.PortableJSON(), nullable=True),
+        sa.Column("created_at", weightsdb.UtcDateTime(), nullable=False),
+        sa.Column("first_seen_at", weightsdb.UtcDateTime(), nullable=False),
+        sa.Column("last_seen_at", weightsdb.UtcDateTime(), nullable=False),
         sa.Column("available", sa.Boolean(), nullable=False),
         sa.Column("unavailable_reason", sa.String(), nullable=True),
         sa.CheckConstraint(

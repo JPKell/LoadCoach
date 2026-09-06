@@ -7,6 +7,20 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Fixed
+- **The 1.1 migrations run on PostgreSQL, not only on SQLite.** Three defects, each invisible on
+  SQLite and each fatal on PostgreSQL, found by CI's PostgreSQL job and reproduced locally
+  against `postgres:16`:
+  - `0008` added `models.is_remote` with `server_default=sa.text("0")` — an integer literal for a
+    boolean column, which PostgreSQL refuses (`DatatypeMismatch`). It is now `sa.false()`, which
+    each dialect renders in its own terms.
+  - `0012`'s unique constraint took its name from the naming convention and came out 64
+    characters, one over PostgreSQL's 63-character identifier limit. It is now named explicitly,
+    `uq_reliability_stats_subject_profile_window`, in the migration and in the model together.
+  - `0009` and `0011` declared `sa.JSON()` and `sa.DateTime(timezone=True)` where the models use
+    `weightsdb.PortableJSON` and `weightsdb.UtcDateTime`. The two agree on SQLite and disagree on
+    PostgreSQL (`JSON` vs `JSONB`), so `check_parity` failed there and only there.
+
 ## [1.1.0] — 2026-09-05
 
 LoadCoach 1.1: **LA2** — more than one provider, an operator's adapter directory, adapter subjects

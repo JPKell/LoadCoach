@@ -23,6 +23,7 @@ nothing cascades. Foreign keys are off for the run in any case (`env.py`).
 from __future__ import annotations
 
 import sqlalchemy as sa
+import weightsdb
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -47,7 +48,8 @@ def upgrade() -> None:
             ["model_id", "adapter_key", "gpu_index", "loaded_at"],
         )
     op.add_column(
-        "routing_candidates", sa.Column("residency_detail_json", sa.JSON(), nullable=True)
+        "routing_candidates",
+        sa.Column("residency_detail_json", weightsdb.PortableJSON(), nullable=True),
     )
 
 
