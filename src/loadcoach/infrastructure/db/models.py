@@ -223,6 +223,9 @@ class CapabilityEvidence(Base):
       (ADR-0086): this table is written through ``weightsdb.upsert``, and an ``ON CONFLICT`` target
       containing a ``NULL`` never fires, so a nullable column would make a re-import insert a
       second row instead of updating the first. Same sentinel, same reason, as ADR-0080 rule 5.
+      ``adapter_id`` beside it is the real foreign key — what binding writes and what queries join
+      on — and is ``NULL`` both for a bare base and for a record naming an adapter this operator
+      does not hold, which is `unmatched` and retained rather than rejected (ADR-0022 §4 rule 4).
 
     ``measured_at`` drives freshness and ``computed_at`` never does; both are stored because
     ``computed_at`` is what the producer's ``?since=`` filter compares against (ADR-0022 §5).
@@ -264,6 +267,9 @@ class CapabilityEvidence(Base):
     id: Mapped[str] = ulid_primary_key()
     model_id: Mapped[str | None] = mapped_column(
         String(26), ForeignKey("models.id", ondelete="SET NULL"), nullable=True
+    )
+    adapter_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("adapters.id", ondelete="SET NULL"), nullable=True
     )
     adapter_artifact_digest: Mapped[str] = mapped_column(
         String, nullable=False, default="", server_default=""

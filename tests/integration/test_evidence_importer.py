@@ -16,7 +16,12 @@ import pytest
 from modelrack.testing import FakeProvider
 from weightsdb.testing import temporary_postgres
 
-from loadcoach.infrastructure.db.models import CapabilityEvidence, EvidenceSource, Model
+from loadcoach.infrastructure.db.models import (
+    Adapter,
+    CapabilityEvidence,
+    EvidenceSource,
+    Model,
+)
 from loadcoach.services.database import Database, ensure_ready
 from loadcoach.services.evidence import (
     MAX_PARSE_BYTES,
@@ -765,3 +770,128 @@ def test_a_bare_base_record_imported_twice_is_exactly_one_row_on_postgresql(
         rows = _rows(database)
         assert len(rows) == 1
         assert rows[0].adapter_artifact_digest == ""
+
+
+# --------------------------------------------------------------------------------------------
+# Adapter-bearing evidence binds to its subject (ADR-0058 §4, ADR-0081)
+# --------------------------------------------------------------------------------------------
+
+
+def _add_adapter(
+    database: Database,
+    *,
+    name: str = "factcheck",
+    digest: str,
+    base_name: str = "qwen3.5:32b-instruct-q8_0",
+) -> str:
+    """Register one adapter the way a directory scan would, minus the directory."""
+    with database.write() as session:
+        adapter = Adapter(
+            name=name,
+            artifact_sha256=digest,
+            artifact_path=f"/adapters/{name}.gguf",
+            manifest_path=f"/adapters/{name}.manifest.json",
+            base_model_name=base_name,
+            base_artifact_digest=DIGEST,
+            base_identity_confidence="digest",
+            declared_capabilities_json=[],
+            data_classification="confidential",
+            first_seen_at=NOW,
+            last_seen_at=NOW,
+            available=True,
+        )
+        session.add(adapter)
+        session.flush()
+        return adapter.id
+
+
+def test_an_adapter_bearing_record_binds_to_its_subject_and_not_to_the_base(
+    tmp_path: Path, golden_bundle_11: dict[str, Any], wrap_bundle: Callable[..., str]
+) -> None:
+    """ADR-0058 §4: the base's row keeps the base's evidence, and only the base's.
+
+    Both records name the same weights. A binding that resolved the model alone would attach the
+    adapter's measurement to the bare base, which is the failure that looks exactly like the
+    feature working.
+    """
+    database = _database(tmp_path)
+    try:
+        first = next(item for item in golden_bundle_11["evidence"] if item.get("adapter"))
+        model_id = _add_model(database)
+        adapter_id = _add_adapter(database, digest=first["adapter"]["artifact_digest"])
+        bundle = _subject_bundle(golden_bundle_11, [None, first["adapter"]])
+
+        outcome = import_bundle(database, wrap_bundle(bundle, minor=1), now=NOW)
+
+        assert outcome.rejected == ()
+        assert outcome.bound == 2
+        rows = {row.adapter_artifact_digest: row for row in _rows(database)}
+        assert rows[""].model_id == model_id
+        assert rows[""].adapter_id is None
+        subject = rows[first["adapter"]["artifact_digest"]]
+        assert subject.model_id == model_id
+        assert subject.adapter_id == adapter_id
+    finally:
+        database.close()
+
+
+def test_a_record_for_an_absent_adapter_is_unmatched_and_binds_after_a_rescan(
+    tmp_path: Path, golden_bundle_11: dict[str, Any], wrap_bundle: Callable[..., str]
+) -> None:
+    """ADR-0022 §4 rule 4 on the second axis — retained, then bound, with no re-import.
+
+    A measurement is not discarded because this operator has not got the adapter yet. Rejecting it
+    is the failure row H5 exists to close, one axis over.
+    """
+    database = _database(tmp_path)
+    try:
+        first = next(item for item in golden_bundle_11["evidence"] if item.get("adapter"))
+        _add_model(database)
+        bundle = _subject_bundle(golden_bundle_11, [first["adapter"]])
+
+        outcome = import_bundle(database, wrap_bundle(bundle, minor=1), now=NOW)
+        assert outcome.rejected == ()
+        assert outcome.unmatched == 1
+        stored = _rows(database)[0].record_json
+        assert isinstance(stored, dict)
+        assert stored["adapter"]["name"] == first["adapter"]["name"]
+
+        adapter_id = _add_adapter(database, digest=first["adapter"]["artifact_digest"])
+        rebound = rebind_evidence(database)
+
+        assert rebound.bound == 1
+        row = _rows(database)[0]
+        assert row.match_state == "bound"
+        assert row.adapter_id == adapter_id
+    finally:
+        database.close()
+
+
+def test_no_signal_crosses_between_subjects_on_one_base(
+    tmp_path: Path, golden_bundle_11: dict[str, Any], wrap_bundle: Callable[..., str]
+) -> None:
+    """ADR-0081: an unmeasured adapter stays unmeasured after a sibling's evidence lands.
+
+    ``terse`` is measured; ``pirate`` is measured nowhere and is registered anyway, exactly as the
+    LA3 artefacts are. Nothing about importing one may give the other a row.
+    """
+    database = _database(tmp_path)
+    try:
+        first = next(item for item in golden_bundle_11["evidence"] if item.get("adapter"))
+        measured = _other_adapter(first["adapter"])
+        _add_model(database)
+        _add_adapter(database, name="terse", digest=measured["artifact_digest"])
+        pirate_id = _add_adapter(database, name="pirate", digest="sha256:" + "5e" * 32)
+
+        import_bundle(
+            database,
+            wrap_bundle(_subject_bundle(golden_bundle_11, [None, measured]), minor=1),
+            now=NOW,
+        )
+
+        rows = _rows(database)
+        assert len(rows) == 2
+        assert all(row.adapter_id != pirate_id for row in rows)
+        assert {row.adapter_artifact_digest for row in rows} == {"", measured["artifact_digest"]}
+    finally:
+        database.close()

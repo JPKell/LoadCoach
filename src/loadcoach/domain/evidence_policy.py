@@ -48,6 +48,7 @@ __all__ = [
     "EvidenceCandidate",
     "EvidenceIdentity",
     "EvidenceOverview",
+    "LocalAdapter",
     "LocalModel",
     "MatchState",
     "Staleness",
@@ -147,8 +148,13 @@ class EvidenceIdentity:
 
     @property
     def is_adapter_bearing(self) -> bool:
-        """Whether this measurement was taken under an adapter rather than on a bare base."""
-        return self.adapter_name is not None
+        """Whether this measurement was taken under an adapter rather than on a bare base.
+
+        Asked of the **digest**, which is the adapter's identity (ADR-0085 rule 3) and the one
+        field a stored row always carries; the name is a label, and a row rebuilt for re-binding
+        may not have one to hand.
+        """
+        return self.adapter_artifact_digest is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,12 +181,33 @@ class LocalModel:
 
 
 @dataclass(frozen=True, slots=True)
+class LocalAdapter:
+    """One row of the local adapter registry, as much of it as binding needs.
+
+    The mirror of :class:`LocalModel` for the subject's second axis. Only the digest matches —
+    the name is carried so a refusal can say which adapter it could not find, never so a match
+    can be made on it (ADR-0085 rule 3).
+
+    Attributes:
+        adapter_id: The registry row's ULID.
+        artifact_digest: The adapter's normalized ``sha256:`` digest. **The identity.**
+        name: The manifest's label, for the note only.
+    """
+
+    adapter_id: str
+    artifact_digest: str
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
 class Binding:
     """What one evidence identity resolves to against one registry.
 
     Attributes:
         match_state: ``"bound"``, ``"unmatched"`` or ``"ambiguous_name_only"``.
         model_id: The registry row bound to, or ``None`` when not bound.
+        adapter_id: The adapter registry row this subject's second axis resolved to, or ``None``
+            for a bare-base record and for one whose adapter this registry does not hold.
         upgrade_model_id: A registry row that must be given ``upgrade_digest`` before the binding
             is true — ADR-0022 §4's second rule, the in-place identity upgrade. ``None`` when no
             upgrade is needed.
@@ -193,6 +220,7 @@ class Binding:
     upgrade_model_id: str | None
     upgrade_digest: str | None
     note: str
+    adapter_id: str | None = None
 
     @property
     def is_bound(self) -> bool:
@@ -200,15 +228,23 @@ class Binding:
         return self.match_state == "bound"
 
 
-def bind_identity(identity: EvidenceIdentity, registry: Sequence[LocalModel]) -> Binding:
-    """Resolve one evidence identity against the local registry (ADR-0022 §4).
+def bind_identity(
+    identity: EvidenceIdentity,
+    registry: Sequence[LocalModel],
+    adapters: Sequence[LocalAdapter] = (),
+) -> Binding:
+    """Resolve one evidence identity against the local registry (ADR-0022 §4, ADR-0085).
 
-    Rule 0, ahead of the ADR's four: **an adapter-bearing record binds to nothing.** Evidence
-    measured on ``(base, adapterA)`` applies to that subject and to nothing else — not to the bare
-    base, not to a sibling adapter (ADR-0058 §4) — so attaching it to the base row by its model
-    identity would raise the score of weights that were never measured. It is retained
-    ``unmatched`` with a note naming the adapter, which is the same shape as every other identity
-    this registry cannot yet resolve, and it is bound when the registry can hold adapter subjects.
+    **A record binds to its subject, not to its base.** Evidence measured on ``(base, adapterA)``
+    applies to that subject and to nothing else — not to the bare base, not to a sibling adapter
+    (ADR-0058 §4, ADR-0059, ADR-0081) — so an adapter-bearing record resolves *both* axes and is
+    ``bound`` only when both resolve. The base resolves by the ADR's four rules below; the adapter
+    resolves by **artifact digest**, never by name, because a name is a label an operator may
+    revise (ADR-0085 rule 3).
+
+    An adapter this registry does not hold leaves the record ``unmatched`` with a note naming it,
+    and it binds on the next discovery pass with no re-import — the same shape as rule 4 below.
+    A measurement is never discarded because of a local absence.
 
     Then the four rules, in the order the ADR's table gives them:
 
@@ -224,26 +260,60 @@ def bind_identity(identity: EvidenceIdentity, registry: Sequence[LocalModel]) ->
        discovery produces a match — with no re-import.
 
     Args:
-        identity: The identity the evidence record carries.
+        identity: The identity the evidence record carries, base axis and adapter axis together.
         registry: Every local model row. Order does not affect the result.
+        adapters: Every local adapter row. Empty is the ordinary state of an installation with no
+            adapter directory, and makes every adapter-bearing record ``unmatched``.
 
     Returns:
         The :class:`Binding`. Never raises and never reports failure: an identity that matches
         nothing is a legitimate, retained state, not an error (ADR-0022, rejected alternatives).
     """
-    if identity.is_adapter_bearing:
+    base = _bind_base(identity, registry)
+    if not identity.is_adapter_bearing:
+        return base
+
+    label = identity.adapter_name or identity.adapter_artifact_digest
+    resolved = next(
+        (row for row in adapters if row.artifact_digest == identity.adapter_artifact_digest),
+        None,
+    )
+    if resolved is None:
         return Binding(
             match_state="unmatched",
             model_id=None,
             upgrade_model_id=None,
             upgrade_digest=None,
+            adapter_id=None,
             note=(
-                f"measured under adapter {identity.adapter_name!r}; evidence for an adapter "
-                "subject applies to that subject alone (ADR-0058 §4), and this build binds "
-                "adapter subjects no further than retaining them"
+                f"measured under adapter {label!r}, which this adapter registry does not hold; "
+                "retained and bound automatically when a directory scan next finds it"
             ),
         )
+    if not base.is_bound:
+        return Binding(
+            match_state=base.match_state,
+            model_id=None,
+            upgrade_model_id=None,
+            upgrade_digest=None,
+            adapter_id=None,
+            note=(f"the adapter {label!r} resolved, but the base did not: {base.note}"),
+        )
+    return Binding(
+        match_state="bound",
+        model_id=base.model_id,
+        upgrade_model_id=base.upgrade_model_id,
+        upgrade_digest=base.upgrade_digest,
+        adapter_id=resolved.adapter_id,
+        note=(
+            f"{base.note}; measured under adapter {label!r}, which this registry holds at the "
+            "same artifact digest, so the evidence binds to that subject and to no other"
+        ),
+    )
 
+
+def _bind_base(identity: EvidenceIdentity, registry: Sequence[LocalModel]) -> Binding:
+    """Resolve the base half of a subject — ADR-0022 §4's four rules, and nothing else."""
     same_name = [
         row
         for row in registry

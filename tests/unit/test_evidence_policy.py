@@ -19,6 +19,7 @@ from loadcoach.domain.evidence_policy import (
     CalibrationFacts,
     EvidenceCandidate,
     EvidenceIdentity,
+    LocalAdapter,
     LocalModel,
     bind_identity,
     capability_half_life_days,
@@ -128,29 +129,96 @@ def test_the_exact_match_wins_over_the_name_only_upgrade_when_both_rows_exist() 
     assert binding.upgrade_model_id is None
 
 
-def test_adapter_bearing_evidence_never_binds_to_the_base_row() -> None:
-    """Rule 0: evidence measured under an adapter is not evidence about the bare base.
-
-    ADR-0058 §4 — a differing adapter axis is a different subject, so binding an adapter-bearing
-    record to the base's registry row by its model identity would raise the score of weights that
-    were never measured. It is retained, named, and never scores.
-    """
-    identity = EvidenceIdentity(
+def _adapter_identity(*, digest: str = OTHER_DIGEST, name: str = "factcheck") -> EvidenceIdentity:
+    return EvidenceIdentity(
         provider_kind="ollama",
         provider_model_name="qwen3.5:32b",
         artifact_digest=DIGEST,
         canonical_id=f"ollama/qwen3.5:32b@{DIGEST}",
-        adapter_name="factcheck",
-        adapter_artifact_digest=OTHER_DIGEST,
+        adapter_name=name,
+        adapter_artifact_digest=digest,
     )
+
+
+def _local_adapter(*, digest: str = OTHER_DIGEST, name: str = "factcheck") -> LocalAdapter:
+    return LocalAdapter(adapter_id="A1", artifact_digest=digest, name=name)
+
+
+def test_adapter_bearing_evidence_never_binds_to_the_base_row() -> None:
+    """ADR-0058 §4: evidence measured under an adapter is not evidence about the bare base.
+
+    A differing adapter axis is a different subject, so binding an adapter-bearing record to the
+    base's registry row alone would raise the score of weights that were never measured. It binds
+    to the subject — base **and** adapter — or it does not bind.
+    """
+    identity = _adapter_identity()
     assert identity.is_adapter_bearing
 
-    binding = bind_identity(identity, [_local()])
+    binding = bind_identity(identity, [_local()], [_local_adapter()])
+
+    assert binding.match_state == "bound"
+    assert binding.model_id == "M1"
+    assert binding.adapter_id == "A1"
+    assert "factcheck" in binding.note
+
+
+def test_an_adapter_this_registry_does_not_hold_is_unmatched_not_rejected() -> None:
+    """ADR-0022 §4 rule 4, applied to the second axis.
+
+    A measurement is never discarded because of a local absence: the row is retained, named, and
+    binds on the next directory scan with no re-import.
+    """
+    binding = bind_identity(_adapter_identity(), [_local()], [])
 
     assert binding.match_state == "unmatched"
     assert binding.model_id is None
+    assert binding.adapter_id is None
     assert not binding.is_bound
     assert "factcheck" in binding.note
+
+
+def test_an_adapter_binds_on_its_digest_never_on_its_name() -> None:
+    """ADR-0085 rule 3: a rename must not merge two adapters' histories, or split one.
+
+    The registry holds the same artifact under a different label. The digest matches, so the
+    evidence binds; a name-keyed lookup would have refused a subject this operator does hold.
+    """
+    bound = bind_identity(
+        _adapter_identity(name="factcheck"),
+        [_local()],
+        [_local_adapter(name="fact-check-v2")],
+    )
+    assert bound.match_state == "bound"
+    assert bound.adapter_id == "A1"
+
+    renamed_artifact = bind_identity(
+        _adapter_identity(digest=DIGEST),
+        [_local()],
+        [_local_adapter(digest=OTHER_DIGEST)],
+    )
+    assert renamed_artifact.match_state == "unmatched", (
+        "a different artifact is a different subject"
+    )
+
+
+def test_a_resolved_adapter_does_not_rescue_an_unresolvable_base() -> None:
+    """Both axes resolve or the subject does not: a subject is a pair, not a preference."""
+    unknown_base = bind_identity(_adapter_identity(), [], [_local_adapter()])
+    assert unknown_base.match_state == "unmatched"
+    assert unknown_base.model_id is None
+    assert unknown_base.adapter_id is None
+
+    name_only = EvidenceIdentity(
+        provider_kind="ollama",
+        provider_model_name="qwen3.5:32b",
+        artifact_digest=None,
+        canonical_id="ollama/qwen3.5:32b@unknown",
+        adapter_name="factcheck",
+        adapter_artifact_digest=OTHER_DIGEST,
+    )
+    ambiguous = bind_identity(name_only, [_local(digest=DIGEST)], [_local_adapter()])
+    assert ambiguous.match_state == "ambiguous_name_only"
+    assert ambiguous.adapter_id is None
 
 
 def test_a_bare_base_identity_is_not_adapter_bearing() -> None:

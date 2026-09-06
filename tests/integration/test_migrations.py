@@ -322,6 +322,7 @@ def test_migration_0005_adds_the_two_evidence_tables_and_nothing_else() -> None:
             assert columns == {
                 "id",
                 "model_id",
+                "adapter_id",
                 "adapter_artifact_digest",
                 "provider_kind",
                 "provider_model_name",

@@ -47,13 +47,19 @@ from loadcoach.domain.evidence_policy import (
     EvidenceCandidate,
     EvidenceIdentity,
     EvidenceOverview,
+    LocalAdapter,
     LocalModel,
     bind_identity,
     environment_drift,
     evaluate_staleness,
 )
 from loadcoach.domain.routing.subject import CapabilitySignal
-from loadcoach.infrastructure.db.models import CapabilityEvidence, EvidenceSource, Model
+from loadcoach.infrastructure.db.models import (
+    Adapter,
+    CapabilityEvidence,
+    EvidenceSource,
+    Model,
+)
 from loadcoach.infrastructure.freeweight_client import (
     MAX_IMPORT_BYTES,
     EvidenceSourceRefused,
@@ -265,6 +271,37 @@ def _identity_of(record: CapabilityEvidenceFields) -> EvidenceIdentity:
         adapter_name=None if adapter is None else adapter.name,
         adapter_artifact_digest=None if adapter is None else adapter.artifact_digest,
     )
+
+
+def _adapter_name_of(row: CapabilityEvidence) -> str | None:
+    """The adapter label a stored row was measured under, from the document it arrived as.
+
+    Read from ``record_json`` rather than stored in a column of its own: nothing matches on the
+    name (ADR-0085 rule 3), it exists only so a refusal can say which adapter it could not find,
+    and a column would be a second, drifting copy of a field the payload already carries.
+    """
+    document = row.record_json
+    if not isinstance(document, dict):
+        return None
+    adapter = document.get("adapter")
+    if not isinstance(adapter, dict):
+        return None
+    name = adapter.get("name")
+    return name if isinstance(name, str) else None
+
+
+def _adapters_of(session: Session) -> list[LocalAdapter]:
+    """Read every adapter row binding needs, once per transaction.
+
+    Every row, not only the available ones: an artifact temporarily missing from the directory
+    makes an adapter unroutable, and unbinding its evidence on that account would make a
+    measurement flap between states as an operator moved a file. Availability is routing's
+    question; identity is this one's.
+    """
+    return [
+        LocalAdapter(adapter_id=row.id, artifact_digest=row.artifact_sha256, name=row.name)
+        for row in session.query(Adapter).all()
+    ]
 
 
 def _registry_of(session: Session) -> list[LocalModel]:
@@ -612,6 +649,7 @@ def _write(  # noqa: PLR0913 — one transaction with every import input threade
         )
         source_row_id = source.id
         registry = _registry_of(session)
+        adapters = _adapters_of(session)
         existing_keys = {
             (
                 source_row_id,
@@ -645,7 +683,7 @@ def _write(  # noqa: PLR0913 — one transaction with every import input threade
                 continue
             seen_keys.add(key)
 
-            binding = bind_identity(_identity_of(record), registry)
+            binding = bind_identity(_identity_of(record), registry, adapters)
             if binding.upgrade_model_id is not None and binding.upgrade_digest is not None:
                 row = session.get(Model, binding.upgrade_model_id)
                 if row is not None and row.artifact_digest is None:
@@ -659,6 +697,7 @@ def _write(  # noqa: PLR0913 — one transaction with every import input threade
                 record,
                 binding_state=binding.match_state,
                 model_id=binding.model_id,
+                adapter_id=binding.adapter_id,
                 source_row_id=source_row_id,
                 now=now,
                 current_environment=current_environment,
@@ -749,6 +788,7 @@ def _row_values(  # noqa: PLR0913 — one row, every column named
     *,
     binding_state: str,
     model_id: str | None,
+    adapter_id: str | None,
     source_row_id: str,
     now: datetime,
     current_environment: Mapping[str, Any] | None,
@@ -766,6 +806,7 @@ def _row_values(  # noqa: PLR0913 — one row, every column named
     dispersion = record.dispersion
     return {
         "model_id": model_id,
+        "adapter_id": adapter_id,
         "adapter_artifact_digest": _adapter_key(record),
         "provider_kind": record.model.provider_kind,
         "provider_model_name": record.model.provider_model_name,
@@ -818,6 +859,7 @@ def rebind_evidence_in(session: Session) -> RebindOutcome:
         What changed.
     """
     registry = _registry_of(session)
+    adapters = _adapters_of(session)
     rows = session.query(CapabilityEvidence).all()
     bound = unbound = upgraded = 0
     for row in rows:
@@ -826,8 +868,10 @@ def rebind_evidence_in(session: Session) -> RebindOutcome:
             provider_model_name=row.provider_model_name,
             artifact_digest=row.artifact_digest,
             canonical_id=row.canonical_id,
+            adapter_name=_adapter_name_of(row),
+            adapter_artifact_digest=row.adapter_artifact_digest or None,
         )
-        binding = bind_identity(identity, registry)
+        binding = bind_identity(identity, registry, adapters)
         if binding.upgrade_model_id is not None and binding.upgrade_digest is not None:
             model = session.get(Model, binding.upgrade_model_id)
             if model is not None and model.artifact_digest is None:
@@ -837,9 +881,14 @@ def rebind_evidence_in(session: Session) -> RebindOutcome:
                 upgraded += 1
                 registry = _registry_of(session)
         was_bound = row.match_state == "bound"
-        if row.match_state != binding.match_state or row.model_id != binding.model_id:
+        if (
+            row.match_state != binding.match_state
+            or row.model_id != binding.model_id
+            or row.adapter_id != binding.adapter_id
+        ):
             row.match_state = binding.match_state
             row.model_id = binding.model_id
+            row.adapter_id = binding.adapter_id
             if binding.match_state == "bound":
                 bound += 1
             elif was_bound:

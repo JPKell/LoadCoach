@@ -17,6 +17,13 @@ packaging and release standards §3.
   `INSERT … ON CONFLICT` upsert, and a conflict target containing a `NULL` never fires, so a
   nullable column would insert a second row on every re-import instead of updating the first.
   Existing rows are bare-base subjects and are unchanged.
+- **Adapter-bearing evidence binds to its subject** ([ADR-0058](docs/adr/0058-the-execution-subject-gains-an-adapter-axis.md) §4;
+  migration `0014`). `capability_evidence` gains a nullable `adapter_id`, and binding resolves both
+  axes of a subject: the base by ADR-0022 §4's four rules, the adapter by artifact digest — never by
+  name. A record naming an adapter this operator does not hold is retained `unmatched` with a note
+  naming it and binds on the next directory scan with no re-import, exactly as evidence for an
+  undiscovered model does. It replaces the rule that retained *every* adapter-bearing record
+  `unmatched`, and it never attaches an adapter's measurement to the bare base.
 
 ### Fixed
 - **The 1.1 migrations run on PostgreSQL, not only on SQLite.** Three defects, each invisible on
