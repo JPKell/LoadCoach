@@ -208,7 +208,11 @@ The three adapter constraints, in the words a caller needs:
   ([ADR-0058](../../adr/0058-the-execution-subject-gains-an-adapter-axis.md) §5).
 * **`adapter_unmeasured`** — `[routing] require_adapter_evidence` is on (the default,
   [ADR-0064](../../adr/0064-adapters-are-selected-through-the-capability-vocabulary.md) rule 3) and
-  this adapter subject has no measured evidence for the profile's top-weighted capability. **Until
+  this adapter subject has no measured evidence for the profile's top-weighted capability. **An
+  adapter subject inherits nothing from its base** ([ADR-0081](../../adr/0081-an-adapter-subject-inherits-no-evidence-from-its-base.md)):
+  its only signals are the vocabulary terms its own manifest declares, so with the gate off it
+  scores on declarations and priors and usually ranks below a base carrying real evidence — a pin
+  is how an adapter is used until FreeWeight measures one. **Until
   FreeWeight measures adapters (LA3), every adapter subject is unmeasured**, so the shipped default
   makes adapters invisible to *routed* selection while leaving pins working. That is the intended
   behaviour of "no benchmark, no use", not a defect: turning the gate off is an operator's

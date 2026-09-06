@@ -44,7 +44,8 @@ base, whose subject string *is* its model's canonical ID — and leaves `NULL` w
 be a reconstruction rather than a record.
 
 **Adding a foreign key to a table that has children is a rebuild on SQLite**, and dropping a
-parent with `foreign_keys=ON` cascades: `0009` would have deleted every stored routing candidate,
+parent with `foreign_keys=ON` cascades
+([ADR-0082](../../adr/0082-a-migration-run-suspends-sqlite-foreign-key-enforcement.md)): `0009` would have deleted every stored routing candidate,
 which is the explainability promise itself. The migration runner therefore enforces foreign keys
 **off for the duration of a migration run** on SQLite and restores them after — through the raw
 driver cursor, because the pragma is a documented no-op inside a transaction and the connection is

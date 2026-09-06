@@ -21,8 +21,24 @@ is reported with the backup to restore.
 
 | Version | Migration | What it adds |
 |---|---|---|
+| 1.1.0 | `0008`–`0012` | `provider_name` and `is_remote` on `models`; the `adapters` table; the execution subject on every routing, job, attempt, residency and reliability row. Additive throughout — the `residency` and `reliability_stats` uniqueness keys gain `adapter_key`, whose `''` default is a fact about existing rows (they are bare-base subjects) and not a placeholder. No statistic and no explanation changes value. |
 | 1.0.0 | `0006` | `feedback` and `reliability_stats` (P7). Purely additive; no existing column changes. |
 | 0.9.0b0 | `0001`–`0005` | The beta's schema. |
+
+### Behaviour changes at 1.1.0
+
+* **Nothing changes for a deployment with no `[adapters] directory`.** The feature is off by
+  default; with no adapters configured, routing produces the pool, the scores and the explanations
+  1.0 produced.
+* **`[providers.<name>]` blocks are new and the singular `[provider]` block still works** — it is
+  exactly one registration named after its kind. Writing **both** forms is refused at startup,
+  naming each, rather than resolved by a precedence rule.
+* **`output.tool_calls` is superseded** by `output.tool_calls_assembled` and will be removed at
+  `2.0`. The old field still carries one entry per streamed fragment; the new one carries whole
+  calls. A caller grouping fragments itself should stop.
+* **The migration run turns SQLite foreign keys off for its own connection and back on after.**
+  Adding a constraint on SQLite rebuilds the table, and a parent rebuild with enforcement on
+  deletes its children — which for `routing_decisions` would be every stored explanation.
 
 ### Behaviour changes at 1.0.0
 
