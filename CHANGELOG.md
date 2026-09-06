@@ -5,7 +5,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 [Semantic Versioning](https://semver.org/), pre-1.0 per
 packaging and release standards §3.
 
-## [Unreleased]
+## [1.1.0] — 2026-09-06
+
+LoadCoach 1.1: **LA2 and LA3's consumer half** — more than one provider, an operator's adapter
+directory, adapter subjects that route and pin like any other candidate, a residency model in which
+switching adapters on a warm base is free, and **imported evidence that binds to the subject it was
+measured on**. Phases 10 and 11 of the
+[development plan](docs/apps/loadcoach/development-plan.md).
+
+**LA3's exit was demonstrated across two applications.** A `benchmark.evidence_bundle` `1.1`
+exported by FreeWeight on the same machine was carried as a file — nothing else crossed, no shared
+code and no shared database — imported through `loadcoach evidence import`, and its three records
+bound to three subjects with zero rejections. A measured adapter subject was then selected because
+of that evidence, with `benchmark` as the signal's source in the explanation, while the sibling
+measured nowhere was rejected `adapter_unmeasured` in the same decision (I18).
+
+**LA2's exit was demonstrated too, and separately.** Three requests pinning three LoRA adapters on one base
+were answered by **one** `llama-server` process — asserted from the supervisor's pid, from
+`list_resident`, and from three visibly different answers to one prompt — and every attempt
+recorded the subject that answered. The same weights registered a second time under a registration
+**declared** remote left three `adapter_classification_conflict` rows in `routing_candidates`, each
+carrying the classification arithmetic, while the bare base stayed servable: I16 and I19, proved
+where the behaviour lives.
+
+**Two unreleased fixes ship in this release rather than riding silently:** `2c7d740` — a
+synchronous generation records the model it made resident, so the *next* request can apply the
+residency exception instead of being refused `insufficient_vram` by memory the previous one is
+still holding — and G2's tool wire, which is what makes model-directed sandboxed tool use reachable
+on a real provider at all.
 
 ### Added
 - **The evidence uniqueness key carries the adapter** ([ADR-0085](docs/adr/0085-the-evidence-uniqueness-key-carries-the-adapter.md),
@@ -31,54 +58,6 @@ packaging and release standards §3.
   is unchanged; an unmeasured sibling on the same base is still rejected `adapter_unmeasured` in the
   same decision. `loadcoach evidence show`, `GET /evidence` and the evidence page name the
   **subject** rather than the base, so two measurements on one base read as two things.
-
-### Fixed
-- **An adapter scan re-binds evidence.** `sync_adapters` now re-evaluates every evidence row's
-  binding in its own transaction, because a directory scan is discovery for the subject's second
-  axis. Imported evidence for an adapter this operator had not yet reviewed used to sit `unmatched`
-  until something unrelated happened to the *model* registry; it now binds on the pass that first
-  sees the adapter, with no re-import ([ADR-0022](docs/adr/0022-capability-evidence-record-contract.md) §4).
-- `loadcoach route explain` prints each candidate's **subject**, not its base, so three candidates
-  on one base no longer render as the same line three times.
-- Evidence coverage counts **subjects** rather than models: a base and two adapter subjects
-  measured on it are three things that were measured.
-
-### Fixed
-- **The 1.1 migrations run on PostgreSQL, not only on SQLite.** Three defects, each invisible on
-  SQLite and each fatal on PostgreSQL, found by CI's PostgreSQL job and reproduced locally
-  against `postgres:16`:
-  - `0008` added `models.is_remote` with `server_default=sa.text("0")` — an integer literal for a
-    boolean column, which PostgreSQL refuses (`DatatypeMismatch`). It is now `sa.false()`, which
-    each dialect renders in its own terms.
-  - `0012`'s unique constraint took its name from the naming convention and came out 64
-    characters, one over PostgreSQL's 63-character identifier limit. It is now named explicitly,
-    `uq_reliability_stats_subject_profile_window`, in the migration and in the model together.
-  - `0009` and `0011` declared `sa.JSON()` and `sa.DateTime(timezone=True)` where the models use
-    `weightsdb.PortableJSON` and `weightsdb.UtcDateTime`. The two agree on SQLite and disagree on
-    PostgreSQL (`JSON` vs `JSONB`), so `check_parity` failed there and only there.
-
-## [1.1.0] — 2026-09-05
-
-LoadCoach 1.1: **LA2** — more than one provider, an operator's adapter directory, adapter subjects
-that route and pin like any other candidate, and a residency model in which switching adapters on a
-warm base is free. Phase 10 of the
-[development plan](docs/apps/loadcoach/development-plan.md).
-
-**The exit was demonstrated, not argued.** Three requests pinning three LoRA adapters on one base
-were answered by **one** `llama-server` process — asserted from the supervisor's pid, from
-`list_resident`, and from three visibly different answers to one prompt — and every attempt
-recorded the subject that answered. The same weights registered a second time under a registration
-**declared** remote left three `adapter_classification_conflict` rows in `routing_candidates`, each
-carrying the classification arithmetic, while the bare base stayed servable: I16 and I19, proved
-where the behaviour lives.
-
-**Two unreleased fixes ship in this release rather than riding silently:** `2c7d740` — a
-synchronous generation records the model it made resident, so the *next* request can apply the
-residency exception instead of being refused `insufficient_vram` by memory the previous one is
-still holding — and G2's tool wire, which is what makes model-directed sandboxed tool use reachable
-on a real provider at all.
-
-### Added
 - **A caller may declare its own data classification, and the effective classification is the join**
   (ADR-0065 rule 2). `POST /generate` and `POST /jobs` take an optional `data_classification` —
   `public`, `internal` or `confidential` — and LoadCoach records `max(caller, adapter)` as the
@@ -205,32 +184,6 @@ on a real provider at all.
   provider that has no concept of adapters — so every profile hash a deployment without adapters
   has ever stored is unchanged. It is derived from what LoadCoach handed the provider, never from a
   `list_adapters()` snapshot, which moves while a restart is pending.
-
-### Fixed
-- **A stopped server no longer leaks its `llama-server`.** Nothing ever called `close()` on a
-  provider: the lifespan released the publisher, the sampler, the queue runtime and the database,
-  and dropped every provider handle. A supervising provider owns an operating-system process, and
-  `LlamaCppProvider` ends its servers in `close()` and otherwise only in a finalizer — which runs
-  at collection or interpreter exit, and not at all when the process is signalled. So every
-  restart of `loadcoach serve` left a server behind holding the whole card. The failure that
-  causes is worse to read than an out-of-memory error: the *next* candidate is refused
-  `insufficient_vram` before its classification or its compatibility is ever considered, so a
-  defect in shutdown presents as a defect in routing. Found by IdeaPress's LA2 journey, which left
-  six orphans holding 13 GB of a 16 GB card across three runs.
-- **A queued job no longer loses its `adapter` and `ignore_residency` overrides.** A leased job's
-  submission is rebuilt from `jobs.request_json` and from nothing else, and neither field was
-  written to it or read back — so an adapter pin submitted through `POST /jobs` was silently
-  dropped between submission and execution and the request was answered by the **bare base**, which
-  is precisely the fallback ADR-0064 rule 4 forbids, with no error anywhere. Found while wiring
-  IdeaPress's per-stage pins, whose long stages all go through the queue.
-- **A migration that adds a foreign key no longer deletes stored routing candidates.** Adding a
-  constraint to an existing SQLite table is a table rebuild, and dropping `routing_decisions`
-  with `foreign_keys=ON` cascades through `routing_candidates` — the explainability promise
-  itself. Foreign keys are now enforced off for the duration of a migration run on SQLite, through
-  the raw driver cursor, because the pragma is a documented no-op inside a transaction and the
-  connection is in one by the time SQLAlchemy would emit it.
-
-### Added
 - **The adapter registry is an operator's directory and a reviewed manifest** (ADR-0061).
   `[adapters] directory` — empty by default, and **empty means the whole feature is off**. The
   directory holds artifacts and one reviewed `model.adapter_manifest` 1.0 per adapter, read and
@@ -277,29 +230,6 @@ on a real provider at all.
   could not be listed is named in the outcome's new `unreachable` field and its models are left
   exactly as they were. With a single registration that raises, the 1.0 behaviour is unchanged.
   `loadcoach doctor` reports each registration's reachability by name.
-
-### Changed
-- **The `setspec` pin moves to `>=0.5,<0.7`, and the evidence reader adopts `capability.evidence`
-  `1.1`** (H2). The adapter registry reads SetSpec's `model.adapter_manifest` 1.0 rather than
-  defining a second manifest shape (ADR-0061), and that payload ships in `setspec 0.5.0`, so the
-  pin E5 deliberately left at `>=0.4,<0.5` moves here rather than at H4. Moving it alone would have
-  turned three local-only reds into CI reds — a bare `CapabilityEvidenceOut` permanently means
-  `1.0` (ADR-0068 rule 3) and refuses the `adapter` block a `1.1` golden carries — so the reader
-  and the contract test now import `CapabilityEvidenceV1_1In`/`Out` and `EvidenceBundleV1_1In`/`Out`.
-  It is an import change and nothing else: every `1.0` record validates through the `1.1` model
-  unchanged, and a record with no adapter dumps byte-identically.
-
-  **Adapter-bearing evidence is retained, never attached to the base.** Evidence measured on
-  `(base, adapterA)` applies to that subject and to nothing else (ADR-0058 §4), so a record
-  carrying an `adapter` block binds `unmatched` with a note naming the adapter rather than raising
-  the score of weights that were never measured. H4 is where FreeWeight starts producing such
-  records.
-
-- **`baseaicore` moves to `>=0.4.2`** for ADR-0074's `RuntimeProfile.adapters_registered`, and
-  **`modelrack` to `>=0.7,<0.8`** for `LlamaCppProvider`, `list_adapters()` and
-  `register_adapters()`. Both carry a `TODO: re-pin on publish` until the operator publishes them.
-
-### Added
 - **`POST /generate` and `POST /jobs` carry tool definitions** (G2). A body may now supply
   `tools` — a list of `{"name", "description", "parameters"}` — and they reach the provider
   unmodified: LoadCoach does not validate a tool's `parameters` schema, rewrite it, or execute a
@@ -334,78 +264,6 @@ on a real provider at all.
   (LoadCoach's own — an unmatched id is a caller bug a provider would turn into a confusing model
   failure). `jobs.request_json` carries the calls, so a queued job replays what it was submitted
   with; a row written before the field existed reads back exactly as it did.
-
-### Changed
-- **`tools.plan`'s output budget stays at 4096, measured** (G2, gate E). G1 reported that
-  gpt-oss:20b returns an empty document under this profile about half the time and left the
-  question of what to do about it to LoadCoach. Measured against the real model on the reference
-  machine with PromptCadence's `planner.draft` 1.1.0 prompt (2.1k characters, six samples per
-  setting, straight through Ollama so nothing but the budget varied):
-
-  | `max_output_tokens` | empty | rate | median latency | every empty answer |
-  |---|---|---|---|---|
-  | 4096 (shipped) | 1 / 6 | 17 % | 58 s | `done_reason=length`, `eval_count` 4096 |
-  | 8192 | 3 / 6 | 50 % | 171 s | `done_reason=length`, `eval_count` 8192 |
-
-  Doubling the budget tripled the median latency and made the empty rate worse, because the model
-  fills whatever budget it is given with reasoning and simply runs out later. The profile is therefore
-  unchanged, with the numbers recorded beside it in `task_profiles.toml`. This also answers the
-  question G1 could not: **the finish reason behind an empty planning answer is `length`**, with
-  `eval_count` exactly equal to the budget.
-
-  The lever that would work is a thinking control. ModelRack's Ollama adapter declares
-  `thinking_control = True` in its capabilities but exposes no request-side way to ask for it —
-  neither `SamplingParameters` nor the chat body carries Ollama's `think` key, and
-  `runtime_profile.provider_options` merges into `options`, where `think` does not live. Recorded
-  as a finding for ModelRack; no task-profile field is added for a control that cannot be sent.
-
-### Fixed
-- **The corrective retry no longer crashes on an empty answer, and a refused request writes its
-  attempts** (G2, found at G1: `docs/history/G1_HANDOFF.md` §9.2). `corrective_turns` appended
-  `Message(ASSISTANT, content=previous_text)` unconditionally, so a model that answered with
-  nothing — a reasoning model under JSON mode does, about half the time — produced an assistant
-  turn ModelRack refuses. The refusal escaped mid-execution: `/generate` returned
-  `VALIDATION_ERROR`, the job stayed `executing` until a watchdog or a cancel, and **its attempts
-  were never written**, which is why the `finish_reason` behind those empty answers could not be
-  recovered afterwards.
-
-  Two changes, and they are separate. An empty previous answer is now described inside the
-  correction prompt's `previous_output` instead of being replayed as a turn (the prompt record
-  itself is unchanged — prompts are versioned, ADR-0012). And a request refused while it is being
-  *built* now **fails the job with every attempt already made committed**, `error_code`
-  `VALIDATION_ERROR`, `completed_at` set. It is not a provider failure and not a routing failure:
-  nothing was called and no candidate was rejected. (E6, found at E4:
-  `docs/history/E4_HANDOFF.md` §5). `build_provider("fake")` used to construct ModelRack's unscripted
-  `FakeProvider()`, whose `DEFAULT_MODEL` declares an 8.5 GB model — so routing's
-  `insufficient_vram` hard constraint rejected the only candidate whenever the host had little
-  free VRAM, including plain `tools.agent`, unchanged. A provider that exists so the suite and an
-  operator can be exercised without a GPU was gated on one.
-
-  `build_provider` now declares a small model instead, built from `DEFAULT_MODEL` by
-  `dataclasses.replace` (`infrastructure/providers/factory.py`): `size_bytes=47_000_000`,
-  `layers=4`, `kv_heads=2`, `head_dim=64`, `parameter_count=45_000_000` — a coherent tiny-model
-  shape, not just a shrunk number. At the worst case this model ever serves (`served_context`
-  defaults to its own `max_context`, unchanged at 32 768, so every shipped local task profile's
-  `min_context_tokens` is still satisfied), the VRAM estimate is weights 49_350_000 B + kv
-  67_108_864 B + activation 268_435_456 B ≈ 385 MB — comfortably under
-  `DEFAULT_VRAM_HEADROOM_BYTES` (512 MiB) below even a machine reporting ~1 GiB free. Renamed
-  `fake-model:8b-q8_0` → `fake-model:tiny-q8_0`, since nothing in this repository pins the old
-  name (checked before renaming) and a shrunk model claiming to be an 8B one would be dishonest.
-  `DEFAULT_MODEL` and ModelRack itself are untouched — this is LoadCoach's own construction of the
-  fake, not a change to a contract three applications' fakes read.
-
-  The rejection stays reachable on purpose: **`[provider.fake]`** (`size_bytes`, `layers`,
-  `kv_heads`, `head_dim`, all optional) lets an operator override the declared model, e.g. back to
-  the original numbers, to provoke `insufficient_vram` deliberately and inspect the full `estimate`
-  block. All four fields must be set together — the KV term dominates `size_bytes` at any
-  interesting context length (`2 × layers × kv_heads × head_dim × 2 bytes` for the assumed f16
-  precision, times the served context), so `size_bytes` alone cannot reliably provoke the
-  rejection this block exists to reach; `build_provider` refuses a partial set with a
-  `ConfigurationError` naming `provider.fake` and the missing fields. The `fake` provider kind is
-  **not** exempted from `insufficient_vram` — this block makes the fake keep modelling the
-  constraint, on purpose, rather than stop modelling it.
-
-### Added
 - **Five shipped task profiles for PromptCadence's harness tiers**, taking the shipped set from
   fifteen to twenty: `tools.agent.local_fast`, `tools.agent.local_large`,
   `tools.agent.remote_cheap`, `tools.agent.remote_frontier` and `tools.plan`. They are namespaced
@@ -495,7 +353,145 @@ on a real provider at all.
 
   The job event stream carries `summary.as_json()`, so the new fields reach job events for free.
 
+### Changed
+- **The `setspec` pin moves to `>=0.5,<0.7`, and the evidence reader adopts `capability.evidence`
+  `1.1`** (H2). The adapter registry reads SetSpec's `model.adapter_manifest` 1.0 rather than
+  defining a second manifest shape (ADR-0061), and that payload ships in `setspec 0.5.0`, so the
+  pin E5 deliberately left at `>=0.4,<0.5` moves here rather than at H4. Moving it alone would have
+  turned three local-only reds into CI reds — a bare `CapabilityEvidenceOut` permanently means
+  `1.0` (ADR-0068 rule 3) and refuses the `adapter` block a `1.1` golden carries — so the reader
+  and the contract test now import `CapabilityEvidenceV1_1In`/`Out` and `EvidenceBundleV1_1In`/`Out`.
+  It is an import change and nothing else: every `1.0` record validates through the `1.1` model
+  unchanged, and a record with no adapter dumps byte-identically.
+
+  **Adapter-bearing evidence is retained, never attached to the base.** Evidence measured on
+  `(base, adapterA)` applies to that subject and to nothing else (ADR-0058 §4), so a record
+  carrying an `adapter` block binds `unmatched` with a note naming the adapter rather than raising
+  the score of weights that were never measured. H4 is where FreeWeight starts producing such
+  records.
+
+- **`baseaicore` moves to `>=0.4.2`** for ADR-0074's `RuntimeProfile.adapters_registered`, and
+  **`modelrack` to `>=0.7,<0.8`** for `LlamaCppProvider`, `list_adapters()` and
+  `register_adapters()`. Both carry a `TODO: re-pin on publish` until the operator publishes them.
+- **`tools.plan`'s output budget stays at 4096, measured** (G2, gate E). G1 reported that
+  gpt-oss:20b returns an empty document under this profile about half the time and left the
+  question of what to do about it to LoadCoach. Measured against the real model on the reference
+  machine with PromptCadence's `planner.draft` 1.1.0 prompt (2.1k characters, six samples per
+  setting, straight through Ollama so nothing but the budget varied):
+
+  | `max_output_tokens` | empty | rate | median latency | every empty answer |
+  |---|---|---|---|---|
+  | 4096 (shipped) | 1 / 6 | 17 % | 58 s | `done_reason=length`, `eval_count` 4096 |
+  | 8192 | 3 / 6 | 50 % | 171 s | `done_reason=length`, `eval_count` 8192 |
+
+  Doubling the budget tripled the median latency and made the empty rate worse, because the model
+  fills whatever budget it is given with reasoning and simply runs out later. The profile is therefore
+  unchanged, with the numbers recorded beside it in `task_profiles.toml`. This also answers the
+  question G1 could not: **the finish reason behind an empty planning answer is `length`**, with
+  `eval_count` exactly equal to the budget.
+
+  The lever that would work is a thinking control. ModelRack's Ollama adapter declares
+  `thinking_control = True` in its capabilities but exposes no request-side way to ask for it —
+  neither `SamplingParameters` nor the chat body carries Ollama's `think` key, and
+  `runtime_profile.provider_options` merges into `options`, where `think` does not live. Recorded
+  as a finding for ModelRack; no task-profile field is added for a control that cannot be sent.
+- **The M5C-6/M5C-11 stopgaps are gone, closed by `mirrorwall 0.2.1`.** The job page's
+  explanation links live in the definition list itself — `kv_list`'s new `href` item shape
+  renders the value as a real anchor with label and value still escaped text — so the
+  "Explanation" paragraph folded back into the list as two linked rows, and both page-level
+  `overflow-wrap` stopgaps (`/system`, `/jobs/{id}`) are deleted: `.kv-list dd` wrapping now
+  comes from MirrorWall's own `components.css`. The e2e tests assert the stopgaps *absent* and
+  the decision link rendered inside a `<dd>`; `requirements/ci.lock` moves to `mirrorwall 0.2.1`
+  and `weightsdb 0.2.1` (both resolve under the unchanged `>=0.2,<0.3` pins).
+
 ### Fixed
+- **An adapter scan re-binds evidence.** `sync_adapters` now re-evaluates every evidence row's
+  binding in its own transaction, because a directory scan is discovery for the subject's second
+  axis. Imported evidence for an adapter this operator had not yet reviewed used to sit `unmatched`
+  until something unrelated happened to the *model* registry; it now binds on the pass that first
+  sees the adapter, with no re-import ([ADR-0022](docs/adr/0022-capability-evidence-record-contract.md) §4).
+- `loadcoach route explain` prints each candidate's **subject**, not its base, so three candidates
+  on one base no longer render as the same line three times.
+- Evidence coverage counts **subjects** rather than models: a base and two adapter subjects
+  measured on it are three things that were measured.
+- **The 1.1 migrations run on PostgreSQL, not only on SQLite.** Three defects, each invisible on
+  SQLite and each fatal on PostgreSQL, found by CI's PostgreSQL job and reproduced locally
+  against `postgres:16`:
+  - `0008` added `models.is_remote` with `server_default=sa.text("0")` — an integer literal for a
+    boolean column, which PostgreSQL refuses (`DatatypeMismatch`). It is now `sa.false()`, which
+    each dialect renders in its own terms.
+  - `0012`'s unique constraint took its name from the naming convention and came out 64
+    characters, one over PostgreSQL's 63-character identifier limit. It is now named explicitly,
+    `uq_reliability_stats_subject_profile_window`, in the migration and in the model together.
+  - `0009` and `0011` declared `sa.JSON()` and `sa.DateTime(timezone=True)` where the models use
+    `weightsdb.PortableJSON` and `weightsdb.UtcDateTime`. The two agree on SQLite and disagree on
+    PostgreSQL (`JSON` vs `JSONB`), so `check_parity` failed there and only there.
+- **A stopped server no longer leaks its `llama-server`.** Nothing ever called `close()` on a
+  provider: the lifespan released the publisher, the sampler, the queue runtime and the database,
+  and dropped every provider handle. A supervising provider owns an operating-system process, and
+  `LlamaCppProvider` ends its servers in `close()` and otherwise only in a finalizer — which runs
+  at collection or interpreter exit, and not at all when the process is signalled. So every
+  restart of `loadcoach serve` left a server behind holding the whole card. The failure that
+  causes is worse to read than an out-of-memory error: the *next* candidate is refused
+  `insufficient_vram` before its classification or its compatibility is ever considered, so a
+  defect in shutdown presents as a defect in routing. Found by IdeaPress's LA2 journey, which left
+  six orphans holding 13 GB of a 16 GB card across three runs.
+- **A queued job no longer loses its `adapter` and `ignore_residency` overrides.** A leased job's
+  submission is rebuilt from `jobs.request_json` and from nothing else, and neither field was
+  written to it or read back — so an adapter pin submitted through `POST /jobs` was silently
+  dropped between submission and execution and the request was answered by the **bare base**, which
+  is precisely the fallback ADR-0064 rule 4 forbids, with no error anywhere. Found while wiring
+  IdeaPress's per-stage pins, whose long stages all go through the queue.
+- **A migration that adds a foreign key no longer deletes stored routing candidates.** Adding a
+  constraint to an existing SQLite table is a table rebuild, and dropping `routing_decisions`
+  with `foreign_keys=ON` cascades through `routing_candidates` — the explainability promise
+  itself. Foreign keys are now enforced off for the duration of a migration run on SQLite, through
+  the raw driver cursor, because the pragma is a documented no-op inside a transaction and the
+  connection is in one by the time SQLAlchemy would emit it.
+- **The corrective retry no longer crashes on an empty answer, and a refused request writes its
+  attempts** (G2, found at G1: `docs/history/G1_HANDOFF.md` §9.2). `corrective_turns` appended
+  `Message(ASSISTANT, content=previous_text)` unconditionally, so a model that answered with
+  nothing — a reasoning model under JSON mode does, about half the time — produced an assistant
+  turn ModelRack refuses. The refusal escaped mid-execution: `/generate` returned
+  `VALIDATION_ERROR`, the job stayed `executing` until a watchdog or a cancel, and **its attempts
+  were never written**, which is why the `finish_reason` behind those empty answers could not be
+  recovered afterwards.
+
+  Two changes, and they are separate. An empty previous answer is now described inside the
+  correction prompt's `previous_output` instead of being replayed as a turn (the prompt record
+  itself is unchanged — prompts are versioned, ADR-0012). And a request refused while it is being
+  *built* now **fails the job with every attempt already made committed**, `error_code`
+  `VALIDATION_ERROR`, `completed_at` set. It is not a provider failure and not a routing failure:
+  nothing was called and no candidate was rejected. (E6, found at E4:
+  `docs/history/E4_HANDOFF.md` §5). `build_provider("fake")` used to construct ModelRack's unscripted
+  `FakeProvider()`, whose `DEFAULT_MODEL` declares an 8.5 GB model — so routing's
+  `insufficient_vram` hard constraint rejected the only candidate whenever the host had little
+  free VRAM, including plain `tools.agent`, unchanged. A provider that exists so the suite and an
+  operator can be exercised without a GPU was gated on one.
+
+  `build_provider` now declares a small model instead, built from `DEFAULT_MODEL` by
+  `dataclasses.replace` (`infrastructure/providers/factory.py`): `size_bytes=47_000_000`,
+  `layers=4`, `kv_heads=2`, `head_dim=64`, `parameter_count=45_000_000` — a coherent tiny-model
+  shape, not just a shrunk number. At the worst case this model ever serves (`served_context`
+  defaults to its own `max_context`, unchanged at 32 768, so every shipped local task profile's
+  `min_context_tokens` is still satisfied), the VRAM estimate is weights 49_350_000 B + kv
+  67_108_864 B + activation 268_435_456 B ≈ 385 MB — comfortably under
+  `DEFAULT_VRAM_HEADROOM_BYTES` (512 MiB) below even a machine reporting ~1 GiB free. Renamed
+  `fake-model:8b-q8_0` → `fake-model:tiny-q8_0`, since nothing in this repository pins the old
+  name (checked before renaming) and a shrunk model claiming to be an 8B one would be dishonest.
+  `DEFAULT_MODEL` and ModelRack itself are untouched — this is LoadCoach's own construction of the
+  fake, not a change to a contract three applications' fakes read.
+
+  The rejection stays reachable on purpose: **`[provider.fake]`** (`size_bytes`, `layers`,
+  `kv_heads`, `head_dim`, all optional) lets an operator override the declared model, e.g. back to
+  the original numbers, to provoke `insufficient_vram` deliberately and inspect the full `estimate`
+  block. All four fields must be set together — the KV term dominates `size_bytes` at any
+  interesting context length (`2 × layers × kv_heads × head_dim × 2 bytes` for the assumed f16
+  precision, times the served context), so `size_bytes` alone cannot reliably provoke the
+  rejection this block exists to reach; `build_provider` refuses a partial set with a
+  `ConfigurationError` naming `provider.fake` and the missing fields. The `fake` provider kind is
+  **not** exempted from `insufficient_vram` — this block makes the fake keep modelling the
+  constraint, on purpose, rather than stop modelling it.
 - **A synchronous generation now records the model it made resident**, so consecutive requests on
   one GPU stop refusing each other. Residency was an *input* to `/generate` and never an output:
   the endpoint routed using the exception that lets an already-loaded model be chosen without
@@ -512,16 +508,6 @@ on a real provider at all.
   it both records the load and evicts under `max_resident_models` to make room. Recording failures
   are swallowed: residency is an optimisation and an eviction policy, never a precondition for a
   generation the provider can serve.
-
-### Changed
-- **The M5C-6/M5C-11 stopgaps are gone, closed by `mirrorwall 0.2.1`.** The job page's
-  explanation links live in the definition list itself — `kv_list`'s new `href` item shape
-  renders the value as a real anchor with label and value still escaped text — so the
-  "Explanation" paragraph folded back into the list as two linked rows, and both page-level
-  `overflow-wrap` stopgaps (`/system`, `/jobs/{id}`) are deleted: `.kv-list dd` wrapping now
-  comes from MirrorWall's own `components.css`. The e2e tests assert the stopgaps *absent* and
-  the decision link rendered inside a `<dd>`; `requirements/ci.lock` moves to `mirrorwall 0.2.1`
-  and `weightsdb 0.2.1` (both resolve under the unchanged `>=0.2,<0.3` pins).
 
 ## [1.0.0] — 2026-08-30
 
