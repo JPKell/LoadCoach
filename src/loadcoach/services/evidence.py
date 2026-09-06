@@ -281,11 +281,39 @@ def _registry_of(session: Session) -> list[LocalModel]:
     ]
 
 
+def _adapter_key(record: CapabilityEvidenceFields) -> str:
+    """The adapter half of one record's subject key — its artifact digest, or ``""``.
+
+    The **digest**, never the name: a name is a label an operator may revise, so keying on it
+    would merge two adapters' histories the moment one was renamed and split one adapter's the
+    moment it was not (ADR-0085 rule 3).
+
+    The empty string rather than ``None`` for the bare base (ADR-0086). This key becomes an
+    ``ON CONFLICT`` target, and a conflict target containing a ``NULL`` never fires: spelled
+    nullable, every re-import of a bare-base record would insert a second row instead of updating
+    the first, with no error and no rejection.
+
+    Args:
+        record: One validated ``capability.evidence`` record.
+
+    Returns:
+        ``adapter.artifact_digest`` for an adapter-bearing record, ``""`` for a bare-base one.
+    """
+    return "" if record.adapter is None else record.adapter.artifact_digest
+
+
 def _uniqueness_key(record: CapabilityEvidenceFields, source_row_id: str) -> tuple[str, ...]:
-    """The consumer-side uniqueness key from ADR-0022 §3, as a tuple."""
+    """The consumer-side uniqueness key from ADR-0022 §3, as amended by ADR-0085, as a tuple.
+
+    Seven columns, not six: ``adapter_artifact_digest`` sits between the model's ``canonical_id``
+    and the runtime profile, so a base and every adapter subject measured on it under one profile,
+    machine, capability and policy are separate measurements in separate rows rather than one
+    collision the duplicate detector discards (ADR-0085).
+    """
     return (
         source_row_id,
         record.model.canonical_id,
+        _adapter_key(record),
         record.runtime_profile_hash,
         record.machine_fingerprint,
         record.capability_id,
@@ -588,6 +616,7 @@ def _write(  # noqa: PLR0913 — one transaction with every import input threade
             (
                 source_row_id,
                 row.canonical_id,
+                row.adapter_artifact_digest,
                 row.runtime_profile_hash,
                 row.machine_fingerprint,
                 row.capability_id,
@@ -607,9 +636,9 @@ def _write(  # noqa: PLR0913 — one transaction with every import input threade
                         reason="DUPLICATE_RECORD",
                         detail=(
                             "a second record in this bundle carries the same "
-                            "(canonical_id, runtime_profile_hash, machine_fingerprint, "
-                            "capability_id, policy_version); two measurements are not merged "
-                            "into one row"
+                            "(canonical_id, adapter_artifact_digest, runtime_profile_hash, "
+                            "machine_fingerprint, capability_id, policy_version); two "
+                            "measurements are not merged into one row"
                         ),
                     )
                 )
@@ -641,6 +670,7 @@ def _write(  # noqa: PLR0913 — one transaction with every import input threade
                 index_elements=[
                     "source_id",
                     "canonical_id",
+                    "adapter_artifact_digest",
                     "runtime_profile_hash",
                     "machine_fingerprint",
                     "capability_id",
@@ -680,10 +710,11 @@ def _write(  # noqa: PLR0913 — one transaction with every import input threade
                     .filter_by(
                         source_id=key[0],
                         canonical_id=key[1],
-                        runtime_profile_hash=key[2],
-                        machine_fingerprint=key[3],
-                        capability_id=key[4],
-                        policy_version=key[5],
+                        adapter_artifact_digest=key[2],
+                        runtime_profile_hash=key[3],
+                        machine_fingerprint=key[4],
+                        capability_id=key[5],
+                        policy_version=key[6],
                     )
                     .one_or_none()
                 )
@@ -735,6 +766,7 @@ def _row_values(  # noqa: PLR0913 — one row, every column named
     dispersion = record.dispersion
     return {
         "model_id": model_id,
+        "adapter_artifact_digest": _adapter_key(record),
         "provider_kind": record.model.provider_kind,
         "provider_model_name": record.model.provider_model_name,
         "artifact_digest": record.model.artifact_digest,

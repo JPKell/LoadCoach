@@ -208,7 +208,7 @@ class CapabilityEvidence(Base):
     """One imported ``capability.evidence`` record (data model §2, ADR-0022 §1).
 
     Never edited by LoadCoach: a recomputation is a re-import, and the field set is the producer's
-    (ADR-0022's normative table). Two properties of this table are load-bearing rather than
+    (ADR-0022's normative table). Three properties of this table are load-bearing rather than
     incidental:
 
     * ``model_id`` is **nullable**, and ``match_state`` records why. Import never fails because a
@@ -217,6 +217,12 @@ class CapabilityEvidence(Base):
       that an unbound row still knows what it describes.
     * ``policy_version`` is part of the uniqueness key, so two confidence policies coexist during
       a policy change and a re-import is a row-wise upsert rather than a collision (ADR-0022 §3).
+    * **The key is the subject, not the base** (ADR-0085). ``adapter_artifact_digest`` carries the
+      adapter's artifact digest — its identity, never its name — so a base and every adapter
+      subject measured on it are separate rows. It is ``NOT NULL`` with ``''`` for the bare base
+      (ADR-0086): this table is written through ``weightsdb.upsert``, and an ``ON CONFLICT`` target
+      containing a ``NULL`` never fires, so a nullable column would make a re-import insert a
+      second row instead of updating the first. Same sentinel, same reason, as ADR-0080 rule 5.
 
     ``measured_at`` drives freshness and ``computed_at`` never does; both are stored because
     ``computed_at`` is what the producer's ``?since=`` filter compares against (ADR-0022 §5).
@@ -233,12 +239,13 @@ class CapabilityEvidence(Base):
     __tablename__ = "capability_evidence"
     __table_args__ = (
         # Named explicitly: the convention's ``uq_%(table_name)s_%(column_0_N_name)s`` would
-        # produce a 96-character identifier, and PostgreSQL truncates at 63 — which would make
+        # produce a 139-character identifier, and PostgreSQL truncates at 63 — which would make
         # the model's name and the database's name disagree for ever, and ``check_parity`` fail
         # on a schema that is in fact correct.
         UniqueConstraint(
             "source_id",
             "canonical_id",
+            "adapter_artifact_digest",
             "runtime_profile_hash",
             "machine_fingerprint",
             "capability_id",
@@ -257,6 +264,9 @@ class CapabilityEvidence(Base):
     id: Mapped[str] = ulid_primary_key()
     model_id: Mapped[str | None] = mapped_column(
         String(26), ForeignKey("models.id", ondelete="SET NULL"), nullable=True
+    )
+    adapter_artifact_digest: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
     )
     provider_kind: Mapped[str] = mapped_column(String, nullable=False)
     provider_model_name: Mapped[str] = mapped_column(String, nullable=False)

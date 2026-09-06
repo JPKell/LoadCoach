@@ -7,6 +7,17 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Added
+- **The evidence uniqueness key carries the adapter** ([ADR-0085](docs/adr/0085-the-evidence-uniqueness-key-carries-the-adapter.md),
+  [ADR-0086](docs/adr/0086-the-consumers-adapter-key-column-is-not-nullable.md); migration `0013`).
+  `capability_evidence` gains `adapter_artifact_digest`, and a base and every adapter subject
+  measured on it are now separate rows rather than one key the duplicate detector collapses. A real
+  FreeWeight `1.1` bundle carrying three subjects previously imported one record and rejected two.
+  The column is `NOT NULL` with `''` for the bare base: this table is written through an
+  `INSERT … ON CONFLICT` upsert, and a conflict target containing a `NULL` never fires, so a
+  nullable column would insert a second row on every re-import instead of updating the first.
+  Existing rows are bare-base subjects and are unchanged.
+
 ### Fixed
 - **The 1.1 migrations run on PostgreSQL, not only on SQLite.** Three defects, each invisible on
   SQLite and each fatal on PostgreSQL, found by CI's PostgreSQL job and reproduced locally

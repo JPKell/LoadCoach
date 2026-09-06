@@ -93,6 +93,24 @@ def golden_bundle() -> dict[str, object]:
     raise AssertionError(message)
 
 
+@pytest.fixture
+def golden_bundle_11() -> dict[str, object]:
+    """The ``mixed`` ``benchmark.evidence_bundle`` `1.1` golden, straight from SetSpec.
+
+    Three records on two bases: one adapter-bearing, one bare, one adapter-bearing under another
+    profile. It is the shape row H5 exists for — a base and its adapter subjects in one bundle —
+    and it is imported rather than hand-authored for the same reason
+    :func:`golden_bundle` is (ADR-0009 rule 7).
+    """
+    for payload in golden_payloads("benchmark.evidence_bundle", SchemaVersion(1, 1)):
+        evidence = payload.get("evidence")
+        if isinstance(evidence, list) and any(item.get("adapter") for item in evidence):
+            if any(item.get("adapter") is None for item in evidence):
+                return payload
+    message = "the installed setspec ships no 1.1 evidence_bundle golden mixing subjects"
+    raise AssertionError(message)
+
+
 @pytest.fixture(autouse=True)
 def _deterministic_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make every test see the same machine, whatever this machine is doing.

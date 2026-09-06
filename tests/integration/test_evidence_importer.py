@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 from modelrack.testing import FakeProvider
+from weightsdb.testing import temporary_postgres
 
 from loadcoach.infrastructure.db.models import CapabilityEvidence, EvidenceSource, Model
 from loadcoach.services.database import Database, ensure_ready
@@ -601,3 +602,166 @@ def test_the_goal_group_and_opaque_fields_are_stored_verbatim(
         assert rows["reasoning"].dispersion_unavailable_reason is not None
     finally:
         database.close()
+
+
+# --------------------------------------------------------------------------------------------
+# The uniqueness key carries the adapter (ADR-0085, ADR-0086)
+# --------------------------------------------------------------------------------------------
+
+
+def _subject_bundle(
+    golden: dict[str, Any], adapters: list[dict[str, Any] | None]
+) -> dict[str, Any]:
+    """One capability, one profile, one machine, one policy — measured on several subjects.
+
+    Every record is a copy of one golden record with only its ``adapter`` block changed, so the
+    only thing separating them is the subject. Under the six-column key they were one row and the
+    importer discarded all but the first; under ADR-0085's key they are one row each.
+    """
+    bundle = copy.deepcopy(golden)
+    template = copy.deepcopy(bundle["evidence"][0])
+    records = []
+    for adapter in adapters:
+        record = copy.deepcopy(template)
+        if adapter is None:
+            record.pop("adapter", None)
+        else:
+            record["adapter"] = copy.deepcopy(adapter)
+        records.append(record)
+    bundle["evidence"] = records
+    return bundle
+
+
+def _other_adapter(adapter: dict[str, Any]) -> dict[str, Any]:
+    """A second adapter — a different artifact, therefore a different subject."""
+    digest = "sha256:" + "7c" * 32
+    return {
+        "name": "terse",
+        "artifact_digest": digest,
+        "source_digest": adapter.get("source_digest"),
+        "canonical_suffix": f"+terse@{digest[:19]}",
+    }
+
+
+def test_two_adapter_subjects_on_one_base_are_two_rows_not_a_duplicate(
+    tmp_path: Path, golden_bundle_11: dict[str, Any], wrap_bundle: Callable[..., str]
+) -> None:
+    """ADR-0085, measured at row H4's I18: three subjects imported one row and rejected two.
+
+    One base, one capability, one runtime profile, one machine, one policy version — and three
+    measurement subjects. The old key collapsed them; the amended key separates them, and the
+    duplicate detector is left doing its job on genuine duplicates only.
+    """
+    database = _database(tmp_path)
+    try:
+        first = next(item for item in golden_bundle_11["evidence"] if item.get("adapter"))
+        bundle = _subject_bundle(
+            golden_bundle_11, [None, first["adapter"], _other_adapter(first["adapter"])]
+        )
+        outcome = import_bundle(database, wrap_bundle(bundle, minor=1), now=NOW)
+        assert outcome.rejected == ()
+        assert outcome.imported == 3
+        rows = _rows(database)
+        assert len(rows) == 3
+        assert {row.adapter_artifact_digest for row in rows} == {
+            "",
+            first["adapter"]["artifact_digest"],
+            "sha256:" + "7c" * 32,
+        }
+    finally:
+        database.close()
+
+
+def test_the_same_subject_twice_in_one_bundle_is_still_a_duplicate(
+    tmp_path: Path, golden_bundle_11: dict[str, Any], wrap_bundle: Callable[..., str]
+) -> None:
+    """The wider key separates subjects; it does not stop the importer refusing to merge.
+
+    Two records naming the *same* adapter are two measurements of one subject, which ADR-0022 §3
+    rejects by name rather than averaging.
+    """
+    database = _database(tmp_path)
+    try:
+        first = next(item for item in golden_bundle_11["evidence"] if item.get("adapter"))
+        bundle = _subject_bundle(golden_bundle_11, [first["adapter"], first["adapter"]])
+        outcome = import_bundle(database, wrap_bundle(bundle, minor=1), now=NOW)
+        assert [item.reason for item in outcome.rejected] == ["DUPLICATE_RECORD"]
+        assert "adapter_artifact_digest" in outcome.rejected[0].detail
+        assert len(_rows(database)) == 1
+    finally:
+        database.close()
+
+
+def test_a_bare_base_record_imported_twice_is_exactly_one_row(
+    tmp_path: Path, golden_bundle_11: dict[str, Any], wrap_bundle: Callable[..., str]
+) -> None:
+    """ADR-0086's own acceptance test — the reason the key column is not nullable.
+
+    ``weightsdb.upsert`` is ``INSERT ... ON CONFLICT (...) DO UPDATE``, and a conflict target
+    containing a ``NULL`` never fires. Spelled nullable, this second import would insert a second
+    row and report it as ``imported``: no error, no rejection, and one subject scored twice.
+    """
+    database = _database(tmp_path)
+    try:
+        bundle = _subject_bundle(golden_bundle_11, [None])
+        document = wrap_bundle(bundle, minor=1)
+        import_bundle(database, document, now=NOW)
+        second = import_bundle(database, document, now=NOW + timedelta(hours=1))
+        assert second.imported == 0
+        assert second.updated == 1
+        rows = _rows(database)
+        assert len(rows) == 1
+        assert rows[0].adapter_artifact_digest == ""
+    finally:
+        database.close()
+
+
+def test_a_complete_bundle_supersedes_one_subject_and_leaves_its_siblings(
+    tmp_path: Path, golden_bundle_11: dict[str, Any], wrap_bundle: Callable[..., str]
+) -> None:
+    """The ``complete``-driven supersede pass reads the same seven-column key it writes.
+
+    A key spelled six columns in the supersede filter would match the first row it found for a
+    base — very likely the wrong subject's — and mark a live measurement superseded.
+    """
+    database = _database(tmp_path)
+    try:
+        first = next(item for item in golden_bundle_11["evidence"] if item.get("adapter"))
+        other = _other_adapter(first["adapter"])
+        full = _subject_bundle(golden_bundle_11, [None, first["adapter"], other])
+        import_bundle(database, wrap_bundle(full, minor=1), now=NOW)
+        narrowed = _subject_bundle(golden_bundle_11, [None, first["adapter"]])
+        outcome = import_bundle(
+            database, wrap_bundle(narrowed, minor=1), now=NOW + timedelta(hours=1)
+        )
+        assert outcome.superseded == 1
+        by_subject = {row.adapter_artifact_digest: row for row in _rows(database)}
+        assert len(by_subject) == 3, "a superseded row is marked, never deleted"
+        assert by_subject[other["artifact_digest"]].stale_reason == "superseded"
+        assert by_subject[""].stale_reason != "superseded"
+        assert by_subject[first["adapter"]["artifact_digest"]].stale_reason != "superseded"
+    finally:
+        database.close()
+
+
+def test_a_bare_base_record_imported_twice_is_exactly_one_row_on_postgresql(
+    golden_bundle_11: dict[str, Any], wrap_bundle: Callable[..., str]
+) -> None:
+    """The same assertion on the other dialect, because a key is a dialect-level property.
+
+    Both dialects treat ``NULL``s in a unique index as distinct, so a nullable key column would
+    duplicate on both — but "both" is a claim, and testing standards §10.1 is explicit that a
+    skipped dialect is an untested one. Skips without ``WEIGHTSDB_REQUIRE_POSTGRES=1``.
+    """
+    with temporary_postgres() as engine:
+        database = Database(engine)
+        ensure_ready(database, auto_migrate=True)
+        bundle = _subject_bundle(golden_bundle_11, [None])
+        document = wrap_bundle(bundle, minor=1)
+        import_bundle(database, document, now=NOW)
+        second = import_bundle(database, document, now=NOW + timedelta(hours=1))
+        assert second.imported == 0
+        assert second.updated == 1
+        rows = _rows(database)
+        assert len(rows) == 1
+        assert rows[0].adapter_artifact_digest == ""
