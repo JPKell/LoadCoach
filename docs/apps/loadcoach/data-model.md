@@ -34,6 +34,24 @@ subject string written at decision time
 ([ADR-0080](../../adr/0080-a-persisted-decision-names-the-subject-by-reference-and-by-string.md)).
 `adapter_id IS NULL` is the bare base, which is every row written before that migration.
 
+**Four migrations, one per gate**, because a gate boundary is a commit boundary and a
+half-applied composite migration is the worst thing to debug: `0009` creates `adapters` and puts
+the subject on `routing_decisions` and `routing_candidates`, `0010` puts it on `jobs` and
+`job_attempts` with the classification pair, `0011` moves the `residency` key onto the subject and
+adds `routing_candidates.residency_detail_json`, and `0012` moves the `reliability_stats` key.
+Each backfills what it can state as a fact — a candidate written before 1.1 decided about a bare
+base, whose subject string *is* its model's canonical ID — and leaves `NULL` where a value would
+be a reconstruction rather than a record.
+
+**Adding a foreign key to a table that has children is a rebuild on SQLite**, and dropping a
+parent with `foreign_keys=ON` cascades: `0009` would have deleted every stored routing candidate,
+which is the explainability promise itself. The migration runner therefore enforces foreign keys
+**off for the duration of a migration run** on SQLite and restores them after — through the raw
+driver cursor, because the pragma is a documented no-op inside a transaction and the connection is
+in one by the time SQLAlchemy would emit it. `0010`'s rebuild of `jobs` also re-creates the claim
+index by hand, since alembic's reflection loses the `DESC` that migration `0004` exists to
+establish.
+
 ---
 
 ## 2. Tables
@@ -258,7 +276,8 @@ Rolling production evidence, recomputed incrementally.
 
 ```text
 id ULID PK · model_id FK · task_profile_id · window TEXT         -- 7d | 30d | all
-adapter_id FK NULL · adapter_key TEXT NOT NULL DEFAULT ''       -- the subject axis (ADR-0067)
+adapter_id FK NULL · adapter_key TEXT NOT NULL DEFAULT ''       -- the subject axis (ADR-0067);
+                                                                -- the adapter's row id, '' = base
 attempts · successes · validation_passes · errors · timeouts · cancellations
 latency_count · p50_latency_ms NULL · p95_latency_ms NULL
 output_token_count · mean_output_tokens NULL · tokens_per_second_count · mean_tokens_per_second NULL
@@ -269,10 +288,13 @@ UNIQUE (model_id, adapter_key, task_profile_id, window)
 
 **The key is the subject, not the base** ([ADR-0067](../../adr/0067-reliability-keys-on-the-subject-not-the-base.md)):
 a failing `(base, adapterA)` opens its own breaker and leaves the bare base and every sibling
-adapter servable. `adapter_key` carries the empty string rather than `NULL` for the bare base
-because SQL treats `NULL`s in a unique index as distinct, and a key that admits duplicates is not a
-key ([ADR-0080](../../adr/0080-a-persisted-decision-names-the-subject-by-reference-and-by-string.md)
-rule 5); `adapter_id` is the real foreign key beside it. The 20-sample minimum applies per subject,
+adapter servable. `adapter_key` carries the adapter's **row id**, and the empty string rather than `NULL` for the
+bare base, because SQL treats `NULL`s in a unique index as distinct and a key that admits
+duplicates is not a key
+([ADR-0080](../../adr/0080-a-persisted-decision-names-the-subject-by-reference-and-by-string.md)
+rule 5); `adapter_id` is the real foreign key beside it, and it repeats the same value on purpose
+— the foreign key is nullable and goes `NULL` if an adapter row is ever removed, and a unique key
+that moved when that happened would merge two subjects' history. The 20-sample minimum applies per subject,
 so adapter subjects carry `low_evidence` until they have earned their own numbers — reported, never
 borrowed from a neighbour.
 
@@ -330,7 +352,8 @@ Index: `(name)`, `(base_model_name)`, `available`.
 ### `residency`
 ```text
 id ULID PK · model_id FK · gpu_index INT NOT NULL
-adapter_id FK NULL · adapter_key TEXT NOT NULL DEFAULT ''   -- '' = the bare base (ADR-0080 rule 5)
+adapter_id FK NULL · adapter_key TEXT NOT NULL DEFAULT ''   -- the adapter's row id;
+                                                            -- '' = the bare base (ADR-0080 rule 5)
 loaded_at · last_used_at
 vram_bytes NUMERIC NULL · vram_bytes_unavailable_reason TEXT NULL
 resident BOOLEAN · unloaded_at NULL · unload_reason

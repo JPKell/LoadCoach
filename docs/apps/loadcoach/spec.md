@@ -222,7 +222,12 @@ environment, then CLI, field by field. Principal sections:
               # after its kind, declaring remote = false (ADR-0077). Writing it *and* any
               # [providers.<name>] block is refused at startup, naming both.
 [providers.local]     kind = "ollama"     base_url = "http://127.0.0.1:11434"  remote = false
-[providers.llama]     kind = "llamacpp"   models_directory = "~/models/llm"    remote = false
+[providers.llama]     kind = "llamacpp"   model_directory = "~/models/llm"     remote = false
+              # kind = "llamacpp" launches and supervises its own server, so it takes a directory
+              # of GGUF weights rather than a base_url; `model_directory` is required (there is no
+              # default worth guessing), and `state_dir` and `server_path` default to
+              # <data_dir>/llamacpp/<name> and `llama-server` on PATH. It is the only kind that
+              # can hot-swap adapters, and therefore the only kind an adapter subject is served by
 [providers.hosted]    kind = "openai_compatible"  base_url = "https://…"       remote = true
               # remote is declared, never inferred from the kind or the URL (ADR-0055 rule 4)
 [provider.fake]  # kind = "fake" only; absent on a normal install (E6). All four together or none:
