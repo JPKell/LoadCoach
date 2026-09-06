@@ -611,3 +611,110 @@ that names its own remedy.
 **Deferred:** FreeWeight's adapter evidence (LA3, H4) and therefore live routed selection on measured
 adapter evidence; IdeaPress's per-stage pins (H3); the removal of the superseded
 `output.tool_calls` field (LoadCoach `2.0`).
+
+## Phase 11 — Adapter evidence binds to its subject · **LA3 (consumer half)**
+
+**Goal:** an adapter subject measured by FreeWeight is imported, bound to *that* subject, scored on
+its own evidence and selected by routing because of it — while an unmeasured sibling stays
+unmeasured and unroutable. Phase 10 gave LoadCoach adapter subjects it could pin; this phase gives
+them measurements they can earn.
+
+**Prerequisites:** Phase 10 (LoadCoach 1.1's adapter registry, subject expansion and
+`require_adapter_evidence`); FreeWeight 1.1's producer half (row H4 — subject enumeration, per-subject
+measurement and a `capability.evidence` `1.1` export);
+[ADR-0085](../../adr/0085-the-evidence-uniqueness-key-carries-the-adapter.md) and
+[ADR-0086](../../adr/0086-the-consumers-adapter-key-column-is-not-nullable.md). No SetSpec change:
+`capability.evidence` `1.1` already carries the `adapter` block and nothing on the wire moves.
+
+**Work**
+* **The uniqueness key carries the adapter (migration `0013`,
+  [ADR-0085](../../adr/0085-the-evidence-uniqueness-key-carries-the-adapter.md)).**
+  `capability_evidence` gains `adapter_artifact_digest`, `NOT NULL`, `''` for the bare base
+  ([ADR-0086](../../adr/0086-the-consumers-adapter-key-column-is-not-nullable.md)), and
+  `uq_capability_evidence_subject` is rebuilt around it. The importer's four spellings of the key —
+  `_uniqueness_key`, the existing-key set, the upsert's `index_elements` and the `complete`-driven
+  supersede filter — move together, and the `DUPLICATE_RECORD` detail string that enumerates the key
+  in prose moves with them. **This step alone is not the feature:** the two adapter-bearing records
+  stop being rejected and become `unmatched`.
+* **The adapter axis, and binding (migration `0014`,
+  [ADR-0058](../../adr/0058-the-execution-subject-gains-an-adapter-axis.md) §4).**
+  `capability_evidence` gains a nullable `adapter_id` foreign key. `bind_identity`'s rule 0 — which
+  retained every adapter-bearing record `unmatched` on purpose, as a guard against attaching a
+  LoRA's score to bare weights — is **replaced, not deleted**: an adapter-bearing record resolves its
+  base by the existing four rules **and** its adapter by artifact digest, and binds only when both
+  resolve. An adapter this operator does not hold leaves the record `unmatched` with a note naming
+  it, and the re-binding pass that already runs on every discovery binds it once the directory scan
+  finds it — with no re-import
+  ([ADR-0022](../../adr/0022-capability-evidence-record-contract.md) §4).
+* **Routing reads evidence per subject, not per model
+  ([ADR-0081](../../adr/0081-an-adapter-subject-inherits-no-evidence-from-its-base.md)).**
+  `bound_signals_for_routing` keys on `(model_id, adapter_key)` — the same subject key shape
+  `reliability_stats` already uses — so a base candidate takes the base's evidence and an adapter
+  candidate takes its own. `_adapter_signals`' docstring stops saying a declared capability is all
+  an adapter subject can ever carry, because it no longer is. `require_adapter_evidence` needs no
+  change and gets none: a measured adapter now has a `benchmark` signal and passes the gate it
+  always applied.
+* **Where a person sees it.** `loadcoach evidence show` names the subject rather than the base; the
+  models and evidence views group an adapter subject's evidence under it; the persisted routing
+  explanation names the subject whose evidence moved the decision.
+
+**Files/subsystems**
+```text
+src/loadcoach/infrastructure/db/migrations/versions/0013_evidence_key_carries_the_adapter.py
+src/loadcoach/infrastructure/db/migrations/versions/0014_evidence_binds_to_its_subject.py
+src/loadcoach/infrastructure/db/models.py         capability_evidence: two columns, one key
+src/loadcoach/domain/evidence_policy.py           bind_identity rule 0 replaced by a real binding
+src/loadcoach/services/evidence.py                the key's four call sites; signals per subject
+src/loadcoach/services/routing.py                 each subject's own evidence into its candidate
+src/loadcoach/cli/commands/evidence.py + web      the subject, where a person reads it
+tests/live/test_la3_evidence.py                   I18's consumer half
+```
+
+**Tests**
+* Two adapter subjects and their base, one machine, one profile, one capability, in one bundle:
+  **three rows, zero rejections**. A genuine duplicate — the same subject twice in one bundle — is
+  still `DUPLICATE_RECORD` by name.
+* **A bare-base record imported twice produces exactly one row**, on SQLite **and** on PostgreSQL.
+  This is ADR-0086's own acceptance test and the reason the column is not nullable.
+* A `(base, terse)` record binds to the `terse` subject and **not** to the base; the base's own
+  record still binds to the base; a record naming an absent adapter is `unmatched`, then binds after
+  a rescan with no re-import.
+* **No signal crosses subjects:** after `terse`'s evidence lands, `pirate` — measured nowhere — has
+  no benchmark signal, and is still rejected `adapter_unmeasured`.
+* One decision, two candidates on one base: the adapter is selected **because** of imported evidence
+  and the explanation names it; the same decision with that evidence absent selects the base.
+* Both migrations run against a real PostgreSQL, not only SQLite
+  ([testing standards §10.1](../../standards/testing-standards.md)).
+
+**Acceptance criteria**
+1. `loadcoach evidence import --file <a FreeWeight 1.1 bundle of three subjects>` reports
+   **`records 3, rejected 0, bound 3`**, and `loadcoach evidence show` lists three rows naming three
+   subjects rather than one model three times.
+2. Re-running that same import reports `updated 3, imported 0` and leaves the row count at three —
+   on SQLite and on PostgreSQL.
+3. `loadcoach route explain --task …` on a profile weighting the measured capability selects the
+   **measured adapter subject**, and the explanation names the evidence that moved it; the same run
+   shows the unmeasured sibling rejected as `adapter_unmeasured`.
+4. A bundle naming an adapter absent from `[adapters] directory` imports with that record
+   `unmatched`; adding the adapter and running `loadcoach adapters scan` binds it with no re-import.
+5. **I18 whole:** a `1.1` bundle exported by FreeWeight on this machine, carried as a file, imported
+   by LoadCoach, three records bound, and an adapter subject visibly selected because of that
+   evidence — with no shared code and no shared database between the two applications.
+6. `loadcoach 1.1.0` and `freeweight 1.1.0` are prepared with the full gate green and coverage
+   ≥ 85 %.
+
+**Known risks:** a `NULL` in a unique key that an `ON CONFLICT` upsert can never conflict on, so a
+re-import duplicates silently; the halfway state (`rejected 0, unmatched 2`) reading as success; a
+binding that attaches an adapter's evidence to its base, which looks exactly like the feature
+working; a second migration adding a foreign key while SQLite's enforcement is suspended
+([ADR-0082](../../adr/0082-a-migration-run-suspends-sqlite-foreign-key-enforcement.md)).
+**Likely failure modes:** the key moved in three of its four spellings; a digest compared with the
+`sha256:` prefix on one side and without it on the other, which is a silent no-match rather than an
+error; `bound_signals_for_routing` still keyed by model, so every subject on a base gets every
+subject's evidence; a record for an absent adapter rejected rather than retained, discarding a
+measurement because of a local absence.
+**Gold standards:** a measurement is never discarded for a local absence; a subject is scored on its
+own evidence or on none; two applications agree over a file, with no shared code and no shared
+database.
+**Deferred:** tier profiles weighting adapter-relevant capabilities (PromptCadence, LA3 §4.5);
+paging for a base with a hundred subjects — the comparison grouping is capped, not paged.

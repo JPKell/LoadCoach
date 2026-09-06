@@ -199,6 +199,22 @@ performance, memory or energy constraints
    artifact never leaves this machine** ([ADR-0065](../../adr/0065-an-adapter-is-classified-and-local-only.md)),
    and the effective classification of work is `max(caller, adapter)`, recorded on every attempt
    that used one.
+3c. **Adapter-evidence contract.** An imported record measured on `(base, adapter)` describes
+   **that subject** and binds to it, never to the bare base and never to a sibling
+   ([ADR-0058](../../adr/0058-the-execution-subject-gains-an-adapter-axis.md) §4,
+   [ADR-0059](../../adr/0059-adapter-evidence-is-measured-never-inherited.md),
+   [ADR-0081](../../adr/0081-an-adapter-subject-inherits-no-evidence-from-its-base.md)). The
+   uniqueness key carries the adapter's **artifact digest**, so a base and every adapter subject on
+   it are separate rows rather than one collision
+   ([ADR-0085](../../adr/0085-the-evidence-uniqueness-key-carries-the-adapter.md),
+   [ADR-0086](../../adr/0086-the-consumers-adapter-key-column-is-not-nullable.md)). A record naming
+   an adapter this operator does not hold is **retained `unmatched`**, never rejected — a
+   measurement is not discarded because of a local absence — and binds on a later directory scan
+   with no re-import, exactly as evidence for an undiscovered model does
+   ([ADR-0022](../../adr/0022-capability-evidence-record-contract.md) §4). Routing scores each
+   subject on **its own** evidence: an unmeasured adapter stays unmeasured however well its base or
+   its siblings score, and `require_adapter_evidence` keeps refusing to route it
+   ([ADR-0064](../../adr/0064-adapters-are-selected-through-the-capability-vocabulary.md) rule 3).
 4. **Feedback contract.** `POST /jobs/{id}/feedback` accepts an acceptance signal and optional
    quality/validation detail; it is idempotent per `(job_id, source)`.
 5. **Streaming contract.** SSE per [API Standards §8](../../standards/api-and-contract-standards.md),

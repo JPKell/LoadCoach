@@ -97,6 +97,9 @@ normative and matches the producer's — see
 ```text
 id ULID PK
 model_id FK NULL                     -- NULL until bound to a discovered model
+adapter_id FK→adapters NULL          -- the adapter subject this row was measured on, once bound
+adapter_artifact_digest TEXT NOT NULL DEFAULT ''
+                                     -- the adapter's identity, '' for the bare base
 provider_kind · provider_model_name · artifact_digest NULL · canonical_id
                                      -- the identity is stored denormalized, so evidence can be
                                      -- imported before the model is discovered
@@ -112,9 +115,36 @@ imported_at · source_id FK→evidence_sources
 policy_version · vocabulary_version
 stale BOOLEAN · stale_reason
 record_json                          -- the capability.evidence payload exactly as it arrived
-UNIQUE (source_id, canonical_id, runtime_profile_hash, machine_fingerprint,
-        capability_id, policy_version)
+UNIQUE (source_id, canonical_id, adapter_artifact_digest, runtime_profile_hash,
+        machine_fingerprint, capability_id, policy_version)
+        -- named uq_capability_evidence_subject
 ```
+
+**The key is the subject, not the base**
+([ADR-0085](../../adr/0085-the-evidence-uniqueness-key-carries-the-adapter.md)): a base and every
+adapter subject measured on it are separate measurements and occupy separate rows, which the
+six-column key this replaced collapsed into one. `adapter_artifact_digest` carries the adapter's
+**artifact digest** — its identity ([ADR-0061](../../adr/0061-the-adapter-registry-is-a-directory-and-a-manifest.md)
+rule 5), never its name, so a rename cannot merge two adapters' histories and a re-export under a
+new label cannot split one.
+
+The column is **`NOT NULL`, and the bare base is the empty string**
+([ADR-0086](../../adr/0086-the-consumers-adapter-key-column-is-not-nullable.md)). LoadCoach writes
+this table through `weightsdb.upsert` — `INSERT … ON CONFLICT (…) DO UPDATE` — and a conflict
+target containing a `NULL` never fires, so a nullable key column would insert a second row on every
+re-import of a bare-base record rather than updating the first: no error, no rejection, and one
+subject scored twice. It is the same sentinel, chosen for the same reason, that
+[ADR-0080](../../adr/0080-a-persisted-decision-names-the-subject-by-reference-and-by-string.md)
+rule 5 put in `reliability_stats` and `residency`. `adapter_id` is the real foreign key beside it
+and is what binding writes and queries join on; it is `NULL` for a bare-base row **and** for a row
+naming an adapter this operator does not hold, and the key column carries the identity either way.
+It differs from `reliability_stats.adapter_key`, which carries the adapter's row id, for one
+reason: reliability is computed from local attempts, so the row always exists, while evidence
+arrives from another machine and may name an adapter that has never been here.
+
+The constraint is named explicitly for the reason the six-column version already was: the
+convention's generated identifier is far past PostgreSQL's 63 characters, and a truncated name makes
+the model and the database disagree for ever.
 
 `record_json` holds the producer's document unchanged. The columns above it are the queryable
 projection ADR-0022 §1 makes normative; this is the document itself, kept because
