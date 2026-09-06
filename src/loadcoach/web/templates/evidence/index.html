@@ -52,7 +52,7 @@
 {{ empty_state("Nothing imported yet.") }}
 {% else %}
 {% set columns = [
-  {"label": "Model"}, {"label": "Capability"}, {"label": "Score", "numeric": true},
+  {"label": "Subject"}, {"label": "Capability"}, {"label": "Score", "numeric": true},
   {"label": "Confidence", "numeric": true}, {"label": "Samples", "numeric": true},
   {"label": "Age (days)", "numeric": true}, {"label": "Runtime profile"}, {"label": "Machine"},
   {"label": "State"}, {"label": "Source"}
@@ -60,7 +60,7 @@
 {% set rows = [] %}
 {% for record in records %}
 {% set _ = rows.append([
-  record.canonical_id,
+  record.subject_canonical_id,
   record.capability_id ~ (" — judge agreement kappa_w "
      ~ "%.2f"|format(record.goal.calibration.kappa_w) ~ " over "
      ~ record.goal.calibration.n_holdout ~ " held-out samples"

@@ -118,6 +118,7 @@ def get_model(request: Request, principal: CurrentPrincipal, model_ref: str) -> 
     from sqlalchemy import select
 
     from loadcoach.infrastructure.db.models import CapabilityEvidence, Model
+    from loadcoach.services.evidence import subject_canonical_id_of
     from loadcoach.services.reliability import reliability_report
 
     with database.read() as session:
@@ -125,6 +126,7 @@ def get_model(request: Request, principal: CurrentPrincipal, model_ref: str) -> 
         descriptor = None if row is None else row.descriptor_json
         evidence = [
             {
+                "subject_canonical_id": subject_canonical_id_of(item),
                 "capability_id": item.capability_id,
                 "score": item.score,
                 "confidence": item.confidence,

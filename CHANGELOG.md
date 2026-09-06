@@ -24,6 +24,13 @@ packaging and release standards §3.
   naming it and binds on the next directory scan with no re-import, exactly as evidence for an
   undiscovered model does. It replaces the rule that retained *every* adapter-bearing record
   `unmatched`, and it never attaches an adapter's measurement to the bare base.
+- **A subject's own evidence scores it** ([ADR-0081](docs/adr/0081-an-adapter-subject-inherits-no-evidence-from-its-base.md)).
+  Routing reads imported evidence keyed on the subject, `(model_id, adapter_key)` — the shape
+  `reliability_stats` already uses — so a base candidate takes the base's measurements and an
+  adapter candidate takes its own. A measured adapter now passes `require_adapter_evidence`, which
+  is unchanged; an unmeasured sibling on the same base is still rejected `adapter_unmeasured` in the
+  same decision. `loadcoach evidence show`, `GET /evidence` and the evidence page name the
+  **subject** rather than the base, so two measurements on one base read as two things.
 
 ### Fixed
 - **The 1.1 migrations run on PostgreSQL, not only on SQLite.** Three defects, each invisible on

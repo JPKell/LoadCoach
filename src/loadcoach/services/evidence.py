@@ -94,6 +94,7 @@ __all__ = [
     "RebindOutcome",
     "SourceStatus",
     "bound_signals_for_routing",
+    "subject_canonical_id_of",
     "capability_coverage",
     "credential_for",
     "evidence_overview",
@@ -271,6 +272,22 @@ def _identity_of(record: CapabilityEvidenceFields) -> EvidenceIdentity:
         adapter_name=None if adapter is None else adapter.name,
         adapter_artifact_digest=None if adapter is None else adapter.artifact_digest,
     )
+
+
+def subject_canonical_id_of(row: CapabilityEvidence) -> str:
+    """The subject string one stored row describes (ADR-0058 §3).
+
+    The base's ``canonical_id`` plus the adapter's materialized ``canonical_suffix``, taken from
+    the document as it arrived rather than recomputed — the producer wrote it, SetSpec validated
+    it against the adapter identity, and rebuilding it here would be a second definition able to
+    drift from the first. A bare-base row's subject *is* its ``canonical_id``, byte for byte.
+    """
+    if not row.adapter_artifact_digest:
+        return row.canonical_id
+    document = row.record_json
+    adapter = document.get("adapter") if isinstance(document, dict) else None
+    suffix = adapter.get("canonical_suffix") if isinstance(adapter, dict) else None
+    return f"{row.canonical_id}{suffix}" if isinstance(suffix, str) else row.canonical_id
 
 
 def _adapter_name_of(row: CapabilityEvidence) -> str | None:
@@ -1297,8 +1314,8 @@ def bound_signals_for_routing(
     weights: Mapping[str, float],
     now: datetime,
     local_machine_fingerprint: str | None = None,
-) -> dict[str, tuple[CapabilitySignal, ...]]:
-    """Read the benchmark evidence routing may score, keyed by model.
+) -> dict[tuple[str, str], tuple[CapabilitySignal, ...]]:
+    """Read the benchmark evidence routing may score, keyed by **subject**.
 
     Three rules are applied here rather than in scoring, because each needs either the store or
     the clock and scoring has neither:
@@ -1306,6 +1323,12 @@ def bound_signals_for_routing(
     * **Only ``match_state = 'bound'``.** The query filters on it and uses
       ``(model_id, capability_id)``, which is data model §4's stated plan for exactly this
       lookup. Unbound rows are counted in the explanation's summary instead.
+    * **A subject is scored on its own evidence, or on none.** The key is
+      ``(model_id, adapter_key)`` — the shape ``reliability_stats`` already uses, so one
+      application does not carry two spellings of one concept — and a measurement taken on
+      ``(base, adapterA)`` reaches that subject's candidate and no other. A base's benchmark
+      never raises an adapter subject, and an adapter's never raises its base
+      (ADR-0081, ADR-0059, ADR-0058 §4).
     * **The ``user.*`` opt-in.** A ``user.*`` capability the active task profile does not name
       never becomes a signal at all, so importing one changes no existing decision — not its
       score, not its flags, not its breakdown (ADR-0032 §6). Naming it in the profile makes it
@@ -1323,7 +1346,9 @@ def bound_signals_for_routing(
         local_machine_fingerprint: This machine's fingerprint, or ``None``.
 
     Returns:
-        ``model_id -> signals``. A model with no bound evidence has no entry, not an empty one.
+        ``(model_id, adapter_key) -> signals``, where ``adapter_key`` is the bound adapter's row
+        id or ``""`` for the bare base. A subject with no bound evidence has no entry, not an
+        empty one.
     """
     from sqlalchemy import select
 
@@ -1338,13 +1363,13 @@ def bound_signals_for_routing(
             .all()
         )
 
-    per_model: dict[str, list[EvidenceCandidate]] = {}
+    per_subject: dict[tuple[str, str], list[EvidenceCandidate]] = {}
     facts: dict[str, CapabilityEvidence] = {}
     for row in rows:
         if row.model_id is None or not weights_admit(row.capability_id, weights):
             continue
         facts[row.id] = row
-        per_model.setdefault(row.model_id, []).append(
+        per_subject.setdefault((row.model_id, row.adapter_id or ""), []).append(
             EvidenceCandidate(
                 row_id=row.id,
                 capability_id=row.capability_id,
@@ -1360,12 +1385,12 @@ def bound_signals_for_routing(
             )
         )
 
-    signals: dict[str, tuple[CapabilitySignal, ...]] = {}
-    for model_id, candidates in per_model.items():
+    signals: dict[tuple[str, str], tuple[CapabilitySignal, ...]] = {}
+    for subject, candidates in per_subject.items():
         selected = collapse_evidence(
             candidates, local_machine_fingerprint=local_machine_fingerprint
         )
-        signals[model_id] = tuple(
+        signals[subject] = tuple(
             CapabilitySignal(
                 capability_id=candidate.capability_id,
                 source="benchmark",
@@ -1451,7 +1476,11 @@ class EvidenceRow:
 
     Attributes:
         row_id: The ``capability_evidence`` ULID; also the pagination cursor.
-        canonical_id: The measured model.
+        canonical_id: The measured model — the **base**, whatever ran on it.
+        subject_canonical_id: The measured **subject**: ``canonical_id`` for a bare-base record,
+            and ``canonical_id`` plus the adapter's ``+name@digest`` suffix for one measured under
+            an adapter (ADR-0058 §3). This is what a person should be shown, because two records
+            on one base under two adapters are two measurements of two different things.
         capability_id: The capability.
         match_state: Whether it scores.
         score: The measured ability.
@@ -1473,6 +1502,7 @@ class EvidenceRow:
 
     row_id: str
     canonical_id: str
+    subject_canonical_id: str
     capability_id: str
     match_state: str
     score: float
@@ -1569,6 +1599,7 @@ def query_evidence(database: Database, query: EvidenceQuery, *, now: datetime) -
             EvidenceRow(
                 row_id=row.id,
                 canonical_id=row.canonical_id,
+                subject_canonical_id=subject_canonical_id_of(row),
                 capability_id=row.capability_id,
                 match_state=row.match_state,
                 score=row.score,

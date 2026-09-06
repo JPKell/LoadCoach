@@ -386,7 +386,9 @@ def _read_candidates(
 
     The benchmark half filters on ``match_state = 'bound'`` and applies the ``user.*`` opt-in
     before a signal exists at all — see
-    :func:`~loadcoach.services.evidence.bound_signals_for_routing`.
+    :func:`~loadcoach.services.evidence.bound_signals_for_routing`. It is keyed on the **subject**,
+    ``(model_id, adapter_key)``, so a base candidate takes the base's measurements and an adapter
+    candidate takes its own: no evidence crosses between subjects on one base (ADR-0081).
 
     Each candidate carries **its own** registration's provider facts (ADR-0055 rule 3: one pool,
     tagged), falling back to ``provider`` for a row whose registration is not in the map — a model
@@ -412,7 +414,7 @@ def _read_candidates(
     for model in models:
         facts = _facts_for(model, is_remote=provider.is_remote)
         candidate_provider = provider_facts_by_name.get(model.provider_name, provider)
-        signals = _signals_for(by_model.get(model.id, [])) + evidence.get(model.id, ())
+        signals = _signals_for(by_model.get(model.id, [])) + evidence.get((model.id, ""), ())
         candidates.append((facts, candidate_provider, signals, None))
         if not candidate_provider.adapter_hot_swap:
             # ADR-0062 decision 5: a provider that cannot hot-swap contributes no adapter
@@ -420,20 +422,27 @@ def _read_candidates(
             # construction rather than by a check somebody could forget.
             continue
         for adapter in adapters.get(facts.provider_model_name, ()):
-            candidates.append((facts, candidate_provider, _adapter_signals(adapter), adapter))
+            subject_signals = _adapter_signals(adapter) + evidence.get(
+                (model.id, adapter.adapter_id), ()
+            )
+            candidates.append((facts, candidate_provider, subject_signals, adapter))
     return tuple(candidates)
 
 
 def _adapter_signals(adapter: AdapterFacts) -> tuple[CapabilitySignal, ...]:
-    """Return the signals an adapter subject carries: its manifest's claims, and nothing else.
+    """Return the **declared** half of an adapter subject's signals: its manifest's claims.
 
-    An adapter subject inherits **nothing** from its base. A benchmark taken on the bare weights
-    describes the bare weights: attributing it to a subject running a LoRA nobody measured would
-    raise the score of weights nobody measured, which is exactly the mis-binding ADR-0058 §4
-    refuses in the evidence importer. So an adapter subject's only signals are the vocabulary
-    terms its manifest declares (ADR-0064 rule 1), at the same declared score and confidence a
-    provider flag gets — a statement, never a measurement, which is why ``require_adapter_evidence``
-    still rejects it.
+    The vocabulary terms the manifest declares (ADR-0064 rule 1), at the same declared score and
+    confidence a provider flag gets — a statement, never a measurement, which is why
+    ``require_adapter_evidence`` refuses to route on these alone.
+
+    The measured half arrives separately, from
+    :func:`~loadcoach.services.evidence.bound_signals_for_routing` keyed on this subject, and the
+    caller adds it. It is that subject's own imported evidence and nothing else: an adapter subject
+    inherits **nothing** from its base and nothing from a sibling, because a benchmark taken on the
+    bare weights describes the bare weights (ADR-0081, ADR-0059, ADR-0058 §4). An adapter nobody
+    has measured therefore still carries declarations only, and is still rejected
+    ``adapter_unmeasured``.
     """
     return tuple(
         CapabilitySignal(

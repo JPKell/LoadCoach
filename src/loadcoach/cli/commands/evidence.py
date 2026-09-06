@@ -223,6 +223,7 @@ def show_evidence(
                     "records": [
                         {
                             "canonical_id": row.canonical_id,
+                            "subject_canonical_id": row.subject_canonical_id,
                             "capability_id": row.capability_id,
                             "score": row.score,
                             "confidence": row.confidence,
@@ -258,11 +259,11 @@ def show_evidence(
             f"{entry.stale:>6}"
         )
     typer.echo("")
-    typer.echo(f"{'MODEL':<44} {'CAPABILITY':<24} {'SCORE':>6} {'CONF':>5} {'AGE':>4}  STATE")
+    typer.echo(f"{'SUBJECT':<44} {'CAPABILITY':<24} {'SCORE':>6} {'CONF':>5} {'AGE':>4}  STATE")
     for row in page.items:
         state = row.match_state + (f" · stale: {row.stale_reason}" if row.stale else "")
         typer.echo(
-            f"{row.canonical_id[:44]:<44} {row.capability_id[:24]:<24} {row.score:>6.3f} "
+            f"{row.subject_canonical_id[:44]:<44} {row.capability_id[:24]:<24} {row.score:>6.3f} "
             f"{row.confidence:>5.2f} {row.age_days:>4}  {state}"
         )
     typer.echo("")
