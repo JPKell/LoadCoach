@@ -104,12 +104,30 @@ def test_a_valid_profile_loads_cleanly() -> None:
     assert loaded.weights == {"reasoning": 0.6, "instruction_following": 0.4}
 
 
-def test_all_twenty_shipped_profiles_load_and_validate() -> None:
-    """dev-plan P2 acceptance criterion 1."""
+def test_every_shipped_profile_loads_and_validates() -> None:
+    """dev-plan P2 acceptance criterion 1, counting the twenty-one routing.md §2 names."""
     profiles = read_task_profiles_file(DEFAULT_TASK_PROFILES_PATH, schemas_dir=DEFAULT_SCHEMAS_DIR)
     profile_ids = {profile.profile_id for profile in profiles}
-    assert len(profiles) == 20
+    assert len(profiles) == 21
     assert "content.review" in profile_ids
+    assert "adapters.measured" in profile_ids
+
+
+def test_the_adapter_profile_pins_no_context_because_a_context_excludes_evidence() -> None:
+    """The profile that scores imported adapter evidence must not disqualify it (ADR-0023).
+
+    ``min_context_tokens`` makes LoadCoach configure a served context where the provider allows
+    one, which enters ``runtime_profile_hash`` — and evidence measured under a different profile is
+    excluded by name. A minimum here would make this profile score only evidence measured under the
+    same context, which is the opposite of what it is for.
+    """
+    profiles = read_task_profiles_file(DEFAULT_TASK_PROFILES_PATH, schemas_dir=DEFAULT_SCHEMAS_DIR)
+    adapters = next(p for p in profiles if p.profile_id == "adapters.measured")
+    # 0 is "unset" in this schema's type system, and is what makes the resolved runtime profile
+    # carry no `context_size` at all — verified live: this profile routes with
+    # `served_context … (assumed)` and a hash matching FreeWeight's own default.
+    assert adapters.constraints.min_context_tokens == 0
+    assert set(adapters.weights) == {"instruction_following", "structured_output"}
 
 
 def test_content_review_weighted_on_the_documented_capabilities() -> None:

@@ -574,3 +574,41 @@ fallback_depth = 1
 [task_profiles."tools.plan".validation]
 require_valid_json = true
 max_output_chars = 50000
+
+# `adapters.measured` is the profile an operator reaches for after importing FreeWeight adapter
+# evidence, and it is shaped by two facts about how that evidence is produced and read.
+#
+# **Its weights are the A-2 regression panel's two fixed suites.** FreeWeight measures
+# `instruction_following` and `structured_output` on *every* adapter subject it measures, by
+# construction (catalogue §8.2) — a subject's declared capabilities vary, these two do not. So this
+# is the one weighting guaranteed to find a measurement on any measured adapter subject, whatever
+# the adapter was trained for.
+#
+# **It sets no `min_context_tokens`, deliberately.** A minimum makes LoadCoach configure a served
+# context where the provider allows one, which puts `context_size` in the runtime profile and
+# therefore in `runtime_profile_hash`. Evidence measured under a different profile is excluded by
+# name (ADR-0023), so a profile that pins a context can only score evidence measured under that
+# same context. Leaving it unset matches FreeWeight's own default and is what makes an imported
+# bundle scoreable without the two applications' configurations being tuned against each other.
+# A deployment that does pin a context here must pin the same one in FreeWeight's `[runtime]`.
+[task_profiles."adapters.measured"]
+version = "1.0.0"
+description = "Select among a base and its measured adapter subjects, on what the regression panel measures for all of them."
+
+[task_profiles."adapters.measured".weights]
+instruction_following = 0.50
+structured_output = 0.50
+
+[task_profiles."adapters.measured".constraints]
+max_latency_p95_seconds = 60
+allow_remote_providers = false
+
+[task_profiles."adapters.measured".execution]
+temperature = 0.2
+max_output_tokens = 2048
+response_format = "text"
+max_attempts = 2
+fallback_depth = 1
+
+[task_profiles."adapters.measured".validation]
+max_output_chars = 50000

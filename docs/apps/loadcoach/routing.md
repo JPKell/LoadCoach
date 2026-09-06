@@ -73,9 +73,17 @@ Shipped profiles: `general.chat`, `general.reasoning`, `general.summarize`, `cod
 `content.article_draft`, `content.rewrite`, `content.edit`, `content.review`,
 `content.fact_check`, `structured.extract`, `tools.agent`, `tools.agent.local_fast`,
 `tools.agent.local_large`, `tools.agent.remote_cheap`, `tools.agent.remote_frontier`,
-`tools.plan` — twenty.
+`tools.plan`, `adapters.measured` — twenty-one.
 
-The last five are **PromptCadence's harness profiles**, namespaced specializations of `tools.agent`
+`adapters.measured` is the profile that scores **imported adapter evidence**. Its weights are the
+A-2 regression panel's two fixed suites, which FreeWeight measures on every adapter subject it
+measures at all, so it finds a measurement whatever an adapter was trained for. It sets **no**
+`min_context_tokens`, deliberately: a minimum makes LoadCoach configure a served context, which
+enters `runtime_profile_hash`, and evidence measured under a different profile is excluded by name
+([ADR-0023](../../adr/0023-runtime-profile-resolution.md)). A deployment that pins a context here
+must pin the same one in FreeWeight's `[runtime]`.
+
+The five before it are **PromptCadence's harness profiles**, namespaced specializations of `tools.agent`
 shipped as LoadCoach configuration rather than PromptCadence code
 ([ADR-0047 §1](../../adr/0047-a-tier-is-configuration-and-a-model-never-sizes-its-own-budget.md)).
 A PromptCadence tier is a name over exactly one of them, so the four `tools.agent.*` profiles carry

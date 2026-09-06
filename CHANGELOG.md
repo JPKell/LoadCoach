@@ -58,6 +58,19 @@ on a real provider at all.
   is unchanged; an unmeasured sibling on the same base is still rejected `adapter_unmeasured` in the
   same decision. `loadcoach evidence show`, `GET /evidence` and the evidence page name the
   **subject** rather than the base, so two measurements on one base read as two things.
+- **`adapters.measured`, a twenty-first shipped task profile.** The profile to route with after
+  importing FreeWeight adapter evidence. Its weights are the A-2 regression panel's two fixed
+  suites — the only capabilities FreeWeight measures on *every* adapter subject it measures at all —
+  so it finds a measurement whatever an adapter was trained for. It sets **no**
+  `min_context_tokens`, deliberately: a minimum makes LoadCoach configure a served context, which
+  enters `runtime_profile_hash`, and evidence measured under a different profile is excluded by name
+  ([ADR-0023](docs/adr/0023-runtime-profile-resolution.md)). A deployment that pins a context here
+  must pin the same one in FreeWeight's `[runtime]`.
+- **`loadcoach adapters sync`.** Registers the reviewed manifests and binds any evidence that was
+  waiting for them, reporting both counts. The same pass already ran at server startup and before
+  every routed decision, so nothing here is new behaviour — but the sequence an operator actually
+  performs (import a bundle, review a manifest, expect the evidence to attach) previously depended
+  on a routing call happening next, which is a side effect rather than an instruction.
 - **A caller may declare its own data classification, and the effective classification is the join**
   (ADR-0065 rule 2). `POST /generate` and `POST /jobs` take an optional `data_classification` —
   `public`, `internal` or `confidential` — and LoadCoach records `max(caller, adapter)` as the
