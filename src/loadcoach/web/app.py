@@ -79,6 +79,10 @@ _STATUS_BY_CODE: dict[str, int] = {
     "PROVIDER_TIMEOUT": status.HTTP_504_GATEWAY_TIMEOUT,
     "PROVIDER_PROTOCOL_ERROR": status.HTTP_502_BAD_GATEWAY,
     "MODEL_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+    "ADAPTER_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+    # Permanent for the request as written: an identical retry changes nothing, so it is never
+    # retried and never triggers a fallback (api.md §10, ADR-0074).
+    "PROFILE_MISMATCH": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "CONTEXT_LIMIT_EXCEEDED": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "CAPABILITY_UNSUPPORTED": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "INSUFFICIENT_RESOURCES": status.HTTP_503_SERVICE_UNAVAILABLE,

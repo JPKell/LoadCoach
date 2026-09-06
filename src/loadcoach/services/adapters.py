@@ -8,8 +8,9 @@ and it arrives with subject expansion.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
+from baseaicore import SuiteError
 from sqlalchemy import select
 from weightsdb import upsert
 
@@ -44,8 +45,10 @@ __all__ = [
 ]
 
 
-class AdaptersDisabled(Exception):
+class AdaptersDisabled(SuiteError):
     """``[adapters] directory`` is empty, so the feature is off (ADR-0061 rule 2)."""
+
+    code: ClassVar[str] = "CONFIGURATION_ERROR"
 
     def __init__(self) -> None:
         """Say which key turns it on, because "nothing happened" is not a diagnosis."""
@@ -55,8 +58,15 @@ class AdaptersDisabled(Exception):
         )
 
 
-class AdapterNotFound(Exception):
-    """No adapter of that name is in the directory."""
+class AdapterNotFound(SuiteError):
+    """No adapter of that name is available — in the directory, or on the provider that would serve.
+
+    A pin is an assertion, so it fails loudly rather than falling back to the bare base
+    (ADR-0064 rule 4). ``details`` names the adapter that was asked for and the names that exist,
+    because "not found" without the alternatives is a dead end (spec §13, api.md §10).
+    """
+
+    code: ClassVar[str] = "ADAPTER_NOT_FOUND"
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,9 +194,10 @@ def show_adapter(
     for view in overview.adapters:
         if view.entry.name == name:
             return view
-    known = ", ".join(view.entry.name for view in overview.adapters) or "none"
+    names = [view.entry.name for view in overview.adapters]
+    known = ", ".join(names) or "none"
     message = f"no adapter named {name!r} in {overview.directory}; known adapters: {known}"
-    raise AdapterNotFound(message)
+    raise AdapterNotFound(message, details={"adapter": name, "known_adapters": names})
 
 
 def scan_adapters(

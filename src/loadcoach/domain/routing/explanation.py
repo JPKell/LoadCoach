@@ -71,11 +71,26 @@ class Explanation:
     flags: tuple[str, ...]
 
 
+def _subject_payload(subject: ExecutionSubject) -> dict[str, Any]:
+    """The subject fields every candidate entry carries (routing §8).
+
+    ``subject_canonical_id`` is byte-for-byte ``canonical_id`` for a bare base, and ``adapter`` is
+    ``None`` — so a 1.0 reader of this document sees exactly the numbers it saw before, and a 1.1
+    reader never has to work out which weights answered (ADR-0058 §3).
+    """
+    return {
+        "subject_canonical_id": subject.subject_canonical_id,
+        "provider_name": subject.facts.provider_name or None,
+        "adapter": None if subject.adapter is None else subject.adapter.as_json(),
+    }
+
+
 def _selected_payload(candidate: RankedCandidate) -> dict[str, Any]:
     """Build the ``selected`` object, which names the resolved subject in full (AC 1a)."""
     subject = candidate.subject
     return {
         "canonical_id": subject.facts.canonical_id,
+        **_subject_payload(subject),
         "model_id": subject.facts.model_id,
         "runtime_profile_hash": subject.runtime_profile_hash,
         "final_score": candidate.final_score,
@@ -90,6 +105,7 @@ def _candidate_payload(candidate: RankedCandidate) -> dict[str, Any]:
     subject = candidate.subject
     return {
         "canonical_id": subject.facts.canonical_id,
+        **_subject_payload(subject),
         "model_id": subject.facts.model_id,
         "runtime_profile_hash": subject.runtime_profile_hash,
         "served_context": subject.served_context.tokens,
@@ -110,6 +126,7 @@ def _rejected_payload(rejected: RejectedCandidate) -> dict[str, Any]:
     subject = rejected.subject
     return {
         "canonical_id": subject.facts.canonical_id,
+        **_subject_payload(subject),
         "model_id": subject.facts.model_id,
         "runtime_profile_hash": subject.runtime_profile_hash,
         "served_context": subject.served_context.tokens,

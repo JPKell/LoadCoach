@@ -854,3 +854,67 @@ def test_migration_0009_round_trips_on_sqlite() -> None:
         runner.upgrade(backup=False)
         assert runner.is_at_head()
         assert runner.check_parity(Base.metadata).matches
+
+
+def test_migration_0010_records_the_subject_and_keeps_the_claim_index_direction() -> None:
+    """Gate E's columns, and the index the `jobs` rebuild would otherwise flatten.
+
+    Adding a foreign key to `jobs` rebuilds the table on SQLite, and alembic recreates its indexes
+    from reflection — which drops the `DESC` on the claim index that migration 0004 exists to
+    establish. The assertion that matters here is that the direction survived, because the claim
+    is the hottest statement in the application.
+    """
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(backup=False)
+        assert runner.is_at_head()
+        assert runner.check_parity(Base.metadata).matches
+
+        with engine.connect() as connection:
+            attempts = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(job_attempts)"))
+            }
+            jobs = {row[1] for row in connection.execute(text("PRAGMA table_info(jobs)"))}
+            index_sql = connection.execute(
+                text(
+                    "SELECT sql FROM sqlite_master "
+                    "WHERE name = 'ix_jobs_state_effective_priority_created_at'"
+                )
+            ).scalar_one()
+            plan = [
+                row[3]
+                for row in connection.execute(
+                    text(
+                        "EXPLAIN QUERY PLAN SELECT id FROM jobs WHERE state = 'queued' "
+                        "ORDER BY effective_priority DESC, created_at ASC LIMIT 1"
+                    )
+                )
+            ]
+
+    assert {
+        "adapter_id",
+        "subject_canonical_id",
+        "adapter_data_classification",
+        "effective_data_classification",
+    } <= attempts
+    assert {"selected_adapter_id", "selected_subject_canonical_id"} <= jobs
+    assert "effective_priority DESC" in index_sql
+    assert not any("TEMP B-TREE" in step for step in plan), plan
+
+
+def test_migration_0010_round_trips_on_sqlite() -> None:
+    """Down to 0009 and back: six columns go and return, and the jobs rows survive both ways."""
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(backup=False)
+        runner.downgrade(revision="0009")
+
+        assert runner.current() == "0009"
+        with engine.connect() as connection:
+            jobs = {row[1] for row in connection.execute(text("PRAGMA table_info(jobs)"))}
+        assert "selected_adapter_id" not in jobs
+        assert {"id", "state", "task_profile_id"} <= jobs
+
+        runner.upgrade(backup=False)
+        assert runner.is_at_head()
+        assert runner.check_parity(Base.metadata).matches

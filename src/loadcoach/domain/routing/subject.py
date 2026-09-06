@@ -246,15 +246,25 @@ class RuntimeOverrides:
 
     Attributes:
         model: A canonical ID that bypasses scoring but not hard constraints.
+        adapter: An adapter's manifest name, with the same ``model``-pin semantics: it selects,
+            it does not suggest, and it bypasses **scoring** but not the hard constraints —
+            compatibility and classification still apply, and a pin that cannot be honoured is a
+            named refusal rather than a silent fall back to the bare base (ADR-0064 rule 4). It
+            does bypass ``require_adapter_evidence``, because that gate filters *routed*
+            selection and a pin is not routed selection.
         runtime_profile: Runtime settings that win over every configured level.
         disallow_fallback: Fail instead of naming fallbacks.
         require_evidence: Refuse to route on declared or manual priors.
+        ignore_residency: Zero both residency terms for this call (ADR-0066), recorded in the
+            explanation like every other override.
     """
 
     model: str | None = None
+    adapter: str | None = None
     runtime_profile: RuntimeProfile | None = None
     disallow_fallback: bool = False
     require_evidence: bool = False
+    ignore_residency: bool = False
 
 
 @dataclass(frozen=True, slots=True)

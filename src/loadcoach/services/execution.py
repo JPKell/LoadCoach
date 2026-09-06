@@ -100,6 +100,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AllCandidatesFailed",
+    "ProfileMismatched",
     "AttemptOutcome",
     "AttemptRecord",
     "AttemptRefused",
@@ -141,6 +142,18 @@ class AllCandidatesFailed(SuiteError):
     """
 
     code: ClassVar[str] = "ALL_CANDIDATES_FAILED"
+
+
+class ProfileMismatched(SuiteError):
+    """The resolved runtime profile does not describe the server that would serve the request.
+
+    ModelRack's own refusal, surfaced with LoadCoach's code (ADR-0074). Permanent for the request
+    as written, so it is never retried and never triggers a fallback. Seeing one is a LoadCoach
+    defect rather than an operator error: LoadCoach sets ``adapters_registered`` from what it
+    handed the provider, so it should never earn this refusal (api.md §10).
+    """
+
+    code: ClassVar[str] = "PROFILE_MISMATCH"
 
 
 class AttemptRefused(SuiteError):
@@ -336,7 +349,13 @@ def tool_definitions_of_json(payload: object) -> tuple[ToolDefinition, ...]:
 
 @dataclass(frozen=True, slots=True)
 class AttemptRecord:
-    """One attempt, exactly as it is stored and reported."""
+    """One attempt, exactly as it is stored and reported.
+
+    From 1.1 an attempt names the **subject** that answered, not the model alone (ADR-0080):
+    ``subject_canonical_id`` is what a person reads and ``adapter_id`` is what a query joins on,
+    and the two classification columns record what the work ran under even though adapters are
+    local-only and the lattice is therefore satisfied by construction (ADR-0065 rule 4).
+    """
 
     attempt: int
     canonical_id: str
@@ -361,12 +380,19 @@ class AttemptRecord:
     prompt_sha256: str | None = None
     validation: ValidationOutcome | None = None
     text: str = ""
+    subject_canonical_id: str = ""
+    adapter_id: str | None = None
+    adapter_name: str | None = None
+    adapter_data_classification: str | None = None
+    effective_data_classification: str | None = None
 
     def as_json(self) -> dict[str, Any]:
         """Return the attempt entry the API response carries."""
         return {
             "attempt": self.attempt,
             "model": self.canonical_id,
+            "subject": self.subject_canonical_id or self.canonical_id,
+            "adapter": self.adapter_name,
             "runtime_profile_hash": self.runtime_profile_hash,
             "rank": self.rank,
             "outcome": self.outcome,
@@ -754,6 +780,7 @@ def run_attempt(
     started_at = now()
     call = GenerationRequest(
         identity=_identity_of(subject.facts),
+        adapter=None if subject.adapter is None else subject.adapter.name,
         messages=turns,
         runtime_profile=subject.runtime_profile,
         tools=request.tools,
@@ -944,7 +971,7 @@ def _execute_attempts(
     RankedCandidate | None,
     _Collected | None,
     ValidationOutcome,
-    ValidationError | None,
+    SuiteError | None,
 ]:
     """The synchronous endpoints' loop: try each ranked candidate, retrying correctively.
 
@@ -958,6 +985,11 @@ def _execute_attempts(
     rather than while it was being answered. A refusal is returned rather than propagated so that
     the attempts already made are written by the caller's own persistence — the failure G1 hit was
     not the refusal itself but the rows it took with it (data model §2).
+
+    A **permanent** provider refusal is returned the same way, and for the same reason: a pin the
+    provider cannot honour (``ADAPTER_NOT_FOUND``) and a profile that does not describe the server
+    (``PROFILE_MISMATCH``) are permanent for the request as written, so retrying is pointless and
+    falling back would serve something the caller did not ask for (api.md §10, ADR-0074).
     """
     ranking = routing.explanation.ranking
     candidates = [ranking.primary, *ranking.fallbacks]
@@ -1009,6 +1041,9 @@ def _execute_attempts(
                 # sitting in `executing` until a watchdog (api.md §10).
                 return records, None, None, validation, refusal
             records.append(outcome.record)
+            permanent = _permanent_refusal(outcome.failure)
+            if permanent is not None:
+                return records, None, None, validation, permanent
             collected = _Collected(
                 text=outcome.text,
                 thinking=outcome.thinking,
@@ -1040,6 +1075,33 @@ def _execute_attempts(
                 return records, None, None, validation, refusal
 
     return records, None, None, validation, None
+
+
+def _permanent_refusal(failure: ProviderError | None) -> SuiteError | None:
+    """Return the refusal a failure is permanent for, or ``None`` to fall back as usual.
+
+    Two provider errors say "this request, as written, will never work": the provider does not
+    hold the adapter that was pinned, and the resolved runtime profile does not describe the
+    server that would serve it. Retrying either changes nothing and falling back serves something
+    the caller did not ask for, so both end the job with their attempts written.
+
+    Args:
+        failure: The provider error the attempt recorded, or ``None``.
+
+    Returns:
+        The refusal to fail the job with, or ``None`` for a failure that may be retried or
+        fallen back from.
+    """
+    from modelrack.errors import AdapterNotFound as ProviderAdapterNotFound
+    from modelrack.errors import ProfileMismatch
+
+    from loadcoach.services.adapters import AdapterNotFound
+
+    if isinstance(failure, ProviderAdapterNotFound):
+        return AdapterNotFound(str(failure), details=dict(failure.details))
+    if isinstance(failure, ProfileMismatch):
+        return ProfileMismatched(str(failure), details=dict(failure.details))
+    return None
 
 
 def identity_of(facts: ModelFacts) -> ModelIdentity:
@@ -1074,10 +1136,19 @@ def _record(
     correction: Any = None,
 ) -> AttemptRecord:
     result = collected.result
+    adapter = candidate.subject.adapter
     return AttemptRecord(
         attempt=attempt,
         canonical_id=candidate.subject.facts.canonical_id,
         model_id=candidate.subject.facts.model_id,
+        subject_canonical_id=candidate.subject.subject_canonical_id,
+        adapter_id=None if adapter is None else adapter.adapter_id,
+        adapter_name=None if adapter is None else adapter.name,
+        adapter_data_classification=None if adapter is None else adapter.data_classification,
+        # LoadCoach takes no caller classification today, so the join is the adapter's own value
+        # (ADR-0065 rule 2's max() with an absent left-hand side). Recorded rather than derived
+        # later, because the manifest can change and the attempt cannot.
+        effective_data_classification=None if adapter is None else adapter.data_classification,
         runtime_profile_hash=candidate.subject.runtime_profile_hash,
         rank=candidate.rank,
         outcome=outcome,
@@ -1412,6 +1483,14 @@ def _persist(
                     if outcome is not None and outcome.thinking is not None
                     else None,
                     selected_model_id=None if selected is None else selected.subject.facts.model_id,
+                    selected_adapter_id=(
+                        None
+                        if selected is None or selected.subject.adapter is None
+                        else selected.subject.adapter.adapter_id
+                    ),
+                    selected_subject_canonical_id=(
+                        None if selected is None else selected.subject.subject_canonical_id
+                    ),
                     runtime_profile_hash=(
                         None if selected is None else selected.subject.runtime_profile_hash
                     ),
@@ -1535,6 +1614,10 @@ def write_attempt(
         job_id=job_id,
         attempt=number,
         model_id=record.model_id,
+        adapter_id=record.adapter_id,
+        subject_canonical_id=record.subject_canonical_id or None,
+        adapter_data_classification=record.adapter_data_classification,
+        effective_data_classification=record.effective_data_classification,
         runtime_profile_hash=record.runtime_profile_hash,
         rank=record.rank,
         started_at=record.started_at,
@@ -1733,10 +1816,12 @@ def execute(
     provider_ms = sum(record.provider_ms or 0 for record in records)
 
     if refusal is not None:
-        # A request LoadCoach itself assembled was refused before any provider saw it. It is not a
-        # provider failure and not a routing failure — no candidate was rejected and nothing was
-        # called — so the job fails as VALIDATION_ERROR, and it fails *with* its attempts: the
-        # answer that provoked the corrective is only readable because these rows are written.
+        # Either a request LoadCoach itself assembled was refused before any provider saw it
+        # (VALIDATION_ERROR: not a provider failure and not a routing failure — no candidate was
+        # rejected and nothing was called), or a provider refused permanently (ADAPTER_NOT_FOUND,
+        # PROFILE_MISMATCH). Both fail the job *with* its attempts: the answer that provoked the
+        # corrective, and the attempt that earned the refusal, are only readable because these
+        # rows are written.
         _persist(
             database,
             job_id=job_id,

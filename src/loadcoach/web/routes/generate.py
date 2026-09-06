@@ -261,9 +261,11 @@ def overrides_of(body: OverridesBody | None) -> RuntimeOverrides | None:
     )
     return RuntimeOverrides(
         model=body.model,
+        adapter=body.adapter,
         runtime_profile=profile_override,
         disallow_fallback=body.disallow_fallback,
         require_evidence=body.require_evidence,
+        ignore_residency=body.ignore_residency,
     )
 
 

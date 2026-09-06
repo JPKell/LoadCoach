@@ -66,9 +66,20 @@ class OverridesBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model: str | None = Field(default=None)
+    adapter: str | None = Field(
+        default=None,
+        description=(
+            "An adapter's manifest name. Selects, like `model`: hard constraints still apply and "
+            "a pin that cannot be honoured is refused by name (ADR-0064 rule 4)."
+        ),
+    )
     runtime_profile: RuntimeProfileOverrideBody | None = Field(default=None)
     disallow_fallback: bool = Field(default=False)
     require_evidence: bool = Field(default=False)
+    ignore_residency: bool = Field(
+        default=False,
+        description="Zero both residency terms for this call (routing §6.1); recorded.",
+    )
 
 
 class RouteBody(BaseModel):
@@ -99,9 +110,11 @@ def _to_request(body: RouteBody) -> RouteRequest:
         constraints=body.constraints,
         overrides=RuntimeOverrides(
             model=overrides.model,
+            adapter=overrides.adapter,
             runtime_profile=profile_override,
             disallow_fallback=overrides.disallow_fallback,
             require_evidence=overrides.require_evidence,
+            ignore_residency=overrides.ignore_residency,
         ),
     )
 

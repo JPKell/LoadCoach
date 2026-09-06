@@ -76,7 +76,7 @@ from loadcoach.infrastructure.db.models import (
     RoutingDecision,
 )
 from loadcoach.infrastructure.db.models import RuntimeProfile as RuntimeProfileModel
-from loadcoach.services.adapters import adapter_facts_by_base_name
+from loadcoach.services.adapters import AdapterNotFound, adapter_facts_by_base_name
 from loadcoach.services.evidence import bound_signals_for_routing, evidence_overview
 from loadcoach.services.reliability import factors_for_task
 from loadcoach.services.task_profiles import StoredTaskProfile, list_stored_task_profiles
@@ -482,13 +482,17 @@ def telemetry_snapshot_json(snapshot: TelemetrySnapshot | None) -> dict[str, Any
 def _overrides_json(overrides: RuntimeOverrides) -> dict[str, Any] | None:
     if (
         overrides.model is None
+        and overrides.adapter is None
         and overrides.runtime_profile is None
         and not overrides.disallow_fallback
         and not overrides.require_evidence
+        and not overrides.ignore_residency
     ):
         return None
     return {
         "model": overrides.model,
+        "adapter": overrides.adapter,
+        "ignore_residency": overrides.ignore_residency,
         "runtime_profile_hash": (
             None if overrides.runtime_profile is None else overrides.runtime_profile.profile_hash
         ),
@@ -602,6 +606,9 @@ def route(
     selected_budget: ContextBudget | None = None
 
     top_weighted = _top_weighted_capability(profile.weights)
+    pinned_adapter = request.overrides.adapter
+    if pinned_adapter is not None:
+        _refuse_unknown_adapter(pinned_adapter, candidates)
     for facts, candidate_provider, signals, adapter in candidates:
         subject, missing_context = _build_subject(
             facts,
@@ -619,6 +626,12 @@ def route(
             continue
 
         if request.overrides.model is not None and facts.canonical_id != request.overrides.model:
+            continue
+
+        # An adapter pin selects, exactly as a model pin does (ADR-0064 rule 4). Every other
+        # subject — including the bare base this adapter would run on — leaves the pool, so the
+        # pin cannot silently fall back to serving without the adapter.
+        if pinned_adapter is not None and (adapter is None or adapter.name != pinned_adapter):
             continue
 
         estimate = estimate_vram(
@@ -658,7 +671,12 @@ def route(
                 resident_devices=resident_devices or {},
                 circuit_breaker_details=circuit_breaker_details or {},
                 request_capabilities=request_capabilities,
-                require_adapter_evidence=policy.require_adapter_evidence,
+                # A pin is not routed selection, so the evidence gate does not apply to it: an
+                # unmeasured adapter *is* pinnable, and every other hard constraint still runs
+                # (routing §10).
+                require_adapter_evidence=(
+                    policy.require_adapter_evidence and pinned_adapter is None
+                ),
                 top_weighted_capability=top_weighted,
             ),
         )
@@ -751,6 +769,37 @@ def _no_context_rejection(facts: ModelFacts) -> Rejection:
             ),
             "canonical_id": facts.canonical_id,
         },
+    )
+
+
+def _refuse_unknown_adapter(
+    pinned: str,
+    candidates: tuple[
+        tuple[ModelFacts, ProviderFacts, tuple[CapabilitySignal, ...], AdapterFacts | None], ...
+    ],
+) -> None:
+    """Refuse a pin no candidate could ever honour, before any candidate is evaluated.
+
+    A pin naming an adapter that no hot-swapping provider was offered is not "nothing was
+    eligible": there is no candidate to reject and no numbers to show, so ``NO_ELIGIBLE_MODEL``
+    with an empty rejection list would be the least useful possible answer. It is a 404 naming
+    what does exist (api.md §10).
+
+    Args:
+        pinned: The adapter name the request asked for.
+        candidates: The expanded candidate list.
+
+    Raises:
+        AdapterNotFound: No candidate carries an adapter of that name.
+    """
+    known = sorted({adapter.name for _, _, _, adapter in candidates if adapter is not None})
+    if pinned in known:
+        return
+    available = ", ".join(known) or "none"
+    raise AdapterNotFound(
+        f"no adapter named {pinned!r} is registered on any provider that could serve this "
+        f"request; adapters available here: {available}",
+        details={"adapter": pinned, "known_adapters": known},
     )
 
 

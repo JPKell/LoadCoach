@@ -29,6 +29,27 @@ packaging and release standards §3.
   An adapter subject inherits **no** evidence from its base: its only signals are the vocabulary
   terms its manifest declares. A benchmark taken on bare weights describes bare weights, and
   attributing it to a subject running a LoRA nobody measured is the mis-binding ADR-0058 §4 refuses.
+- **An adapter pin selects a subject, and every attempt records what answered** (ADR-0064 rule 4,
+  ADR-0080). `overrides.adapter` names an adapter by its manifest name and has `model`-pin
+  semantics: it bypasses scoring — every other subject, the bare base included, leaves the pool —
+  and bypasses `require_adapter_evidence`, because that gate filters *routed* selection and a pin
+  is not routed selection. It does **not** bypass a hard constraint: an incompatible pin is
+  refused by name with both digests, and a pin naming an adapter no provider holds is
+  `ADAPTER_NOT_FOUND` listing what does exist, never a silent fall back to the bare base.
+  `overrides.ignore_residency` is accepted and recorded alongside it.
+
+  `job_attempts` and `jobs` gain the subject (migration `0010`): `adapter_id`,
+  `subject_canonical_id`, and the adapter's own and effective data classifications — written on
+  every attempt that used an adapter even though the local-only rule makes the lattice hold by
+  construction, because an invariant nothing records is an invariant nobody can check
+  (ADR-0065 rule 4). The `/generate` response and the job document carry `subject_canonical_id`
+  and an `adapter` object read through the foreign key, never parsed out of the subject string.
+- **`loadcoach route explain --adapter NAME`**, and `--ignore-residency`. The command now builds
+  every registration and syncs the adapter directory first, so a one-shot explanation describes
+  the same pool a running server would.
+- **A permanent provider refusal ends the job instead of falling back.** `ADAPTER_NOT_FOUND` and
+  `PROFILE_MISMATCH` from a provider are permanent for the request as written, so they are never
+  retried and never trigger a fallback — the job fails with its attempts written (api.md §10).
 - **The `adapters` table** (migration `0009`), the projection of the operator's directory that
   routing reads — reading the directory means hashing every artifact, which no routing decision may
   do. Identity is the artifact hash; a row whose adapter has left the directory is kept and marked

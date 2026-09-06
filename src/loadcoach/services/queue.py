@@ -417,6 +417,8 @@ class JobRecord:
     lease_owner: str | None
     lease_expires_at: datetime | None
     selected_model_id: str | None
+    selected_adapter_id: str | None
+    selected_subject_canonical_id: str | None
     target_gpu_index: int | None
     runtime_profile_hash: str | None
     served_context: int | None
@@ -1212,6 +1214,8 @@ def _record(job: Job) -> JobRecord:
         lease_owner=job.lease_owner,
         lease_expires_at=job.lease_expires_at,
         selected_model_id=job.selected_model_id,
+        selected_adapter_id=job.selected_adapter_id,
+        selected_subject_canonical_id=job.selected_subject_canonical_id,
         target_gpu_index=job.target_gpu_index,
         runtime_profile_hash=job.runtime_profile_hash,
         served_context=job.served_context,
@@ -1267,7 +1271,13 @@ def job_document(database: Database, job_id: str) -> dict[str, Any]:
     """
     from baseaicore.timeutil import to_rfc3339
 
-    from loadcoach.infrastructure.db.models import JobAttempt, Model, RoutingDecision, Validation
+    from loadcoach.infrastructure.db.models import (
+        Adapter,
+        JobAttempt,
+        Model,
+        RoutingDecision,
+        Validation,
+    )
     from loadcoach.services.feedback import feedback_for_job
 
     record = get_job(database, job_id)
@@ -1279,6 +1289,13 @@ def job_document(database: Database, job_id: str) -> dict[str, Any]:
             .order_by(JobAttempt.attempt)
         ).all()
         last_attempt = attempts[-1][0] if attempts else None
+        # The adapter is read by its foreign key, never parsed out of the subject string: that
+        # string is written and never taken apart again (ADR-0024 §4, ADR-0080).
+        adapter_row = (
+            None
+            if last_attempt is None or last_attempt.adapter_id is None
+            else session.get(Adapter, last_attempt.adapter_id)
+        )
         checks = (
             []
             if last_attempt is None
@@ -1349,7 +1366,21 @@ def job_document(database: Database, job_id: str) -> dict[str, Any]:
         },
         "model": {
             "canonical_id": canonical,
+            # ADR-0058 §3: with no adapter this is byte-for-byte `canonical_id`, so a caller that
+            # reads only one of the two fields is never wrong about which weights answered.
+            "subject_canonical_id": record.selected_subject_canonical_id or canonical,
             "model_ref": record.selected_model_id,
+            "adapter": (
+                None
+                if last_attempt is None or adapter_row is None
+                else {
+                    "name": adapter_row.name,
+                    "adapter_ref": adapter_row.id,
+                    "artifact_digest": adapter_row.artifact_sha256,
+                    "data_classification": last_attempt.adapter_data_classification,
+                    "effective_data_classification": (last_attempt.effective_data_classification),
+                }
+            ),
             "runtime_profile_hash": record.runtime_profile_hash,
             "served_context": record.served_context,
             "served_context_source": record.served_context_source,

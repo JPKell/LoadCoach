@@ -24,10 +24,14 @@ from setspec import GeneratorInfo, SchemaVersion, dump_envelope
 from sqlalchemy import select
 
 from loadcoach.config import Settings
-from loadcoach.domain.routing.subject import ProviderFacts
+from loadcoach.domain.routing.subject import ProviderFacts, RuntimeOverrides
 from loadcoach.infrastructure.db.models import Adapter, RoutingCandidate
 from loadcoach.infrastructure.providers.factory import ProviderRegistration
-from loadcoach.services.adapters import adapter_facts_by_base_name, sync_adapters
+from loadcoach.services.adapters import (
+    AdapterNotFound,
+    adapter_facts_by_base_name,
+    sync_adapters,
+)
 from loadcoach.services.database import Database, ensure_ready
 from loadcoach.services.models import discover_models
 from loadcoach.services.routing import NoEligibleModel, RouteRequest, RoutingPolicy, route
@@ -402,3 +406,112 @@ def test_a_remote_registration_without_adapters_still_rejects_as_policy(tmp_path
         assert reasons == {"excluded_by_policy"}
     finally:
         handle.close()
+
+
+# --------------------------------------------------------------------------------------------
+# Pins (gate E)
+# --------------------------------------------------------------------------------------------
+
+
+def test_a_pin_selects_an_unmeasured_adapter_that_routing_would_never_have_reached(
+    database: Any, tmp_path: Path
+) -> None:
+    """Routing §10: the evidence gate filters *routed* selection, and a pin is not that."""
+    directory = tmp_path / "adapters"
+    directory.mkdir()
+    _write_adapter(directory, "terse")
+    sync_adapters(database, _settings(directory), now=NOW)
+
+    result = route(
+        database,
+        RouteRequest(
+            task="general.chat",
+            estimated_input_tokens=100,
+            overrides=RuntimeOverrides(adapter="terse"),
+        ),
+        provider=_facts(adapter_hot_swap=True, adapters_registered=True),
+        policy=RoutingPolicy(),
+        now=NOW,
+    )
+
+    primary = result.explanation.ranking.primary
+    assert primary is not None
+    assert primary.subject.adapter is not None
+    assert primary.subject.adapter.name == "terse"
+    assert "+terse@sha256:" in primary.subject.subject_canonical_id
+    # The bare base left the pool with every other subject: a pin selects, it does not suggest.
+    assert result.explanation.payload["candidates"][0]["adapter"]["name"] == "terse"
+    assert len(result.explanation.ranking.ordered) == 1
+
+
+def test_a_pin_does_not_bypass_a_hard_constraint(database: Any, tmp_path: Path) -> None:
+    """ADR-0064 rule 4: it bypasses scoring, never compatibility."""
+    directory = tmp_path / "adapters"
+    directory.mkdir()
+    _write_adapter(directory, "terse", base_digest="sha256:" + "c" * 64)
+    sync_adapters(database, _settings(directory), now=NOW)
+
+    with pytest.raises(NoEligibleModel):
+        route(
+            database,
+            RouteRequest(
+                task="general.chat",
+                estimated_input_tokens=100,
+                overrides=RuntimeOverrides(adapter="terse"),
+            ),
+            provider=_facts(adapter_hot_swap=True, adapters_registered=True),
+            policy=RoutingPolicy(),
+            now=NOW,
+        )
+
+    reasons = {row.rejection_reason for row in _candidates(database)}
+    assert reasons == {"adapter_incompatible"}
+
+
+def test_a_pin_naming_no_registered_adapter_is_a_named_404(database: Any, tmp_path: Path) -> None:
+    """`ADAPTER_NOT_FOUND` lists what does exist: "not found" alone is a dead end (api.md §10)."""
+    directory = tmp_path / "adapters"
+    directory.mkdir()
+    _write_adapter(directory, "terse")
+    sync_adapters(database, _settings(directory), now=NOW)
+
+    with pytest.raises(AdapterNotFound) as caught:
+        route(
+            database,
+            RouteRequest(
+                task="general.chat",
+                estimated_input_tokens=100,
+                overrides=RuntimeOverrides(adapter="pirate"),
+            ),
+            provider=_facts(adapter_hot_swap=True, adapters_registered=True),
+            policy=RoutingPolicy(),
+            now=NOW,
+        )
+
+    assert caught.value.code == "ADAPTER_NOT_FOUND"
+    assert caught.value.details["adapter"] == "pirate"
+    assert caught.value.details["known_adapters"] == ["terse"]
+
+
+def test_the_pin_is_recorded_in_the_persisted_overrides(database: Any, tmp_path: Path) -> None:
+    directory = tmp_path / "adapters"
+    directory.mkdir()
+    _write_adapter(directory, "terse")
+    sync_adapters(database, _settings(directory), now=NOW)
+
+    result = route(
+        database,
+        RouteRequest(
+            task="general.chat",
+            estimated_input_tokens=100,
+            overrides=RuntimeOverrides(adapter="terse", ignore_residency=True),
+        ),
+        provider=_facts(adapter_hot_swap=True, adapters_registered=True),
+        policy=RoutingPolicy(),
+        now=NOW,
+        persist=False,
+    )
+
+    overrides = cast("dict[str, Any]", result.explanation.payload["overrides"])
+    assert overrides["adapter"] == "terse"
+    assert overrides["ignore_residency"] is True

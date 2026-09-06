@@ -56,6 +56,17 @@ def explain(
     max_output_tokens: Annotated[
         int | None, typer.Option("--max-output-tokens", help="Override the profile's allowance.")
     ] = None,
+    adapter: Annotated[
+        str | None,
+        typer.Option(
+            "--adapter",
+            help="Pin an adapter by its manifest name. Selects; hard constraints still apply.",
+        ),
+    ] = None,
+    ignore_residency: Annotated[
+        bool,
+        typer.Option("--ignore-residency", help="Zero both residency terms for this call."),
+    ] = False,
     require_evidence: Annotated[
         bool,
         typer.Option("--require-evidence", help="Refuse to route on declared or manual priors."),
@@ -78,10 +89,10 @@ def explain(
     """
     from datetime import UTC, datetime
 
-    from modelrack import ProviderError, ProviderStatus
-
     from loadcoach.domain.routing.subject import ProviderFacts, RuntimeOverrides
-    from loadcoach.infrastructure.providers.factory import build_provider
+    from loadcoach.infrastructure.providers.factory import build_registrations
+    from loadcoach.services.adapters import AdapterNotFound, sync_adapters
+    from loadcoach.services.execution import provider_facts_for
     from loadcoach.services.machine import machine_fingerprint
     from loadcoach.services.routing import (
         NoEligibleModel,
@@ -94,20 +105,19 @@ def explain(
 
     with _open(config) as (database, settings):
         import_task_profiles(database, read_task_profiles_file(), now=datetime.now(UTC))
-        provider = build_provider(settings.provider)
-        try:
-            capabilities = provider.capabilities()
-            health = provider.health()
-            facts = ProviderFacts(
-                healthy=health.status is not ProviderStatus.UNAVAILABLE,
-                context_configurable=capabilities.context_configurable,
-                supports_tool_use=capabilities.tool_calling,
-                supports_structured_output=capabilities.structured_output,
-                supports_streaming=capabilities.streaming,
-                is_remote=health.is_remote,
+        # Every registration, not just the first: a candidate is evaluated against its own
+        # provider's capabilities (ADR-0055 rule 3), and an adapter subject exists only under one
+        # that can hot-swap. `sync_adapters` reads the operator's directory into rows first, so a
+        # one-shot command explains the same pool a running server would.
+        registrations = build_registrations(settings)
+        sync_adapters(database, settings, now=datetime.now(UTC))
+        facts_by_name = {
+            registration.name: provider_facts_for(
+                registration.provider, adapters_registered=registration.adapters_registered
             )
-        except ProviderError:
-            facts = ProviderFacts(healthy=False)
+            for registration in registrations
+        }
+        facts = facts_by_name.get(registrations[0].name, ProviderFacts(healthy=False))
 
         snapshot = _snapshot()
         try:
@@ -117,9 +127,14 @@ def explain(
                     task=task,
                     estimated_input_tokens=input_tokens,
                     max_output_tokens=max_output_tokens,
-                    overrides=RuntimeOverrides(require_evidence=require_evidence),
+                    overrides=RuntimeOverrides(
+                        adapter=adapter,
+                        ignore_residency=ignore_residency,
+                        require_evidence=require_evidence,
+                    ),
                 ),
                 provider=facts,
+                provider_facts_by_name=facts_by_name,
                 policy=RoutingPolicy.from_settings(
                     routing=settings.routing,
                     runtime=settings.runtime,
@@ -130,6 +145,9 @@ def explain(
                 snapshot=snapshot,
                 now=datetime.now(UTC),
             )
+        except AdapterNotFound as exc:
+            typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
+            raise typer.Exit(4) from exc
         except TaskProfileNotFound as exc:
             typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
             raise typer.Exit(5) from exc
@@ -166,7 +184,13 @@ def _print_human(payload: dict[str, object]) -> None:
     selected = cast("dict[str, Any] | None", payload["selected"])
     typer.echo(f"decision  {payload['decision_id']}  ({payload['duration_ms']} ms)")
     if selected is not None:
-        typer.echo(f"selected  {selected['canonical_id']}")
+        typer.echo(f"selected  {selected['subject_canonical_id']}")
+        if selected.get("adapter") is not None:
+            adapter = cast("dict[str, Any]", selected["adapter"])
+            typer.echo(
+                f"  adapter               {adapter['name']} "
+                f"({adapter['data_classification']}, evidence: declared)"
+            )
         typer.echo(f"  runtime_profile_hash  {selected['runtime_profile_hash']}")
         typer.echo(
             f"  served_context        {selected['served_context']} "
@@ -188,4 +212,4 @@ def _print_human(payload: dict[str, object]) -> None:
                 f"{rendered:<8} {capability['source']}"
             )
     for rejection in cast("list[dict[str, Any]]", payload["rejected"]):
-        typer.echo(f"  rejected {rejection['canonical_id']}: {rejection['reason']}")
+        typer.echo(f"  rejected {rejection['subject_canonical_id']}: {rejection['reason']}")

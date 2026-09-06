@@ -403,9 +403,27 @@
         "additionalProperties": false,
         "description": "Routing \u00a710's overrides, as far as this phase implements them.",
         "properties": {
+          "adapter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An adapter's manifest name. Selects, like `model`: hard constraints still apply and a pin that cannot be honoured is refused by name (ADR-0064 rule 4).",
+            "title": "Adapter"
+          },
           "disallow_fallback": {
             "default": false,
             "title": "Disallow Fallback",
+            "type": "boolean"
+          },
+          "ignore_residency": {
+            "default": false,
+            "description": "Zero both residency terms for this call (routing \u00a76.1); recorded.",
+            "title": "Ignore Residency",
             "type": "boolean"
           },
           "model": {

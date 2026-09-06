@@ -509,6 +509,10 @@ class Job(Base):
     selected_model_id: Mapped[str | None] = mapped_column(
         String(26), ForeignKey("models.id", ondelete="SET NULL"), nullable=True
     )
+    selected_adapter_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("adapters.id", ondelete="SET NULL"), nullable=True
+    )
+    selected_subject_canonical_id: Mapped[str | None] = mapped_column(String, nullable=True)
     runtime_profile_id: Mapped[str | None] = mapped_column(
         String(26), ForeignKey("runtime_profiles.id", ondelete="SET NULL"), nullable=True
     )
@@ -575,6 +579,12 @@ class JobAttempt(Base):
     model_id: Mapped[str | None] = mapped_column(
         String(26), ForeignKey("models.id", ondelete="SET NULL"), nullable=True
     )
+    adapter_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("adapters.id", ondelete="SET NULL"), nullable=True
+    )
+    subject_canonical_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    adapter_data_classification: Mapped[str | None] = mapped_column(String, nullable=True)
+    effective_data_classification: Mapped[str | None] = mapped_column(String, nullable=True)
     runtime_profile_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     started_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
