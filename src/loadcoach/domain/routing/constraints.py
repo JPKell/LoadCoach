@@ -23,11 +23,14 @@ from typing import TYPE_CHECKING, Final
 
 from baseaicore import is_supported
 
+from loadcoach.domain.evidence_policy import EVIDENCE_EXCLUSIONS
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from sweatmeter import TelemetrySnapshot
 
+    from loadcoach.domain.routing.scoring import CapabilityScore
     from loadcoach.domain.routing.subject import ExecutionSubject
 
 __all__ = [
@@ -338,9 +341,15 @@ class ConstraintInputs:
         allow_remote_providers: Whether a remote provider may be routed to at all.
         required_context: What context budgeting says this request needs, or ``None`` when the
             caller supplied no size to budget against.
-        resolved_scores: Capability -> resolved score, or ``None`` for an absent one. An absent
-            score is never treated as below a floor: absence of evidence is not evidence of
-            incapacity (routing §5).
+        resolved_capabilities: Capability -> the
+            :class:`~loadcoach.domain.routing.scoring.CapabilityScore` scoring resolved for this
+            candidate. Two constraints read it, and both read the
+            *resolved* score rather than the raw signals behind it: ``min_capability_scores``
+            compares its number (an absent score is never treated as below a floor — absence of
+            evidence is not evidence of incapacity, routing §5), and
+            ``require_adapter_evidence`` asks whether a measurement survived scoring's exclusions
+            at all (ADR-0087). One breakdown, computed once, so the gate and the scorer cannot
+            disagree about what counts as measured.
         snapshot: The telemetry the VRAM and RAM constraints read.
         vram_headroom_bytes: Per-device reserve (ADR-0027 §2).
         open_circuit_breakers: **Subject** strings currently excluded by the breaker (ADR-0067) —
@@ -374,7 +383,7 @@ class ConstraintInputs:
     exclude_models: tuple[str, ...] = ()
     allow_remote_providers: bool = False
     required_context: int | None = None
-    resolved_scores: Mapping[str, float | None] | None = None
+    resolved_capabilities: Mapping[str, CapabilityScore] | None = None
     snapshot: TelemetrySnapshot | None = None
     vram_headroom_bytes: int = DEFAULT_VRAM_HEADROOM_BYTES
     open_circuit_breakers: frozenset[str] = frozenset()
@@ -387,15 +396,85 @@ class ConstraintInputs:
 
 
 _MEASURED_SOURCES: Final[frozenset[str]] = frozenset({"benchmark", "production"})
-"""Signal sources that count as a *measurement* for ``require_adapter_evidence``.
+"""Resolved score sources that count as a *measurement* for ``require_adapter_evidence``.
 
-A declared flag and a manual score are statements, not measurements: they are exactly what
-"no benchmark, no use" (ADR-0064 rule 3) exists to refuse to route on."""
+A declared flag, a manual score and a parameter-band prior are statements, not measurements: they
+are exactly what "no benchmark, no use" (ADR-0064 rule 3) exists to refuse to route on. So are the
+three named exclusions — a measurement that does not describe this execution has not measured it.
+
+Deliberately **narrower** than scoring's set of the same name, which admits ``manual`` because that
+set answers a different question: whether a decision was made on evidence at all (the
+``low_evidence`` flag). A hand-entered number is evidence a user supplied; it is not a benchmark,
+and this is the gate that says so (ADR-0087 rule 2)."""
 
 _CAPABILITY_SUPPORT_ATTRIBUTE: Final[Mapping[str, str]] = {
     "tool_use": "supports_tool_use",
     "structured_output": "supports_structured_output",
 }
+
+
+def _adapter_unmeasured_detail(
+    adapter_name: str,
+    capability: str,
+    resolved: CapabilityScore | None,
+    executing_profile_hash: str,
+) -> dict[str, object]:
+    """Say which kind of "unmeasured" this is, because the two have different remedies.
+
+    ADR-0087 rule 3: the gate keeps one rejection reason and stops being silent about *why* the
+    subject failed it. "Nobody has benchmarked this adapter" is fixed by benchmarking it; "the
+    benchmark does not describe this execution" is fixed by aligning the runtime profile, and the
+    invocation that would do it is already computed for the explanation.
+
+    Args:
+        adapter_name: The adapter subject being rejected.
+        capability: The task profile's top-weighted capability, which is what the gate demands a
+            measurement of.
+        resolved: The score scoring resolved for that capability, or ``None`` when the profile
+            weights a capability this candidate carries no entry for at all.
+        executing_profile_hash: The candidate's resolved runtime profile hash, so a mismatch shows
+            both sides rather than only the one the evidence recorded.
+
+    Returns:
+        The rejection detail, carrying the resolved source, whichever of the note, remedy, measured
+        profile hash and measured machine fingerprint that source supplies, and a problem statement
+        naming the kind.
+    """
+    source = "absent" if resolved is None else resolved.source
+    if source in EVIDENCE_EXCLUSIONS:
+        problem = (
+            f"the only measurement of {capability!r} on this adapter subject does not describe "
+            f"this execution ({source}); routed selection needs one that does, a pin does not"
+        )
+    elif source == "absent":
+        problem = (
+            f"no measured evidence for {capability!r} on this adapter subject; "
+            "routed selection needs a measurement, a pin does not"
+        )
+    else:
+        problem = (
+            f"{capability!r} is scored on a {source} value, which is a claim and not a "
+            "measurement; routed selection needs a measurement, a pin does not"
+        )
+    detail: dict[str, object] = {
+        "adapter": adapter_name,
+        "capability": capability,
+        "require_adapter_evidence": True,
+        "resolved_source": source,
+        "problem": problem,
+    }
+    if resolved is not None:
+        if source in EVIDENCE_EXCLUSIONS:
+            detail["executing_profile_hash"] = executing_profile_hash
+        for key, value in (
+            ("note", resolved.note),
+            ("remedy", resolved.remedy),
+            ("measured_profile_hash", resolved.measured_profile_hash),
+            ("measured_machine_fingerprint", resolved.measured_machine_fingerprint),
+        ):
+            if value is not None:
+                detail[key] = value
+    return detail
 
 
 def evaluate_constraints(
@@ -535,9 +614,10 @@ def evaluate_constraints(
                 return ram_rejection, fits, None
 
     if inputs.min_capability_scores:
-        scores = inputs.resolved_scores or {}
+        resolved = inputs.resolved_capabilities or {}
         for capability, floor in sorted(inputs.min_capability_scores.items()):
-            score = scores.get(capability)
+            entry = resolved.get(capability)
+            score = None if entry is None else entry.score
             if score is not None and score < floor:
                 return (
                     Rejection(
@@ -592,9 +672,10 @@ def _check_adapter(subject: ExecutionSubject, inputs: ConstraintInputs) -> Rejec
     Returns:
         The first rejection, or ``None`` when the adapter may be applied. Each rejection names its
         own remedy: ``adapter_incompatible`` cannot be fixed by any configuration,
-        ``adapter_unmeasured`` is fixed by measuring or by turning the gate off, and
-        ``adapter_classification_conflict`` cannot be fixed by a flag at all — which is exactly
-        why it is not ``excluded_by_policy`` (ADR-0079).
+        ``adapter_unmeasured`` is fixed by measuring, by aligning the runtime profile the
+        measurement was taken under, or by turning the gate off — its ``resolved_source`` says
+        which (ADR-0087) — and ``adapter_classification_conflict`` cannot be fixed by a flag at
+        all, which is exactly why it is not ``excluded_by_policy`` (ADR-0079).
     """
     adapter = subject.adapter
     if adapter is None:  # pragma: no cover — the caller checks
@@ -634,22 +715,24 @@ def _check_adapter(subject: ExecutionSubject, inputs: ConstraintInputs) -> Rejec
 
     capability = inputs.top_weighted_capability
     if inputs.require_adapter_evidence and capability is not None:
-        measured = any(
-            signal.capability_id == capability and signal.source in _MEASURED_SOURCES
-            for signal in subject.signals
+        # ADR-0087: the gate reads the *resolved* score, not the raw signal list. A signal that
+        # scoring excludes — unbound, foreign machine, mismatched runtime profile — no longer
+        # satisfies the one constraint whose purpose is "no benchmark, no routed selection".
+        resolved_capability = (inputs.resolved_capabilities or {}).get(capability)
+        measured = (
+            resolved_capability is not None
+            and resolved_capability.present
+            and resolved_capability.source in _MEASURED_SOURCES
         )
         if not measured:
             return Rejection(
                 "adapter_unmeasured",
-                {
-                    "adapter": adapter.name,
-                    "capability": capability,
-                    "require_adapter_evidence": True,
-                    "problem": (
-                        f"no measured evidence for {capability!r} on this adapter subject; "
-                        "routed selection needs a measurement, a pin does not"
-                    ),
-                },
+                _adapter_unmeasured_detail(
+                    adapter.name,
+                    capability,
+                    resolved_capability,
+                    subject.runtime_profile_hash,
+                ),
             )
 
     if facts.is_remote or subject.provider.is_remote:

@@ -418,6 +418,29 @@ on a real provider at all.
   and `weightsdb 0.2.1` (both resolve under the unchanged `>=0.2,<0.3` pins).
 
 ### Fixed
+- **The adapter evidence gate admits only a signal that scores**
+  ([ADR-0087](docs/adr/0087-the-evidence-gate-admits-only-a-signal-that-scores.md)).
+  `require_adapter_evidence` read the candidate's raw signal list, so a benchmark that scoring
+  then excluded — an unbound record, another machine, a mismatched runtime profile — still
+  satisfied it and the subject was routed on whatever was left. Observed live: two adapters whose
+  manifests merely *declared* the top-weighted capability scored `0.500 declared` and outranked
+  the bare base, whose real measurement had been excluded and scored nothing. The gate now reads
+  the **resolved** capability score, so it and the scorer cannot disagree about what counts as
+  measured, and the `adapter_unmeasured` rejection carries `resolved_source`, both profile hashes
+  or the foreign machine's fingerprint, and the `freeweight run start …` remedy — "nobody has
+  benchmarked this" and "the benchmark does not describe this execution" are told apart, because
+  they have different remedies. **An adapter measured under a runtime profile that has since moved
+  is now unroutable by name until it is re-measured**, rather than degrading to a declared claim;
+  a pin is unaffected, as it always was.
+- **An excluded measurement no longer scores worse than no measurement at all**
+  ([ADR-0088](docs/adr/0088-an-excluded-measurement-falls-back-to-the-prior-it-displaced.md)).
+  A benchmark set aside by one of the three named exclusions was returned *before* the parameter
+  band prior, so a subject somebody had measured scored `absent` while a subject nobody had ever
+  measured scored the prior and won. It now scores the prior it displaced, at that prior's fixed
+  low confidence, while keeping its own source, note, remedy and measured hash — so the
+  explanation is unchanged and only the ranking moves. ADR-0017's and ADR-0023 §3's hard
+  separations are untouched, and `low_evidence`, `measured_weight` and the gate above all still
+  read the source rather than the number.
 - **An adapter scan re-binds evidence.** `sync_adapters` now re-evaluates every evidence row's
   binding in its own transaction, because a directory scan is discovery for the subject's second
   axis. Imported evidence for an adapter this operator had not yet reviewed used to sit `unmatched`

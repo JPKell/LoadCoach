@@ -21,7 +21,9 @@ from loadcoach.domain.routing.constraints import (
     free_vram_by_gpu,
     kv_bytes_per_token,
 )
+from loadcoach.domain.routing.scoring import CapabilityScore
 from loadcoach.domain.routing.subject import (
+    AdapterFacts,
     ExecutionSubject,
     ModelFacts,
     ProviderFacts,
@@ -30,6 +32,25 @@ from loadcoach.domain.routing.subject import (
 )
 
 GIB = 1024**3
+
+
+def _score(
+    capability_id: str,
+    score: float | None,
+    *,
+    source: str = "benchmark",
+    weight: float = 1.0,
+    **extra: object,
+) -> CapabilityScore:
+    """One resolved capability, as scoring would hand it to the constraint filter."""
+    return CapabilityScore(
+        capability_id=capability_id,
+        weight=weight,
+        score=score,
+        confidence=None if score is None else 0.9,
+        source="absent" if score is None else source,
+        **extra,  # type: ignore[arg-type]  # note/remedy/hash fields, all str | None
+    )
 
 
 def _snapshot(
@@ -67,6 +88,7 @@ def _subject(
     kv_heads: int | None = 8,
     head_dim: int | None = 128,
     requested_context: int | None = None,
+    adapter: AdapterFacts | None = None,
 ) -> ExecutionSubject:
     facts = ModelFacts(
         model_id="01ABCDEFGHJKMNPQRSTVWXYZ00",
@@ -90,6 +112,29 @@ def _subject(
             context_size=requested_context if requested_context is not None else served
         ),
         served_context=ServedContext(tokens=served, source=source),
+        adapter=adapter,
+    )
+
+
+def _adapter_subject(**kwargs: object) -> ExecutionSubject:
+    """A candidate serving one compatible adapter, which is what the evidence gate filters."""
+    facts = AdapterFacts(
+        adapter_id="01ADAPTERADAPTERADAPTER00",
+        name="terse",
+        artifact_digest=f"sha256:{'b' * 64}",
+        base_model_name="m",
+        base_artifact_digest=f"sha256:{'a' * 64}",
+        base_confidence="digest",
+        declared_capabilities=("reasoning",),
+        data_classification="confidential",
+    )
+    return _subject(
+        canonical_id=f"fake/m@sha256:{'a' * 64}",
+        adapter=facts,
+        provider=ProviderFacts(
+            context_configurable=True, supports_tool_use=True, adapter_hot_swap=True
+        ),
+        **kwargs,  # type: ignore[arg-type]  # the documented keyword surface of _subject
     )
 
 
@@ -320,7 +365,8 @@ def test_below_minimum_score_names_the_capability_and_both_numbers() -> None:
         _subject(),
         estimate_vram(size_bytes=1 * GIB, served_context=8192, layers=1, kv_heads=1, head_dim=8),
         ConstraintInputs(
-            min_capability_scores={"code_review": 0.35}, resolved_scores={"code_review": 0.20}
+            min_capability_scores={"code_review": 0.35},
+            resolved_capabilities={"code_review": _score("code_review", 0.20)},
         ),
     )
     assert rejection is not None
@@ -334,7 +380,8 @@ def test_an_absent_score_is_never_below_a_minimum() -> None:
         _subject(),
         estimate_vram(size_bytes=1 * GIB, served_context=8192, layers=1, kv_heads=1, head_dim=8),
         ConstraintInputs(
-            min_capability_scores={"code_review": 0.35}, resolved_scores={"code_review": None}
+            min_capability_scores={"code_review": 0.35},
+            resolved_capabilities={"code_review": _score("code_review", None)},
         ),
     )
     assert rejection is None
@@ -423,3 +470,114 @@ def test_a_resident_device_is_preferred_over_another_device_that_merely_fits() -
         ),
     )
     assert target == 1
+
+
+# --- the adapter evidence gate (ADR-0064 rule 3, ADR-0087) --------------------------------------
+
+
+def _gate(
+    subject: ExecutionSubject, resolved: CapabilityScore | None, **extra: object
+) -> tuple[str, dict[str, object]] | None:
+    """Run the constraint filter with the gate on and return the rejection, if any."""
+    rejection, _, _ = evaluate_constraints(
+        subject,
+        estimate_vram(size_bytes=1 * GIB, served_context=8192, layers=1, kv_heads=1, head_dim=8),
+        ConstraintInputs(
+            require_adapter_evidence=True,
+            top_weighted_capability="reasoning",
+            resolved_capabilities={} if resolved is None else {"reasoning": resolved},
+            **extra,  # type: ignore[arg-type]  # documented ConstraintInputs fields
+        ),
+    )
+    return None if rejection is None else (rejection.reason, dict(rejection.detail))
+
+
+def test_a_measured_adapter_subject_passes_the_evidence_gate() -> None:
+    assert _gate(_adapter_subject(), _score("reasoning", 0.82)) is None
+
+
+def test_a_production_signal_satisfies_the_evidence_gate() -> None:
+    """ADR-0064 rule 3 admits benchmark *or* production; only claims are refused."""
+    assert _gate(_adapter_subject(), _score("reasoning", 0.7, source="production")) is None
+
+
+def test_an_adapter_nobody_measured_is_rejected_and_says_so() -> None:
+    result = _gate(_adapter_subject(), _score("reasoning", None))
+    assert result is not None
+    reason, detail = result
+    assert reason == "adapter_unmeasured"
+    assert detail["resolved_source"] == "absent"
+    assert "no measured evidence" in str(detail["problem"])
+
+
+def test_a_declared_claim_does_not_satisfy_the_evidence_gate() -> None:
+    """ADR-0087: the failure found live — a manifest's claim scoring 0.500 and routing on it."""
+    result = _gate(_adapter_subject(), _score("reasoning", 0.5, source="declared"))
+    assert result is not None
+    reason, detail = result
+    assert reason == "adapter_unmeasured"
+    assert detail["resolved_source"] == "declared"
+    assert "a claim and not a measurement" in str(detail["problem"])
+
+
+def test_a_manual_score_does_not_satisfy_the_evidence_gate() -> None:
+    """Evidence for the low_evidence flag, and still not a benchmark (ADR-0087 rule 2)."""
+    result = _gate(_adapter_subject(), _score("reasoning", 0.9, source="manual"))
+    assert result is not None
+    assert result[1]["resolved_source"] == "manual"
+
+
+def test_an_excluded_measurement_does_not_satisfy_the_evidence_gate() -> None:
+    """The whole point: a signal scoring excludes no longer satisfies the gate that admits it."""
+    result = _gate(
+        _adapter_subject(),
+        _score(
+            "reasoning",
+            0.5,
+            source="evidence_profile_mismatch",
+            note="evidence measured under runtime profile abc, executing under def",
+            remedy="freeweight run start --context-size 8192",
+            measured_profile_hash="abcdefabcdefabcd",
+        ),
+    )
+    assert result is not None
+    reason, detail = result
+    assert reason == "adapter_unmeasured"
+    assert detail["resolved_source"] == "evidence_profile_mismatch"
+    assert detail["measured_profile_hash"] == "abcdefabcdefabcd"
+    assert detail["executing_profile_hash"] != detail["measured_profile_hash"]
+    assert str(detail["remedy"]).startswith("freeweight run start")
+    assert "does not describe this execution" in str(detail["problem"])
+
+
+def test_a_foreign_machine_measurement_does_not_satisfy_the_evidence_gate() -> None:
+    result = _gate(
+        _adapter_subject(),
+        _score(
+            "reasoning",
+            0.5,
+            source="evidence_foreign_machine",
+            measured_machine_fingerprint="somewhere-else",
+        ),
+    )
+    assert result is not None
+    assert result[1]["measured_machine_fingerprint"] == "somewhere-else"
+
+
+def test_the_gate_does_not_apply_to_a_pin() -> None:
+    """A pin bypasses scoring, not the hard constraints; the caller turns the gate off for it."""
+    rejection, _, _ = evaluate_constraints(
+        _adapter_subject(),
+        estimate_vram(size_bytes=1 * GIB, served_context=8192, layers=1, kv_heads=1, head_dim=8),
+        ConstraintInputs(
+            require_adapter_evidence=False,
+            top_weighted_capability="reasoning",
+            resolved_capabilities={"reasoning": _score("reasoning", None)},
+        ),
+    )
+    assert rejection is None
+
+
+def test_the_gate_does_not_apply_to_a_bare_base() -> None:
+    """A base with no evidence at all is scored, not filtered — the gate is adapters only."""
+    assert _gate(_subject(), _score("reasoning", None)) is None

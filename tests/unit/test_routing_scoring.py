@@ -115,12 +115,44 @@ def test_profile_mismatched_evidence_is_absent_with_both_hashes_and_a_remedy() -
     assert fit.present_weight == 0.0
 
 
-def test_a_prior_never_papers_over_an_excluded_measurement() -> None:
-    """A model measured under settings that do not apply is not a model nobody measured."""
+def test_an_excluded_measurement_scores_the_prior_it_displaced() -> None:
+    """ADR-0088: no penalty for having been measured, and no word of the reason lost."""
     subject = _subject(_benchmark("reasoning", 0.9, profile_hash=OTHER_HASH))
     fit = score_subject(
         subject,
         ScoringInputs(weights={"reasoning": 1.0}, parameter_priors={"fake/m@sha256:aaaa": 0.5}),
+    )
+    score = fit.capabilities[0]
+    assert score.source == "evidence_profile_mismatch"
+    assert score.score == 0.5
+    assert score.confidence == 0.3
+    assert score.measured_profile_hash == OTHER_HASH
+    assert score.remedy is not None
+    # It scores like a prior and is not counted as evidence: the gate and the low_evidence flag
+    # both read the source, never the number.
+    assert not score.measured
+    assert fit.measured_weight == 0.0
+
+
+def test_an_excluded_measurement_scores_exactly_what_no_measurement_would() -> None:
+    """The defect this closes was an *ordering*: benchmarked ranked below never-benchmarked."""
+    priors = {"fake/m@sha256:aaaa": 0.5}
+    excluded = score_subject(
+        _subject(_benchmark("reasoning", 0.9, profile_hash=OTHER_HASH)),
+        ScoringInputs(weights={"reasoning": 1.0}, parameter_priors=priors),
+    )
+    never = score_subject(
+        _subject(), ScoringInputs(weights={"reasoning": 1.0}, parameter_priors=priors)
+    )
+    assert excluded.task_fit == never.task_fit
+    assert never.capabilities[0].source == "prior"
+
+
+def test_an_excluded_measurement_with_no_prior_is_still_absent() -> None:
+    """The fallback is the prior it displaced; where there is none, so is the unmeasured sibling."""
+    fit = score_subject(
+        _subject(_benchmark("reasoning", 0.9, profile_hash=OTHER_HASH)),
+        ScoringInputs(weights={"reasoning": 1.0}),
     )
     assert fit.capabilities[0].source == "evidence_profile_mismatch"
     assert fit.capabilities[0].score is None

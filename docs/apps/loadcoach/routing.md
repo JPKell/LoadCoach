@@ -216,7 +216,18 @@ The three adapter constraints, in the words a caller needs:
   ([ADR-0058](../../adr/0058-the-execution-subject-gains-an-adapter-axis.md) §5).
 * **`adapter_unmeasured`** — `[routing] require_adapter_evidence` is on (the default,
   [ADR-0064](../../adr/0064-adapters-are-selected-through-the-capability-vocabulary.md) rule 3) and
-  this adapter subject has no measured evidence for the profile's top-weighted capability. **An
+  this adapter subject has no measured evidence for the profile's top-weighted capability. **The
+  gate reads the *resolved* capability score, not the raw signals**
+  ([ADR-0087](../../adr/0087-the-evidence-gate-admits-only-a-signal-that-scores.md)): a benchmark
+  that scoring then excludes — unbound, foreign machine, mismatched runtime profile (§5) — does not
+  satisfy it, and neither does a `declared` flag, a `manual` score or a band prior. One breakdown
+  answers both questions, so the gate and the scorer cannot disagree about what counts as measured.
+  Its detail names which kind of unmeasured this is: `resolved_source`, the note, both profile
+  hashes or the foreign machine's fingerprint, and the `freeweight run start …` remedy — because
+  "nobody has benchmarked this" and "the benchmark does not describe this execution" have different
+  remedies. **Move a runtime profile field and an adapter measured under the old one becomes
+  unroutable by name** until it is re-measured; it does not degrade to a declared claim and keep
+  routing. **An
   adapter subject inherits nothing from its base** ([ADR-0081](../../adr/0081-an-adapter-subject-inherits-no-evidence-from-its-base.md)):
   its only signals are the vocabulary terms its own manifest declares, so with the gate off it
   scores on declarations and priors and usually ranks below a base carrying real evidence — a pin
@@ -258,9 +269,17 @@ task_fit(model) = Σ_c ( weight_c × score_c × confidence_c )
 * Evidence contributes to a candidate **only when its `runtime_profile_hash` equals the candidate's
   resolved hash**, and its `machine_fingerprint` rules follow
   [ADR-0017](../../adr/0017-benchmark-confidence-and-freshness.md). Evidence for the same model under
-  a different profile is neither reused nor scored zero: it is absent, named in the explanation as
+  a different profile is neither reused nor scored zero: it is named in the explanation as
   `evidence_profile_mismatch` with both hashes and the FreeWeight invocation that would produce
   matching evidence, and it counts toward `low_evidence` like any other absence.
+* **An excluded measurement scores the prior it displaced**
+  ([ADR-0088](../../adr/0088-an-excluded-measurement-falls-back-to-the-prior-it-displaced.md)): the
+  parameter band prior's score at its fixed low confidence, under the exclusion's own source, note
+  and remedy — so the explanation is unchanged and a subject somebody benchmarked no longer ranks
+  *below* one nobody has ever measured. Where there is no band prior, or a profile refuses priors,
+  it is absent, exactly as the unmeasured sibling would be. The resolved source is never a measured
+  source, so `low_evidence`, `measured_weight` and the evidence gate above are all unaffected: it
+  scores like a prior, and it is not called one.
 * Evidence whose `match_state` is not `bound` — imported for a model discovery has not seen, or
   `name_only` against a local row that carries a digest — never contributes
   ([ADR-0022 §4](../../adr/0022-capability-evidence-record-contract.md)).

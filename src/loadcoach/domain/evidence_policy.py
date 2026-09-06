@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
 __all__ = [
+    "EVIDENCE_EXCLUSIONS",
     "EVIDENCE_FOREIGN_MACHINE",
     "EVIDENCE_PROFILE_MISMATCH",
     "EVIDENCE_UNBOUND",
@@ -109,6 +110,13 @@ EVIDENCE_FOREIGN_MACHINE: Final[str] = "evidence_foreign_machine"
 EVIDENCE_UNBOUND: Final[str] = "evidence_unbound"
 """The three named exclusions. Each is an *absence with a reason*, counted toward ``low_evidence``
 exactly as a capability nobody ever measured is (ADR-0023 §3, routing §5)."""
+
+EVIDENCE_EXCLUSIONS: Final[frozenset[str]] = frozenset(
+    {EVIDENCE_PROFILE_MISMATCH, EVIDENCE_FOREIGN_MACHINE, EVIDENCE_UNBOUND}
+)
+"""The three as a set, for the readers that ask "was this measurement set aside?" rather than
+"which one was it?" — scoring's fallback (ADR-0088) and the evidence gate's rejection detail
+(ADR-0087). One list, so a fourth exclusion is honoured everywhere by being added here."""
 
 _DRIFT_FIELDS_ALL: Final[tuple[str, ...]] = ("provider_kind", "provider_version")
 _DRIFT_FIELDS_PERFORMANCE: Final[tuple[str, ...]] = ("gpu_driver_version", "cuda_version")

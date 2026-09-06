@@ -679,7 +679,7 @@ def route(
                 exclude_models=constraints.exclude_models,
                 allow_remote_providers=constraints.allow_remote_providers,
                 required_context=None if budget is None or budget.fits else budget.required_context,
-                resolved_scores={score.capability_id: score.score for score in fit.capabilities},
+                resolved_capabilities={score.capability_id: score for score in fit.capabilities},
                 snapshot=snapshot,
                 vram_headroom_bytes=policy.vram_headroom_bytes,
                 open_circuit_breakers=open_circuit_breakers,

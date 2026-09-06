@@ -259,7 +259,11 @@ def test_evidence_measured_under_another_profile_is_absent_with_both_hashes_and_
         after = _route(database)
         entry = _capability(after, alpha["canonical_id"], "reasoning")
         assert entry["source"] == "evidence_profile_mismatch"
-        assert entry["score"] is None, "a mismatch is absent, never zero and never reused"
+        # ADR-0088: the measurement is not reused and not scored zero — it scores the parameter
+        # band prior it displaced, under its own name, so a benchmarked model does not rank below
+        # one nobody measured. `low_evidence` below is what proves it still counts as unmeasured.
+        assert entry["score"] != 0.99, "a mismatched measurement is never reused"
+        assert entry["confidence"] == 0.3, "it scores as the prior it displaced, not as evidence"
         assert entry["measured_profile_hash"] == "4a91deadbeefcafe"
         assert executing_hash in entry["note"]
         assert "4a91deadbeefcafe" in entry["note"]
@@ -352,7 +356,8 @@ def test_a_performance_capability_from_another_machine_is_excluded_by_name(
         after = _route(database, task="speed.only")
         entry = _capability(after, alpha["canonical_id"], "speed")
         assert entry["source"] == "evidence_foreign_machine"
-        assert entry["score"] is None
+        assert entry["score"] != 0.95, "a measurement of another card is never reused"
+        assert entry["confidence"] == 0.3, "it scores as the prior it displaced, not as evidence"
         assert entry["measured_machine_fingerprint"] == "somewhere-else"
         assert "low_evidence" in after["flags"]
         assert after["evidence_summary"]["foreign_machine_capabilities"] == 1

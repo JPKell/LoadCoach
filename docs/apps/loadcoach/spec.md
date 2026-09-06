@@ -215,6 +215,10 @@ performance, memory or energy constraints
    subject on **its own** evidence: an unmeasured adapter stays unmeasured however well its base or
    its siblings score, and `require_adapter_evidence` keeps refusing to route it
    ([ADR-0064](../../adr/0064-adapters-are-selected-through-the-capability-vocabulary.md) rule 3).
+   The gate is satisfied by the **resolved** capability score, not by a raw signal
+   ([ADR-0087](../../adr/0087-the-evidence-gate-admits-only-a-signal-that-scores.md)), so a
+   measurement scoring sets aside — a mismatched runtime profile, another machine, an unbound
+   record — leaves the adapter unroutable and named rather than routing it on a manifest's claim.
 4. **Feedback contract.** `POST /jobs/{id}/feedback` accepts an acceptance signal and optional
    quality/validation detail; it is idempotent per `(job_id, source)`.
 5. **Streaming contract.** SSE per [API Standards §8](../../standards/api-and-contract-standards.md),
@@ -272,10 +276,12 @@ environment, then CLI, field by field. Principal sections:
               prefer_resident_bonus = 0.05  min_present_weight = 0.5
               base_switch_penalty = 0.10   # two-level residency (routing.md §6.1); chosen, not
                                            # measured — set it from your own load times
-              require_adapter_evidence = true   # "no benchmark, no use" (ADR-0064 rule 3). Until
-                                           # FreeWeight measures adapters (LA3) this makes every
-                                           # adapter subject invisible to routed selection while
-                                           # leaving pins working, which is intended
+              require_adapter_evidence = true   # "no benchmark, no use" (ADR-0064 rule 3,
+                                           # ADR-0087). Satisfied only by a measurement that
+                                           # survives scoring's exclusions, so an adapter goes
+                                           # unroutable when the runtime profile moves rather
+                                           # than falling back to a declared claim. Pins keep
+                                           # working, which is intended
               explanation_retention_days = 0    # 0 = forever
 [evidence]    freeweight_url = ""          # empty = not configured, not "unavailable"
               freeweight_api_key_env = ""  # or freeweight_api_key_file (ADR-0026)

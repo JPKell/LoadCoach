@@ -16,7 +16,7 @@ the same inputs always produce the same numbers (routing §12).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Final
 
 from loadcoach.domain.evidence_policy import (
@@ -264,10 +264,14 @@ def resolve_capability(  # noqa: PLR0913 — every argument is one documented sc
       from another machine is used, and its badge is carried into the explanation.
     * Evidence whose ``match_state`` is not ``"bound"`` never contributes (ADR-0022 §4).
 
-    Where an excluded measurement exists, no prior stands in for it. A model that *was* measured,
-    under settings that do not apply here, is not in the same position as one nobody has ever
-    measured — substituting a guess would bury the remedy, which is the one thing a user can act
-    on.
+    An excluded measurement scores **the prior it displaced** (ADR-0088): the band prior's
+    score and confidence, under the exclusion's own source, note and remedy. A
+    model that *was* measured, under settings that do not apply here, is not in the same position
+    as one nobody has ever measured — but the difference belongs in the explanation, where the
+    remedy is, and not in the number, where it made a benchmarked subject rank below an unmeasured
+    one. Where there is no band prior, or priors are refused, the capability is absent exactly as
+    an unmeasured one would be. The resolved source is never a measured source, so ``measured``,
+    ``measured_weight`` and the ``low_evidence`` flag are unaffected.
 
     Args:
         capability_id: The capability being scored.
@@ -390,9 +394,13 @@ def resolve_capability(  # noqa: PLR0913 — every argument is one documented sc
             stale_reason=chosen.stale_reason,
         )
 
-    if excluded is not None:
-        return excluded
     if band_prior is not None and not require_evidence:
+        if excluded is not None:
+            # ADR-0088: an excluded measurement scores the prior it displaced. The subject is not
+            # *penalised* for having been measured somewhere else — it scores what the same
+            # subject would have scored had the measurement never existed — and every word of the
+            # exclusion survives, so the explanation still names the reason and the remedy.
+            return replace(excluded, score=band_prior, confidence=DECLARED_PRIOR_CONFIDENCE)
         return CapabilityScore(
             capability_id=capability_id,
             weight=weight,
@@ -401,6 +409,8 @@ def resolve_capability(  # noqa: PLR0913 — every argument is one documented sc
             source="prior",
             note="parameter-count band relative to the installed set (routing §5.1)",
         )
+    if excluded is not None:
+        return excluded
     return CapabilityScore(
         capability_id=capability_id,
         weight=weight,
