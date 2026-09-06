@@ -101,10 +101,18 @@ def explain(
         TaskProfileNotFound,
         route,
     )
-    from loadcoach.services.task_profiles import import_task_profiles, read_task_profiles_file
+    from loadcoach.services.task_profiles import (
+        import_task_profiles,
+        read_task_profiles_file,
+        task_profiles_path_for,
+    )
 
     with _open(config) as (database, settings):
-        import_task_profiles(database, read_task_profiles_file(), now=datetime.now(UTC))
+        import_task_profiles(
+            database,
+            read_task_profiles_file(task_profiles_path_for(settings.routing)),
+            now=datetime.now(UTC),
+        )
         # Every registration, not just the first: a candidate is evaluated against its own
         # provider's capabilities (ADR-0055 rule 3), and an adapter subject exists only under one
         # that can hot-swap. `sync_adapters` reads the operator's directory into rows first, so a

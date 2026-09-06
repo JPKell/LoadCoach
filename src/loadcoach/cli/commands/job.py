@@ -44,11 +44,11 @@ def _open(config: str | None) -> Iterator[tuple[Database, Settings]]:
     with Database.from_url(
         storage.database_url, statement_timeout_ms=storage.statement_timeout_ms
     ) as database:
-        _ensure_profiles_imported(database)
+        _ensure_profiles_imported(database, loaded.settings)
         yield database, loaded.settings
 
 
-def _ensure_profiles_imported(database: Database) -> None:
+def _ensure_profiles_imported(database: Database, settings: Settings) -> None:
     """Import the shipped task profiles before reading, as ``tasks list`` does (LC14).
 
     A fresh install that ran ``db upgrade`` and then ``job submit`` without ever starting the
@@ -56,9 +56,17 @@ def _ensure_profiles_imported(database: Database) -> None:
     """
     from datetime import UTC, datetime
 
-    from loadcoach.services.task_profiles import import_task_profiles, read_task_profiles_file
+    from loadcoach.services.task_profiles import (
+        import_task_profiles,
+        read_task_profiles_file,
+        task_profiles_path_for,
+    )
 
-    import_task_profiles(database, read_task_profiles_file(), now=datetime.now(UTC))
+    import_task_profiles(
+        database,
+        read_task_profiles_file(task_profiles_path_for(settings.routing)),
+        now=datetime.now(UTC),
+    )
 
 
 def _print_job(document: dict[str, object], *, json_output: bool) -> None:

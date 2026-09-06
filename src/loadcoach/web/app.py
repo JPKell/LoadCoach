@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -37,7 +37,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from loadcoach.__about__ import __version__
 from loadcoach.config import LOOPBACK_HOSTS, Settings
-from loadcoach.infrastructure.providers.factory import build_registrations
+from loadcoach.infrastructure.providers.factory import (
+    ProviderRegistration,
+    build_registrations,
+)
 from loadcoach.services.database import Database
 from loadcoach.services.job_events import JobEventSink
 from loadcoach.services.queue_stream import QueueStatusPublisher
@@ -264,6 +267,37 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
 
+def _close_providers(registrations: Sequence[ProviderRegistration]) -> None:
+    """Release every registration's provider handle at shutdown.
+
+    Args:
+        registrations: Every provider this process built.
+
+    A supervising provider owns an operating-system process, and dropping the handle does not end
+    it: ``LlamaCppProvider`` terminates its servers in ``close()`` and otherwise only in a
+    finalizer, which runs at collection or interpreter exit — later than a terminated service, and
+    not at all when the process is signalled. So a `loadcoach serve` that was stopped left its
+    ``llama-server`` running and holding the whole card, and the failure that causes is not "out of
+    memory" but something far harder to read: the *next* candidate is refused ``insufficient_vram``
+    before its classification or its compatibility is ever considered, so a defect in shutdown
+    presents as a defect in routing. Found by IdeaPress's LA2 journey, which left six orphans
+    holding 13 GB of a 16 GB card across three runs.
+
+    Every provider is closed even if one raises: a handle that failed to release is a reason to log
+    and continue, never a reason to leak the rest.
+    """
+    for registration in registrations:
+        close = getattr(registration.provider, "close", None)
+        if not callable(close):
+            continue
+        try:
+            close()
+        except Exception:  # noqa: BLE001 — a failed release must not prevent the others
+            logger.warning(
+                "provider.close_failed", extra={"provider_name": registration.name}, exc_info=True
+            )
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Own one database handle and one provider handle for as long as the server serves.
@@ -322,6 +356,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         publisher.stop()
         sampler.stop()
         runtime.stop()
+        _close_providers(registrations)
         database.close()
         app.state.queue_stream = None
         app.state.telemetry_stream = None

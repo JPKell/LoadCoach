@@ -26,7 +26,11 @@ from loadcoach.observability.logging import configure_logging
 from loadcoach.services.adapters import sync_adapters
 from loadcoach.services.database import Database, ensure_ready
 from loadcoach.services.models import import_manual_capability_scores, try_discover_models
-from loadcoach.services.task_profiles import import_task_profiles, read_task_profiles_file
+from loadcoach.services.task_profiles import (
+    import_task_profiles,
+    read_task_profiles_file,
+    task_profiles_path_for,
+)
 from loadcoach.web.app import create_app
 
 __all__ = ["Application", "bootstrap", "create_app_from_environment"]
@@ -139,7 +143,7 @@ def bootstrap() -> Application:
                     ),
                 },
             )
-        profiles = read_task_profiles_file()
+        profiles = read_task_profiles_file(task_profiles_path_for(loaded.settings.routing))
         import_task_profiles(database, profiles, now=datetime.now(UTC))
         registrations = build_registrations(loaded.settings)
         # The adapter directory is read into rows *before* discovery, so a routing decision made

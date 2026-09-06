@@ -59,6 +59,7 @@ def generate(
         DEFAULT_SCHEMAS_DIR,
         import_task_profiles,
         read_task_profiles_file,
+        task_profiles_path_for,
     )
 
     if (prompt is None) == (prompt_file is None):
@@ -69,7 +70,11 @@ def generate(
     text = prompt if prompt is not None else Path(str(prompt_file)).read_text(encoding="utf-8")
 
     with _open(config) as (database, settings):
-        import_task_profiles(database, read_task_profiles_file(), now=datetime.now(UTC))
+        import_task_profiles(
+            database,
+            read_task_profiles_file(task_profiles_path_for(settings.routing)),
+            now=datetime.now(UTC),
+        )
         provider = build_provider(settings.provider)
         try:
             facts = provider_facts_for(provider)

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Annotated
 import typer
 
 if TYPE_CHECKING:
+    from loadcoach.config import Settings
     from loadcoach.services.database import Database
 
 __all__ = ["app"]
@@ -22,7 +23,7 @@ app = typer.Typer(help="Task profile inspection and validation.")
 
 
 @contextmanager
-def _open_database(config: str | None) -> Iterator[Database]:
+def _open_database(config: str | None) -> Iterator[tuple[Database, Settings]]:
     from loadcoach.config import ConfigurationError, load_settings
     from loadcoach.services.database import Database
 
@@ -38,10 +39,10 @@ def _open_database(config: str | None) -> Iterator[Database]:
     with Database.from_url(
         storage.database_url, statement_timeout_ms=storage.statement_timeout_ms
     ) as database:
-        yield database
+        yield database, loaded.settings
 
 
-def _ensure_imported(database: Database) -> None:
+def _ensure_imported(database: Database, settings: Settings) -> None:
     """Import the shipped profiles before reading, so a fresh install shows them without
     requiring ``loadcoach serve`` (which is where :func:`~loadcoach.bootstrap.bootstrap`
     otherwise does this) to have run first. Idempotent — an upsert against the same
@@ -49,9 +50,17 @@ def _ensure_imported(database: Database) -> None:
     """
     from datetime import UTC, datetime
 
-    from loadcoach.services.task_profiles import import_task_profiles, read_task_profiles_file
+    from loadcoach.services.task_profiles import (
+        import_task_profiles,
+        read_task_profiles_file,
+        task_profiles_path_for,
+    )
 
-    import_task_profiles(database, read_task_profiles_file(), now=datetime.now(UTC))
+    import_task_profiles(
+        database,
+        read_task_profiles_file(task_profiles_path_for(settings.routing)),
+        now=datetime.now(UTC),
+    )
 
 
 @app.command("list")
@@ -70,8 +79,8 @@ def list_tasks(
     """
     from loadcoach.services.task_profiles import list_stored_task_profiles
 
-    with _open_database(config) as database:
-        _ensure_imported(database)
+    with _open_database(config) as (database, settings):
+        _ensure_imported(database, settings)
         profiles = list_stored_task_profiles(database)
 
     if json_output:
@@ -102,8 +111,8 @@ def show_task(
     """
     from loadcoach.services.task_profiles import list_stored_task_profiles
 
-    with _open_database(config) as database:
-        _ensure_imported(database)
+    with _open_database(config) as (database, settings):
+        _ensure_imported(database, settings)
         profiles = list_stored_task_profiles(database)
 
     matches = [profile for profile in profiles if profile.profile_id == profile_id]

@@ -39,6 +39,16 @@ on a real provider at all.
   outside the vocabulary is refused rather than ignored: ignoring it is the one direction that can
   only *lower* the effective classification. Nothing about the field widens anything — a `max()`
   can only make an adapter candidate less eligible, never more.
+- **`[routing] task_profiles_path`** — a `task_profiles.toml` of the deployment's own, imported at
+  startup instead of the shipped one. Until now `bootstrap` read the file inside the installed
+  package and no key named another, so a deployment whose routing policy differed from the shipped
+  profiles was not expressible: the only ways to change it were to edit an installed package or a
+  stored row. The import is the same upsert per `(profile_id, version)`, so a file naming a shipped
+  profile replaces it and one naming a new id adds it, and every command that imports profiles —
+  `serve`, `tasks`, `job`, `route`, `generate` — reads the same resolved path. A configured path
+  that is not a file is refused at startup rather than falling back to the shipped profiles: an
+  operator who named a file and silently got the defaults would be routing under a policy they did
+  not write, with no way to tell from the outside.
 - **`kind = "llamacpp"` is a provider LoadCoach can construct.** It launches and supervises its own
   server over a directory of GGUF weights (`model_directory`, required — a wrong directory is a
   server serving weights nobody asked for, and there is no default worth guessing; plus optional
@@ -147,16 +157,16 @@ on a real provider at all.
   `list_adapters()` snapshot, which moves while a restart is pending.
 
 ### Fixed
-- **A llama.cpp-served model can be VRAM-estimated at all.** ModelRack's llama.cpp descriptor
-  reports `layers`, `kv_heads`, `attention_heads` and `embedding_dim` but no `head_dim`, and the
-  theoretical KV figure needs all three of the first, the third and `head_dim`. An unknown estimate
-  is a refusal rather than a zero (ADR-0016), so **every** llama.cpp candidate was rejected
-  `insufficient_vram` — with `estimated_bytes: null` — on any machine with GPU telemetry: the only
-  provider kind that can serve an adapter could not serve anything at all through a running server.
-  `head_dim` is now reconstructed as `embedding_dim // attention_heads` where the provider reports
-  only the factors, which is the definition of the field and not an approximation of it; an inexact
-  division yields `None` rather than a rounded guess. Found by IdeaPress's LA2 journey, the first
-  thing to route llama.cpp through a served LoadCoach rather than an in-process one.
+- **A stopped server no longer leaks its `llama-server`.** Nothing ever called `close()` on a
+  provider: the lifespan released the publisher, the sampler, the queue runtime and the database,
+  and dropped every provider handle. A supervising provider owns an operating-system process, and
+  `LlamaCppProvider` ends its servers in `close()` and otherwise only in a finalizer — which runs
+  at collection or interpreter exit, and not at all when the process is signalled. So every
+  restart of `loadcoach serve` left a server behind holding the whole card. The failure that
+  causes is worse to read than an out-of-memory error: the *next* candidate is refused
+  `insufficient_vram` before its classification or its compatibility is ever considered, so a
+  defect in shutdown presents as a defect in routing. Found by IdeaPress's LA2 journey, which left
+  six orphans holding 13 GB of a 16 GB card across three runs.
 - **A queued job no longer loses its `adapter` and `ignore_residency` overrides.** A leased job's
   submission is rebuilt from `jobs.request_json` and from nothing else, and neither field was
   written to it or read back — so an adapter pin submitted through `POST /jobs` was silently

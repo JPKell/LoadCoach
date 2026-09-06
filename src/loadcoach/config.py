@@ -648,6 +648,15 @@ class RoutingSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    task_profiles_path: str = Field(
+        default="",
+        description=(
+            "A task_profiles.toml to import at startup instead of the shipped one. Empty means "
+            "the shipped file. The import is an upsert per (profile_id, version), so a file "
+            "naming a shipped profile replaces it and one naming a new id adds it."
+        ),
+        examples=["/etc/loadcoach/task_profiles.toml"],
+    )
     strategy: str = Field(default="weighted_evidence", examples=["weighted_evidence"])
     min_confidence: float = Field(default=0.05, ge=0, le=1, examples=[0.05])
     prefer_resident_bonus: float = Field(default=0.05, ge=0, le=1, examples=[0.05])
@@ -1153,6 +1162,12 @@ idempotency_ttl_hours = 24.0          # a key is reserved this long, then releas
 cancelling_watchdog_seconds = 30      # a job never stays in `cancelling` longer than this
 
 [routing]
+# A task_profiles.toml of your own, imported at startup instead of the shipped one. Empty means
+# the shipped file. The import is an upsert per (profile_id, version): a file naming a shipped
+# profile replaces it, one naming a new id adds it. A path that is not a file is refused at
+# startup rather than falling back, because routing under profiles you did not write is not
+# something you could tell from the outside.
+task_profiles_path = ""
 strategy = "weighted_evidence"
 min_confidence = 0.05
 prefer_resident_bonus = 0.05

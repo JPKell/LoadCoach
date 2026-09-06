@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from baseaicore import ConfigurationError
 from weightsdb import upsert
 
 from loadcoach.domain.task_profile import TaskProfile, TaskProfileInvalid, load_task_profiles
@@ -20,6 +21,7 @@ from loadcoach.infrastructure.db.models import TaskProfile as TaskProfileModel
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
+    from loadcoach.config import RoutingSettings
     from loadcoach.services.database import Database
 
 __all__ = [
@@ -29,6 +31,7 @@ __all__ = [
     "import_task_profiles",
     "list_stored_task_profiles",
     "read_task_profiles_file",
+    "task_profiles_path_for",
 ]
 
 DEFAULT_TASK_PROFILES_PATH = (
@@ -57,6 +60,37 @@ def read_task_profiles_file(
         raw = tomllib.load(handle)
     table = raw.get("task_profiles", {})
     return load_task_profiles(table, file=path, schemas_dir=schemas_dir)
+
+
+def task_profiles_path_for(routing: RoutingSettings) -> Path:
+    """Return the ``task_profiles.toml`` this configuration says to import.
+
+    Args:
+        routing: The ``[routing]`` section.
+
+    Returns:
+        ``[routing] task_profiles_path`` where one is set, otherwise the shipped file.
+
+    Raises:
+        ConfigurationError: The configured path does not exist. Refused rather than silently
+            falling back to the shipped profiles: an operator who named a file and got the
+            defaults would be routing under a policy they did not write, and would have no way to
+            tell from the outside.
+
+    The profiles a deployment routes under are policy, and until 1.1 the only way to change them
+    was to edit a file inside the installed package — so a deployment whose task profiles differ
+    from the shipped ones was not expressible at all.
+    """
+    if not routing.task_profiles_path:
+        return DEFAULT_TASK_PROFILES_PATH
+    path = Path(routing.task_profiles_path).expanduser()
+    if not path.is_file():
+        message = (
+            f"routing.task_profiles_path is {routing.task_profiles_path!r}, which is not a file. "
+            "Point it at a task_profiles.toml, or leave it empty for the shipped profiles."
+        )
+        raise ConfigurationError(message, details={"field": "routing.task_profiles_path"})
+    return path
 
 
 def _import_one(session: Session, profile: TaskProfile, *, now: datetime) -> None:

@@ -118,6 +118,7 @@ Cross-provider policy, plus the ``[providers.<name>]`` registrations themselves.
 
 | Key | Environment variable | Type | Default | Range | Runtime-changeable | Security | Example | Description |
 |---|---|---|---|---|---|---|---|---|
+| `routing.task_profiles_path` | `LOADCOACH_ROUTING__TASK_PROFILES_PATH` | `str` | `''` | — | no | — | `'/etc/loadcoach/task_profiles.toml'` | A task_profiles.toml to import at startup instead of the shipped one. Empty means the shipped file. The import is an upsert per (profile_id, version), so a file naming a shipped profile replaces it and one naming a new id adds it. |
 | `routing.strategy` | `LOADCOACH_ROUTING__STRATEGY` | `str` | `'weighted_evidence'` | — | no | — | `'weighted_evidence'` |  |
 | `routing.min_confidence` | `LOADCOACH_ROUTING__MIN_CONFIDENCE` | `float` | `0.05` | ≥ 0, ≤ 1 | yes | — | `0.05` |  |
 | `routing.prefer_resident_bonus` | `LOADCOACH_ROUTING__PREFER_RESIDENT_BONUS` | `float` | `0.05` | ≥ 0, ≤ 1 | yes | — | `0.05` |  |

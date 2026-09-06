@@ -35,7 +35,6 @@ from loadcoach.domain.registry import (
     DECLARED_CONFIDENCE,
     DECLARED_SCORE,
     geometry_from_json,
-    head_dim_from_json,
 )
 from loadcoach.domain.reliability import neutral_factor
 from loadcoach.domain.routing.constraints import (
@@ -348,7 +347,7 @@ def _facts_for(model: Model, *, is_remote: bool) -> ModelFacts:
         parameter_count=model.parameter_count,
         layers=geometry_from_json(geometry, "layers"),
         kv_heads=geometry_from_json(geometry, "kv_heads"),
-        head_dim=head_dim_from_json(geometry),
+        head_dim=geometry_from_json(geometry, "head_dim"),
         provider_name=model.provider_name,
         is_remote=model.is_remote if model.provider_name else is_remote,
     )
