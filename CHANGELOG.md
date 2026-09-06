@@ -58,6 +58,22 @@ packaging and release standards §3.
   adapter* after a rename, and `subject_canonical_id`, the string written at decision time so an
   explanation still reads correctly after the directory has changed underneath it. Existing rows
   are backfilled from `models.canonical_id`, which is what a bare base's subject string is.
+- **`output.tool_calls_assembled`, beside the fragments** (ADR-0078). A provider emits one call as
+  several deltas and not every delta carries the id — Ollama's adapter sends id and name first and
+  the argument text second with no id at all — so grouping on the id splits one call into a named
+  call with no arguments and a nameless one with the arguments. That is a defect a real caller
+  shipped against a real model, so the assembled shape is now the response's own: one entry per
+  call keyed on `call_index`, with `arguments` parsed where they parse and kept as the raw string
+  where they do not. **`output.tool_calls` is superseded** — kept, documented, and removed at
+  LoadCoach `2.0`; a minor does not break a shipped field.
+- **The models view groups adapter subjects under their base**, each row naming the subject, the
+  evidence source routing would use for it (`declared` where the manifest claims vocabulary terms,
+  `absent` where it claims none — never `benchmark`, because nothing measures adapters until LA3),
+  its base-identity confidence, its classification and the registration that serves the base.
+  `GET /models` carries the same under `adapters`.
+- **The `/generate` response names the subject**: `model.subject_canonical_id`, `model.adapter`,
+  `model.provider_name` and `model.is_remote` beside the canonical ID, and every candidate in a
+  persisted explanation carries its subject string, its provider name and its adapter.
 - **Reliability and the circuit breaker key on the subject, never the base** (ADR-0067). A failing
   `(base, adapterA)` is deprioritized and eventually broken **as that subject**: it never breaks
   the bare base and never breaks a sibling adapter, which is the whole point — one bad adapter must

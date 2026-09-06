@@ -100,6 +100,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AllCandidatesFailed",
+    "assemble_tool_calls",
     "ProfileMismatched",
     "AttemptOutcome",
     "AttemptRecord",
@@ -276,6 +277,58 @@ def messages_of_json(payload: object) -> tuple[Message, ...]:
     )
 
 
+def assemble_tool_calls(fragments: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Group streamed tool-call fragments into whole calls (ADR-0078).
+
+    A provider emits one call as several deltas, and **not every delta carries the id**: Ollama's
+    adapter sends id and name first and the argument text second with no id at all. Grouping on
+    the id therefore splits one call into a named call with no arguments and a nameless one with
+    the arguments — the defect a real caller shipped against a real model (G1 §10.4, fixed at G2).
+    The key is ``call_index``, which every delta carries.
+
+    Args:
+        fragments: The response's ``output.tool_calls`` entries, in arrival order.
+
+    Returns:
+        One entry per call, in ``call_index`` order: ``call_index``, ``id``, ``name`` and
+        ``arguments`` — the concatenated fragments parsed as JSON where they parse, and the raw
+        string where they do not. A caller must never have to re-implement this, which is the
+        whole reason the field exists beside the fragments rather than replacing them.
+    """
+    grouped: dict[int, dict[str, Any]] = {}
+    for fragment in fragments:
+        index = int(cast("int", fragment.get("call_index", 0)))
+        call = grouped.setdefault(
+            index, {"call_index": index, "id": None, "name": None, "arguments_text": ""}
+        )
+        if fragment.get("id") and not call["id"]:
+            call["id"] = fragment["id"]
+        if fragment.get("name") and not call["name"]:
+            call["name"] = fragment["name"]
+        call["arguments_text"] += str(fragment.get("arguments_fragment") or "")
+    assembled: list[dict[str, Any]] = []
+    for index in sorted(grouped):
+        call = grouped[index]
+        text = cast("str", call.pop("arguments_text"))
+        call["arguments"] = _parsed_arguments(text)
+        assembled.append(call)
+    return assembled
+
+
+def _parsed_arguments(text: str) -> Any:
+    """The arguments as an object where they parse, and as the raw string where they do not.
+
+    A model that emits invalid JSON has said something, and dropping it would hide the one piece
+    of evidence a person needs to see why the call failed (api.md §4's ``object|string``).
+    """
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
 def tool_calls_of_json(payload: object) -> tuple[ToolCall, ...]:
     """The calls an assistant turn requested, read back from a persisted message.
 
@@ -447,7 +500,12 @@ class ExecutionOutcome:
                 "text": self.text,
                 "finish_reason": self.finish_reason,
                 "structured": self.structured,
+                # Superseded, kept until LoadCoach 2.0 (ADR-0078): one entry per fragment, which
+                # every caller had to group for itself and the first one to try got wrong.
                 "tool_calls": list(self.tool_calls),
+                "tool_calls_assembled": assemble_tool_calls(
+                    cast("Sequence[Mapping[str, Any]]", self.tool_calls)
+                ),
             },
             "reasoning": {
                 "available": self.thinking is not None,
@@ -456,6 +514,12 @@ class ExecutionOutcome:
             },
             "model": {
                 "canonical_id": subject.facts.canonical_id,
+                # Byte-for-byte `canonical_id` with no adapter (ADR-0058 §3), so a caller reading
+                # either field is never wrong about which weights answered.
+                "subject_canonical_id": subject.subject_canonical_id,
+                "provider_name": subject.facts.provider_name or None,
+                "is_remote": subject.facts.is_remote,
+                "adapter": None if subject.adapter is None else subject.adapter.as_json(),
                 "model_ref": subject.facts.model_id,
                 "runtime_profile_hash": subject.runtime_profile_hash,
                 "served_context": subject.served_context.tokens,

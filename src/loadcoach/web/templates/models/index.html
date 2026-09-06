@@ -19,7 +19,8 @@ benchmark evidence (<a href="/evidence">Benchmarks</a>), production reliability
 {% for item in models %}
 {% set model = item.entry %}
 {% set _ = rows.append([
-  ('<span class="mono">' ~ (model.canonical_id | e) ~ '</span>') | safe,
+  ('<span class="mono">' ~ (model.canonical_id | e) ~ '</span>'
+    ~ ((' <span class="muted">· ' ~ (model.provider_name | e) ~ '</span>') if model.provider_name else '')) | safe,
   model.family or "—",
   model.max_context if model.max_context is not none else "—",
   model.size_bytes | bytes_human,
@@ -35,8 +36,26 @@ benchmark evidence (<a href="/evidence">Benchmarks</a>), production reliability
   badge("available", tone="success") if model.available
     else badge("unavailable", tone="danger") ~ " " ~ (model.unavailable_reason or "")
 ]) %}
+{# Adapter subjects sit immediately under the base they run on (dev-plan P10): one row each,
+   naming the subject, the evidence source routing would use for it and the registration that
+   serves the base. #}
+{% for adapter in item.adapters %}
+{% set _ = rows.append([
+  ('<span class="mono">↳ ' ~ (adapter.subject_canonical_id | e) ~ '</span>'
+    ~ ((' <span class="muted">· ' ~ (adapter.provider_name | e) ~ '</span>') if adapter.provider_name else '')) | safe,
+  "adapter",
+  "—",
+  "—",
+  adapter.declared_capabilities | join(", ") or "none declared",
+  (adapter.evidence_source ~ " · " ~ adapter.base_confidence ~ " base · " ~ adapter.data_classification),
+  "per-subject",
+  "with its base",
+  (badge("available", tone="success") if adapter.available
+    else badge("unavailable", tone="danger") ~ " " ~ (adapter.unavailable_reason or "")) | safe
+]) %}
 {% endfor %}
-{{ table(columns, rows, caption="Every model discovery has seen, available or not.",
-         table_id="models", sortable=true, complete=true, row_count=models | length) }}
+{% endfor %}
+{{ table(columns, rows, caption="Every model discovery has seen, available or not — with each adapter subject under the base it runs on.",
+         table_id="models", sortable=true, complete=true, row_count=rows | length) }}
 {% endif %}
 {% endblock %}

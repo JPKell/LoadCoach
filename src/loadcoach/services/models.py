@@ -348,6 +348,11 @@ class RegistryEntry:
     declared_capabilities: dict[str, float]
     model_id: str = ""
     """The registry ULID — api.md §2's ``model_ref``, the form that survives a path segment."""
+    provider_name: str = ""
+    """The registration that served this model's most recent discovery (ADR-0055). ``""`` reads
+    as "not recorded" — a row discovered before registrations had names."""
+    is_remote: bool = False
+    """The registration's declared egress class, never inferred from the kind (ADR-0055 rule 4)."""
 
 
 def list_registry(database: Database) -> tuple[RegistryEntry, ...]:
@@ -380,6 +385,8 @@ def list_registry(database: Database) -> tuple[RegistryEntry, ...]:
                         if row.score is not None
                     },
                     model_id=model.id,
+                    provider_name=model.provider_name,
+                    is_remote=model.is_remote,
                 )
             )
         return tuple(entries)
@@ -397,12 +404,17 @@ class ModelOverview:
             ``attempts_7d``, the ``lowest_factor`` routing applies on any profile (``None`` when
             every pair is neutral), ``regressions``, and the breaker's ``circuit_state``.
         residency: ``resident`` and the ``gpu_indexes`` it is loaded on.
+        adapters: The adapter subjects this base can serve, in name order — each with its subject
+            string, its base-identity confidence, its classification, the evidence source routing
+            would use for it and the registration that serves the base. Empty for a deployment
+            with no adapter directory, which is every 1.0 deployment.
     """
 
     entry: RegistryEntry
     evidence: dict[str, int]
     reliability: dict[str, Any]
     residency: dict[str, Any]
+    adapters: tuple[dict[str, Any], ...] = ()
 
     def as_json(self) -> dict[str, Any]:
         """The three summaries ``GET /models`` carries beside the identity fields."""
@@ -410,6 +422,7 @@ class ModelOverview:
             "evidence_summary": dict(self.evidence),
             "reliability": dict(self.reliability),
             "residency": dict(self.residency),
+            "adapters": [dict(adapter) for adapter in self.adapters],
         }
 
 
@@ -417,7 +430,7 @@ def registry_overview(database: Database) -> tuple[ModelOverview, ...]:
     """Every model with its evidence, reliability and residency summaries (api.md §2)."""
     from sqlalchemy import func, select
 
-    from loadcoach.infrastructure.db.models import CapabilityEvidence, Residency
+    from loadcoach.infrastructure.db.models import Adapter, CapabilityEvidence, Residency
     from loadcoach.services.reliability import reliability_report
 
     entries = list_registry(database)
@@ -440,6 +453,7 @@ def registry_overview(database: Database) -> tuple[ModelOverview, ...]:
         resident_rows = session.execute(
             select(Residency.model_id, Residency.gpu_index).where(Residency.resident.is_(True))
         ).all()
+        adapter_rows = list(session.execute(select(Adapter).order_by(Adapter.name)).scalars().all())
     evidence: dict[str, dict[str, int]] = {}
     for model_id, match_state, stale, count, capabilities in evidence_rows:
         coverage = evidence.setdefault(
@@ -478,9 +492,13 @@ def registry_overview(database: Database) -> tuple[ModelOverview, ...]:
             summary["regressions"] += 1
         if report.circuit_state != "closed":
             summary["circuit_state"] = report.circuit_state
+    adapters_by_base: dict[str, list[Adapter]] = {}
+    for adapter in adapter_rows:
+        adapters_by_base.setdefault(adapter.base_model_name, []).append(adapter)
     return tuple(
         ModelOverview(
             entry=entry,
+            adapters=_adapter_views(entry, adapters_by_base.get(entry.provider_model_name, [])),
             evidence=evidence.get(
                 entry.model_id, {"bound": 0, "capabilities": 0, "stale": 0, "unmatched": 0}
             ),
@@ -501,6 +519,37 @@ def registry_overview(database: Database) -> tuple[ModelOverview, ...]:
         )
         for entry in entries
     )
+
+
+def _adapter_views(entry: RegistryEntry, adapters: Sequence[Any]) -> tuple[dict[str, Any], ...]:
+    """Render the adapter subjects one base can serve, for the models view (dev-plan P10).
+
+    ``evidence_source`` is what routing would actually use for the subject: ``"declared"`` where
+    the manifest claims vocabulary terms, and ``"absent"`` where it claims none. It is never
+    ``"benchmark"`` today, because an adapter subject inherits nothing from its base and nothing
+    measures adapters until FreeWeight does (LA3) — which is exactly why the shipped
+    ``require_adapter_evidence`` makes adapters invisible to routed selection.
+    """
+    from loadcoach.services.reliability import subject_id_of
+
+    views: list[dict[str, Any]] = []
+    for adapter in adapters:
+        declared = list(adapter.declared_capabilities_json or [])
+        views.append(
+            {
+                "name": adapter.name,
+                "subject_canonical_id": subject_id_of(entry.canonical_id, adapter),
+                "artifact_digest": adapter.artifact_sha256,
+                "base_confidence": adapter.base_identity_confidence,
+                "data_classification": adapter.data_classification,
+                "declared_capabilities": declared,
+                "evidence_source": "declared" if declared else "absent",
+                "provider_name": entry.provider_name or None,
+                "available": adapter.available,
+                "unavailable_reason": adapter.unavailable_reason,
+            }
+        )
+    return tuple(views)
 
 
 def try_discover_models(

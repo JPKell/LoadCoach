@@ -371,3 +371,41 @@ def test_a_job_row_written_before_tool_calls_existed_still_rebuilds() -> None:
     )
     assert rebuilt.tools == ()
     assert rebuilt.transcript() == (Message(role=Role.USER, content="hi"),)
+
+
+def test_the_assembled_field_groups_fragments_the_way_a_caller_should_not_have_to() -> None:
+    """ADR-0078: one call arrives as several deltas, and not every delta carries the id.
+
+    Ollama's adapter emits id and name first and the argument text second **with no id**, so
+    grouping on the id splits one call into a named call with no arguments and a nameless one
+    with the arguments — the defect a real caller shipped against a real model (G1 §10.4). The
+    key is `call_index`, which every delta carries.
+    """
+    from loadcoach.services.execution import assemble_tool_calls
+
+    fragments: list[dict[str, object]] = [
+        {"call_index": 0, "id": "call_1", "name": "run_command", "arguments_fragment": ""},
+        {"call_index": 0, "id": None, "name": None, "arguments_fragment": '{"cmd": "ls'},
+        {"call_index": 0, "id": None, "name": None, "arguments_fragment": ' -la"}'},
+        {"call_index": 1, "id": "call_2", "name": "read_file", "arguments_fragment": "not json"},
+    ]
+
+    assembled = assemble_tool_calls(fragments)
+
+    assert assembled == [
+        {
+            "call_index": 0,
+            "id": "call_1",
+            "name": "run_command",
+            "arguments": {"cmd": "ls -la"},
+        },
+        # Invalid JSON survives as the string the model actually emitted: dropping it would hide
+        # the one piece of evidence a person needs to see why the call failed (api.md §4).
+        {"call_index": 1, "id": "call_2", "name": "read_file", "arguments": "not json"},
+    ]
+
+
+def test_an_answer_with_no_tool_calls_assembles_to_an_empty_list() -> None:
+    from loadcoach.services.execution import assemble_tool_calls
+
+    assert assemble_tool_calls([]) == []

@@ -586,3 +586,54 @@ def test_statistics_are_kept_per_subject_and_never_pooled(database: Any, tmp_pat
     assert (model_id, terse.adapter_id) in factors
     # Both are neutral with no attempts, and — the point — they are two rows, not one.
     assert factors[(model_id, "")].value == factors[(model_id, terse.adapter_id)].value == 1.0
+
+
+# --------------------------------------------------------------------------------------------
+# The models view (gate H)
+# --------------------------------------------------------------------------------------------
+
+
+def test_the_models_overview_groups_adapter_subjects_under_their_base(
+    database: Any, tmp_path: Path
+) -> None:
+    """Dev-plan P10: each subject under its base, with its evidence source and provider name."""
+    from loadcoach.services.models import registry_overview
+
+    directory = tmp_path / "adapters"
+    directory.mkdir()
+    _write_adapter(directory, "terse")
+    _write_adapter(directory, "quiet", capabilities=())
+    sync_adapters(database, _settings(directory), now=NOW)
+
+    (overview,) = registry_overview(database)
+
+    assert overview.entry.provider_name == "local"
+    names = [adapter["name"] for adapter in overview.adapters]
+    assert names == ["quiet", "terse"]
+    by_name = {adapter["name"]: adapter for adapter in overview.adapters}
+    assert by_name["terse"]["subject_canonical_id"].startswith(overview.entry.canonical_id)
+    assert "+terse@sha256:" in by_name["terse"]["subject_canonical_id"]
+    assert by_name["terse"]["evidence_source"] == "declared"
+    # No declared capabilities means routing has nothing at all to go on for that subject.
+    assert by_name["quiet"]["evidence_source"] == "absent"
+    assert by_name["terse"]["provider_name"] == "local"
+    assert by_name["terse"]["data_classification"] == "confidential"
+
+
+def test_the_models_page_renders_a_subject_row_under_its_base(
+    database: Any, tmp_path: Path
+) -> None:
+    from loadcoach.services.models import registry_overview
+    from loadcoach.web.rendering import render
+
+    directory = tmp_path / "adapters"
+    directory.mkdir()
+    _write_adapter(directory, "terse")
+    sync_adapters(database, _settings(directory), now=NOW)
+
+    html = render("models/index.html", page="models", models=registry_overview(database))
+
+    base_position = html.index("fake/qwen2.5:1.5b@sha256:")
+    subject_position = html.index("+terse@sha256:")
+    assert base_position < subject_position
+    assert "↳" in html

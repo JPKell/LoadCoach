@@ -54,6 +54,7 @@ from loadcoach.domain.routing.subject import RuntimeOverrides
 from loadcoach.infrastructure.db.models import Job
 from loadcoach.services.execution import (
     GenerateRequest,
+    assemble_tool_calls,
     message_json,
     messages_of_json,
     tool_definitions_json,
@@ -63,7 +64,7 @@ from loadcoach.services.retention import SCRUBBED_MARKER
 from loadcoach.services.routing import load_task_profile
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Callable, Iterable, Mapping, Sequence
     from datetime import datetime
 
     from baseaicore import RuntimeProfile
@@ -1357,7 +1358,12 @@ def job_document(database: Database, job_id: str) -> dict[str, Any]:
             "text": record.response_text,
             "finish_reason": None if last_attempt is None else last_attempt.finish_reason,
             "structured": record.structured_output,
+            # The fragments are superseded and kept until 2.0; the assembled calls are what a
+            # caller should read (ADR-0078).
             "tool_calls": record.tool_calls or [],
+            "tool_calls_assembled": assemble_tool_calls(
+                cast("Sequence[Mapping[str, Any]]", record.tool_calls or [])
+            ),
         },
         "reasoning": {
             "available": record.reasoning_available,
