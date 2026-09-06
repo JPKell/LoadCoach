@@ -8,15 +8,20 @@ and it arrives with subject expansion.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+
+from sqlalchemy import select
+from weightsdb import upsert
 
 from loadcoach.domain.authorization import Principal, authorize
+from loadcoach.domain.routing.subject import AdapterFacts
 from loadcoach.infrastructure.adapters import (
     AdapterEntry,
     DraftOutcome,
     draft_manifests,
     read_directory,
 )
+from loadcoach.infrastructure.db.models import Adapter
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -24,15 +29,18 @@ if TYPE_CHECKING:
 
     from loadcoach.config import Settings
     from loadcoach.infrastructure.providers.factory import ProviderRegistration
+    from loadcoach.services.database import Database
 
 __all__ = [
     "AdapterNotFound",
     "AdapterOverview",
     "AdaptersDisabled",
     "AdapterView",
+    "adapter_facts_by_base_name",
     "adapter_overview",
     "scan_adapters",
     "show_adapter",
+    "sync_adapters",
 ]
 
 
@@ -233,3 +241,108 @@ def _view(entry: AdapterEntry, states: dict[str, list[tuple[str, str, str]]]) ->
         pending_on=tuple(name for name, status, _ in reported if status == "pending_restart"),
         provider_notes=tuple((name, reason) for name, _, reason in reported),
     )
+
+
+def sync_adapters(database: Database, settings: Settings, *, now: datetime) -> int:
+    """Read the configured directory into the ``adapters`` table, and return how many rows it holds.
+
+    The directory is the truth and the table is its projection: identity is the artifact hash, so a
+    renamed artifact updates ``artifact_path`` on the row it already had, and an edited one is a
+    new row (ADR-0061 rule 5). Routing reads the table rather than the directory because reading
+    the directory means hashing every artifact, which is file I/O no routing decision may do.
+
+    A row whose adapter has left the directory is **kept and marked unavailable**, not deleted:
+    a stored decision names it by foreign key, and deleting the row would orphan an explanation
+    that must stay readable (ADR-0080).
+
+    Args:
+        database: The application's database handle.
+        settings: The resolved configuration. With ``[adapters] directory`` empty this is a no-op
+            returning ``0`` — the feature is off, and nothing is written.
+        now: The instant of this pass. Injected, so a test can assert ``last_seen_at``.
+
+    Returns:
+        The number of adapters the directory described, available or not.
+    """
+    directory = settings.adapters.path
+    if directory is None:
+        return 0
+    reading = read_directory(directory)
+    seen = {entry.artifact_sha256 for entry in reading.entries}
+    with database.write() as session:
+        for entry in reading.entries:
+            upsert(
+                session,
+                Adapter,
+                {
+                    "name": entry.name,
+                    "artifact_sha256": entry.artifact_sha256,
+                    "source_sha256": entry.source_sha256,
+                    "artifact_path": str(entry.artifact_path),
+                    "manifest_path": str(entry.manifest_path),
+                    "base_model_name": entry.base_model_name,
+                    "base_artifact_digest": entry.base_artifact_digest,
+                    "base_identity_confidence": entry.base_confidence.value,
+                    "declared_capabilities_json": list(entry.declared_capabilities),
+                    "data_classification": entry.data_classification.value,
+                    "adapter_format": "gguf",
+                    "manifest_json": entry.payload,
+                    "created_at": now,
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "available": entry.available,
+                    "unavailable_reason": entry.unavailable_reason,
+                },
+                index_elements=["artifact_sha256"],
+                no_update=frozenset({"created_at", "first_seen_at"}),
+            )
+        for row in session.execute(select(Adapter)).scalars().all():
+            if row.artifact_sha256 not in seen and row.available:
+                row.available = False
+                row.unavailable_reason = (
+                    "no reviewed manifest in the configured directory names this artifact any "
+                    "more; the row is kept because stored decisions name it"
+                )
+    return len(reading.entries)
+
+
+def adapter_facts_by_base_name(database: Database) -> dict[str, tuple[AdapterFacts, ...]]:
+    """Return every available adapter, grouped by the base model name it declares.
+
+    The grouping key is the **name**, not the digest, on purpose: an adapter whose manifest
+    declares a base digest that does not match the served base must become a candidate and be
+    *rejected by name* (``adapter_incompatible``), not silently vanish. Grouping on the digest
+    would make that mismatch invisible, which is the confusion ADR-0061 exists to prevent.
+
+    Args:
+        database: The application's database handle.
+
+    Returns:
+        Base model name -> its adapters, each in name order. Empty when adapters are off or the
+        directory has never been synced.
+    """
+    with database.read() as session:
+        rows = (
+            session.execute(
+                select(Adapter).where(Adapter.available.is_(True)).order_by(Adapter.name)
+            )
+            .scalars()
+            .all()
+        )
+    grouped: dict[str, list[AdapterFacts]] = {}
+    for row in rows:
+        grouped.setdefault(row.base_model_name, []).append(
+            AdapterFacts(
+                adapter_id=row.id,
+                name=row.name,
+                artifact_digest=row.artifact_sha256,
+                base_model_name=row.base_model_name,
+                base_artifact_digest=row.base_artifact_digest,
+                base_confidence=row.base_identity_confidence,
+                declared_capabilities=tuple(
+                    cast("list[str]", row.declared_capabilities_json or [])
+                ),
+                data_classification=row.data_classification,
+            )
+        )
+    return {name: tuple(facts) for name, facts in grouped.items()}

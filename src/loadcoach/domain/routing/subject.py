@@ -15,10 +15,10 @@ depend on, and putting it in any one of them would make the other two import a s
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 
-from baseaicore import RuntimeProfile
+from baseaicore import AdapterIdentity, RuntimeProfile
 
 from loadcoach.domain.evidence_policy import CalibrationFacts
 
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
 __all__ = [
+    "AdapterFacts",
     "CapabilitySignal",
     "ExecutionSubject",
     "ModelFacts",
@@ -114,6 +115,15 @@ class ProviderFacts:
         supports_streaming: Whether it can produce incremental output.
         is_remote: Whether this provider is somewhere other than this machine. Gates
             ``allow_remote_providers`` and the cost factor.
+        adapter_hot_swap: Whether this provider can serve a registered LoRA adapter over a loaded
+            base. A provider that cannot contributes **no** adapter subjects at all
+            (ADR-0062 decision 5), which is what keeps ADR-0065's local-only invariant true by
+            construction rather than by a check somebody could forget.
+        adapters_registered: Whether LoadCoach handed this registration any adapters — ``True``
+            for one holding registrations, ``False`` for one holding none, and ``None`` only for a
+            provider that has no concept of adapters at all (ADR-0074's consequences). Derived
+            from what LoadCoach offered the provider, never from a ``list_adapters()`` snapshot,
+            which moves while a restart is pending.
     """
 
     healthy: bool = True
@@ -123,6 +133,58 @@ class ProviderFacts:
     supports_structured_output: bool = False
     supports_streaming: bool = False
     is_remote: bool = False
+    adapter_hot_swap: bool = False
+    adapters_registered: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AdapterFacts:
+    """One reviewed adapter, in the shape routing consumes (ADR-0058, ADR-0061).
+
+    A row of the ``adapters`` table, lifted the way :class:`ModelFacts` lifts a ``models`` row.
+    Identity is the **artifact digest**; ``artifact_path`` is deliberately absent, because nothing
+    in routing may reach for a file.
+
+    Attributes:
+        adapter_id: The local ULID primary key — the foreign key a persisted decision carries
+            beside the subject string (ADR-0080).
+        name: The manifest's pin and display name. What a caller names in ``overrides.adapter``.
+        artifact_digest: The served artifact's normalized ``sha256:`` digest. **The identity.**
+        base_model_name: The base this adapter declares.
+        base_artifact_digest: That base's digest, when the manifest's author proved one; ``None``
+            for a name-only claim, which is a weaker statement and never a mismatch on its own.
+        base_confidence: ``"digest"`` or ``"name_only"`` — the existing identity machinery, not a
+            parallel flag (ADR-0058 §5).
+        declared_capabilities: The vocabulary terms the manifest claims (ADR-0064 rule 1).
+        data_classification: The adapter's own classification, required by the manifest and
+            joined with the caller's by ``max()`` (ADR-0065 rule 2).
+    """
+
+    adapter_id: str
+    name: str
+    artifact_digest: str
+    base_model_name: str
+    base_artifact_digest: str | None = None
+    base_confidence: str = "name_only"
+    declared_capabilities: tuple[str, ...] = ()
+    data_classification: str = "confidential"
+
+    @property
+    def canonical_suffix(self) -> str:
+        """Return ``+name@sha256:<12 hex>`` — the suffix this adapter adds to a subject string."""
+        return AdapterIdentity(
+            name=self.name, artifact_digest=self.artifact_digest
+        ).canonical_suffix
+
+    def as_json(self) -> dict[str, str | list[str] | None]:
+        """Render the ``adapter`` object an explanation and a response carry."""
+        return {
+            "name": self.name,
+            "artifact_digest": self.artifact_digest,
+            "base_confidence": self.base_confidence,
+            "data_classification": self.data_classification,
+            "declared_capabilities": list(self.declared_capabilities),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +268,9 @@ class ExecutionSubject:
             legal profile meaning "provider defaults" (ADR-0023 §1).
         served_context: The context and its source.
         signals: Every capability signal known for this model, in a stable order.
+        adapter: The adapter this subject applies, or ``None`` for the bare base. From 1.1 a
+            candidate is the triple ``(identity, adapter | none, resolved profile)``
+            (ADR-0058); ``None`` is the whole of LoadCoach 1.0's behaviour, byte for byte.
     """
 
     facts: ModelFacts
@@ -213,11 +278,24 @@ class ExecutionSubject:
     runtime_profile: RuntimeProfile
     served_context: ServedContext
     signals: tuple[CapabilitySignal, ...] = field(default=())
+    adapter: AdapterFacts | None = None
 
     @property
     def runtime_profile_hash(self) -> str:
         """The resolved profile's stable hash — what evidence must match (ADR-0023 §3)."""
         return self.runtime_profile.profile_hash
+
+    @property
+    def subject_canonical_id(self) -> str:
+        """The canonical string naming these weights and the adapter applied to them.
+
+        With no adapter this is **byte-for-byte** the model's canonical ID — the additive claim
+        ADR-0058 makes and a golden pins. Display and lookup only: written, never parsed
+        (ADR-0024 §4).
+        """
+        if self.adapter is None:
+            return self.facts.canonical_id
+        return f"{self.facts.canonical_id}{self.adapter.canonical_suffix}"
 
 
 def resolve_runtime_profile(
@@ -227,6 +305,7 @@ def resolve_runtime_profile(
     min_context_tokens: int = 0,
     context_configurable: bool = False,
     override: RuntimeProfile | None = None,
+    adapters_registered: bool | None = None,
 ) -> RuntimeProfile:
     """Resolve the runtime profile one execution runs under (ADR-0023 §1).
 
@@ -247,6 +326,12 @@ def resolve_runtime_profile(
         min_context_tokens: The task profile's context requirement; 0 means none.
         context_configurable: Whether the provider will accept a context setting at all.
         override: The request's ``overrides.runtime_profile``, if any.
+        adapters_registered: Whether the serving process has adapters registered (ADR-0074).
+            Stated — ``True`` or ``False`` — for a provider that can hot-swap them, and left
+            ``None`` for one that has no concept of adapters, so that every profile hash a
+            deployment without adapters has ever stored is unchanged. It is applied **after** the
+            chain, because it describes the server rather than the operator's preferences and no
+            configuration level may state it.
 
     Returns:
         The resolved profile. ``RuntimeProfile()`` (everything unset) is a legal result, and its
@@ -258,7 +343,10 @@ def resolve_runtime_profile(
         min_context_tokens=min_context_tokens,
         context_configurable=context_configurable,
     )
-    return _merge(resolved, override)
+    resolved = _merge(resolved, override)
+    if adapters_registered is None:
+        return resolved
+    return replace(resolved, adapters_registered=adapters_registered)
 
 
 def _merge(base: RuntimeProfile, layer: RuntimeProfile | None) -> RuntimeProfile:

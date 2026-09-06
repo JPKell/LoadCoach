@@ -635,6 +635,29 @@ class RoutingSettings(BaseModel):
         ),
         examples=[0.9],
     )
+    base_switch_penalty: float = Field(
+        default=0.10,
+        ge=0,
+        le=1,
+        description=(
+            "Two-level residency's penalty for a candidate that would need its own base loaded "
+            "while another base is resident (routing §6.1, ADR-0066). Chosen, not measured: "
+            "twice prefer_resident_bonus, so a base switch is never decided by the tie-break the "
+            "bonus exists to be. A deployment that has measured its own load times should set it "
+            "from them."
+        ),
+        examples=[0.10],
+    )
+    require_adapter_evidence: bool = Field(
+        default=True,
+        description=(
+            "Refuse to *route* to an adapter subject with no measured evidence for the profile's "
+            "top-weighted capability (ADR-0064 rule 3). On by default: until FreeWeight measures "
+            "adapters, every adapter subject is unmeasured, so adapters are invisible to routed "
+            "selection while pins keep working. That is 'no benchmark, no use' behaving correctly."
+        ),
+        examples=[True],
+    )
     explanation_retention_days: int = Field(
         default=0, ge=0, description="0 = forever.", examples=[0]
     )
@@ -1106,6 +1129,8 @@ cancelling_watchdog_seconds = 30      # a job never stays in `cancelling` longer
 strategy = "weighted_evidence"
 min_confidence = 0.05
 prefer_resident_bonus = 0.05
+base_switch_penalty = 0.10        # two-level residency (routing §6.1); chosen, not measured
+require_adapter_evidence = true   # "no benchmark, no use" for adapter subjects (ADR-0064 rule 3)
 min_present_weight = 0.5
 explanation_retention_days = 0    # 0 = forever
 

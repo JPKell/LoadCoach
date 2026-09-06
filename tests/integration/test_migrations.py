@@ -685,9 +685,8 @@ def test_migration_0008_adds_the_two_provider_columns_and_nothing_else() -> None
                     text("SELECT name, sql FROM sqlite_master WHERE type = 'table'")
                 )
             }
-        runner.upgrade(backup=False)
-        assert runner.is_at_head()
-        assert runner.check_parity(Base.metadata).matches
+        # Stops at 0008: this test is about what *that* revision touches, and 0009 adds a table.
+        runner.upgrade(revision="0008", backup=False)
 
         with engine.connect() as connection:
             after = {
@@ -710,6 +709,12 @@ def test_migration_0008_adds_the_two_provider_columns_and_nothing_else() -> None
     type_, notnull, default = info["is_remote"]
     assert notnull == 1
     assert default == "0"
+
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(backup=False)
+        assert runner.is_at_head()
+        assert runner.check_parity(Base.metadata).matches
 
 
 def test_migration_0008_round_trips_on_sqlite() -> None:
@@ -756,6 +761,95 @@ def test_migration_0007_upgrades_and_downgrades_on_postgresql() -> None:
             }
         assert "cache_write_tokens" not in names
         assert "cache_read_tokens" not in names
+
+        runner.upgrade(backup=False)
+        assert runner.is_at_head()
+        assert runner.check_parity(Base.metadata).matches
+
+
+def test_migration_0009_creates_adapters_and_backfills_the_subject() -> None:
+    """ADR-0058/ADR-0080's migration: one new table, and every old candidate names its subject.
+
+    The backfill is the assertion that matters. A candidate written before 1.1 decided about a
+    bare base, and a bare base's subject string *is* its model's canonical ID — so the filled
+    value must equal it byte for byte rather than being left empty for a later reader to guess at.
+    """
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(revision="0008", backup=False)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO models (id, provider_kind, provider_model_name, canonical_id, "
+                    "identity_confidence, first_seen_at, last_seen_at, available) VALUES "
+                    "('01M0000000000000000000MDL', 'ollama', 'qwen3.5:9b', "
+                    "'ollama/qwen3.5:9b@sha256:1f3a9c4e2b70', 'digest', "
+                    "'2026-09-05 00:00:00+00:00', '2026-09-05 00:00:00+00:00', 1)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO routing_decisions (id, task_profile_id, task_profile_version, "
+                    "strategy_name, strategy_version, confidence_policy_version, requested_at, "
+                    "duration_ms, selected_model_id, explanation_json, created_at) VALUES "
+                    "('01M0000000000000000000DEC', 'code.review', '1.0.0', 'weighted_evidence', "
+                    "'1.0.0', '1.0.0', '2026-09-05 00:00:00+00:00', 3, "
+                    "'01M0000000000000000000MDL', '{}', '2026-09-05 00:00:00+00:00')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO routing_candidates (id, decision_id, model_id, rejected, "
+                    "created_at) VALUES ('01M0000000000000000000CND', "
+                    "'01M0000000000000000000DEC', '01M0000000000000000000MDL', 0, "
+                    "'2026-09-05 00:00:00+00:00')"
+                )
+            )
+
+        runner.upgrade(backup=False)
+        assert runner.is_at_head()
+        assert runner.check_parity(Base.metadata).matches
+
+        with engine.connect() as connection:
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    text("SELECT name FROM sqlite_master WHERE type = 'table'")
+                )
+            }
+            subject = connection.execute(
+                text("SELECT subject_canonical_id, adapter_id FROM routing_candidates")
+            ).one()
+            selected = connection.execute(
+                text("SELECT selected_subject_canonical_id FROM routing_decisions")
+            ).scalar_one()
+
+    assert "adapters" in tables
+    assert subject == ("ollama/qwen3.5:9b@sha256:1f3a9c4e2b70", None)
+    assert selected == "ollama/qwen3.5:9b@sha256:1f3a9c4e2b70"
+
+
+def test_migration_0009_round_trips_on_sqlite() -> None:
+    """Down to 0008 and back: the adapters table and both subject columns go and return."""
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(backup=False)
+        runner.downgrade(revision="0008")
+
+        assert runner.current() == "0008"
+        with engine.connect() as connection:
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    text("SELECT name FROM sqlite_master WHERE type = 'table'")
+                )
+            }
+            names = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(routing_candidates)"))
+            }
+        assert "adapters" not in tables
+        assert "subject_canonical_id" not in names
+        assert {"id", "decision_id", "model_id", "rejected"} <= names
 
         runner.upgrade(backup=False)
         assert runner.is_at_head()

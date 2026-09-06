@@ -1113,8 +1113,15 @@ class ExecutionContext:
     the executor without a live application.
 
     Attributes:
-        provider: The provider to call.
+        provider: The provider to call, and the one a candidate whose registration is unknown
+            executes on.
         provider_facts: Its declared capabilities, for routing and for the streaming degradation.
+        provider_facts_by_name: Every registration's capabilities, keyed by registration name
+            (ADR-0055 rule 3). Empty is the single-provider case, where ``provider_facts``
+            answers for every candidate — LoadCoach 1.0's behaviour exactly.
+        provider_by_name: Every registration's handle, keyed by registration name, so a
+            synchronous execution runs the selected subject on the provider that discovered it
+            rather than on whichever registration happens to be first.
         policy: The configured routing policy.
         schemas_dir: Where a task profile's ``json_schema_ref`` resolves.
         snapshot: The telemetry routing's resource constraints read.
@@ -1145,6 +1152,8 @@ class ExecutionContext:
     provider_facts: ProviderFacts
     policy: RoutingPolicy
     schemas_dir: Path
+    provider_facts_by_name: Mapping[str, ProviderFacts] = field(default_factory=dict)
+    provider_by_name: Mapping[str, Provider] = field(default_factory=dict)
     snapshot: TelemetrySnapshot | None = None
     timeout_seconds: float | None = None
     now: Callable[[], datetime] = field(default=lambda: datetime.now(tz=UTC))
@@ -1663,6 +1672,7 @@ def execute(
                 overrides=request.overrides or RuntimeOverrides(),
             ),
             provider=context.provider_facts,
+            provider_facts_by_name=context.provider_facts_by_name,
             policy=context.policy,
             snapshot=context.snapshot,
             resident_models=context.resident_models or frozenset(),
@@ -1880,7 +1890,9 @@ def stream_execute(
         on_chunk(StreamChunk("error", {"code": exc.code, "message": exc.message, **exc.details}))
 
 
-def provider_facts_for(provider: Provider | None) -> ProviderFacts:
+def provider_facts_for(
+    provider: Provider | None, *, adapters_registered: bool | None = None
+) -> ProviderFacts:
     """Read the provider's declared capabilities into routing's own value type.
 
     A provider that cannot be reached at all reports ``healthy=False`` rather than raising: with
@@ -1890,6 +1902,10 @@ def provider_facts_for(provider: Provider | None) -> ProviderFacts:
 
     Args:
         provider: The application's provider handle, or ``None`` when none is configured.
+        adapters_registered: What this registration was handed (ADR-0074), from
+            :class:`~loadcoach.infrastructure.providers.factory.ProviderRegistration`. ``None``
+            — the default — is a caller holding a bare handle and therefore knowing nothing about
+            registrations, which is honest rather than a claim that none were offered.
 
     Returns:
         The facts routing's constraint filter reads.
@@ -1910,4 +1926,6 @@ def provider_facts_for(provider: Provider | None) -> ProviderFacts:
         supports_structured_output=capabilities.structured_output,
         supports_streaming=capabilities.streaming,
         is_remote=health.is_remote,
+        adapter_hot_swap=capabilities.adapter_hot_swap,
+        adapters_registered=adapters_registered,
     )

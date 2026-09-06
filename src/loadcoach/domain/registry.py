@@ -56,8 +56,12 @@ _FLAG_TO_CAPABILITY: dict[ModelCapabilityFlag, str] = {
 # A declared flag is a binary "the provider says so," not a measured score — scored at 1.0 (the
 # flag is present) with a confidence well below what a benchmark run earns, so routing can prefer
 # real evidence over a declaration the moment any exists (spec §11 evidence contract).
-_DECLARED_SCORE = 1.0
-_DECLARED_CONFIDENCE = 0.5
+DECLARED_SCORE = 1.0
+"""The score a *declared* capability carries: the stored 1.0 meaning "this is claimed", which
+scoring maps to a neutral prior rather than to an ability (routing §5.1)."""
+
+DECLARED_CONFIDENCE = 0.5
+"""How much weight a declaration earns. Half: it is a statement, not a measurement."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +85,7 @@ def declared_capabilities_for(descriptor: ModelDescriptor) -> tuple[DeclaredCapa
     """
     return tuple(
         DeclaredCapability(
-            capability_id=capability_id, score=_DECLARED_SCORE, confidence=_DECLARED_CONFIDENCE
+            capability_id=capability_id, score=DECLARED_SCORE, confidence=DECLARED_CONFIDENCE
         )
         for flag in sorted(descriptor.declared_capabilities, key=lambda item: item.value)
         if (capability_id := _FLAG_TO_CAPABILITY.get(flag)) is not None

@@ -31,7 +31,11 @@ from sqlalchemy import select
 from weightsdb import upsert
 
 from loadcoach.domain.authorization import Principal, authorize
-from loadcoach.domain.registry import geometry_from_json
+from loadcoach.domain.registry import (
+    DECLARED_CONFIDENCE,
+    DECLARED_SCORE,
+    geometry_from_json,
+)
 from loadcoach.domain.reliability import neutral_factor
 from loadcoach.domain.routing.constraints import (
     ConstraintInputs,
@@ -55,6 +59,7 @@ from loadcoach.domain.routing.scoring import (
     score_subject,
 )
 from loadcoach.domain.routing.subject import (
+    AdapterFacts,
     CapabilitySignal,
     ExecutionSubject,
     ModelFacts,
@@ -71,6 +76,7 @@ from loadcoach.infrastructure.db.models import (
     RoutingDecision,
 )
 from loadcoach.infrastructure.db.models import RuntimeProfile as RuntimeProfileModel
+from loadcoach.services.adapters import adapter_facts_by_base_name
 from loadcoach.services.evidence import bound_signals_for_routing, evidence_overview
 from loadcoach.services.reliability import factors_for_task
 from loadcoach.services.task_profiles import StoredTaskProfile, list_stored_task_profiles
@@ -168,6 +174,8 @@ class RoutingPolicy:
     strategy: str = "weighted_evidence"
     min_confidence: float = 0.05
     prefer_resident_bonus: float = 0.05
+    base_switch_penalty: float = 0.10
+    require_adapter_evidence: bool = True
     min_present_weight: float = 0.5
     remote_cost_factor: float = 0.9
     vram_headroom_bytes: int = 512 * 1024 * 1024
@@ -202,6 +210,8 @@ class RoutingPolicy:
             strategy=routing.strategy,
             min_confidence=routing.min_confidence,
             prefer_resident_bonus=routing.prefer_resident_bonus,
+            base_switch_penalty=routing.base_switch_penalty,
+            require_adapter_evidence=routing.require_adapter_evidence,
             min_present_weight=routing.min_present_weight,
             remote_cost_factor=routing.remote_cost_factor,
             vram_headroom_bytes=telemetry.vram_headroom_bytes,
@@ -358,7 +368,9 @@ def _read_candidates(
     weights: Mapping[str, float],
     now: datetime,
     machine_fingerprint: str | None,
-) -> tuple[tuple[ModelFacts, ProviderFacts, tuple[CapabilitySignal, ...]], ...]:
+) -> tuple[
+    tuple[ModelFacts, ProviderFacts, tuple[CapabilitySignal, ...], AdapterFacts | None], ...
+]:
     """Read every model the registry knows, with every capability signal that may score it.
 
     Two sources, one signal type: ``model_capabilities`` for declared flags, manual scores and
@@ -387,13 +399,44 @@ def _read_candidates(
         now=now,
         local_machine_fingerprint=machine_fingerprint,
     )
+    adapters = adapter_facts_by_base_name(database)
+    candidates: list[
+        tuple[ModelFacts, ProviderFacts, tuple[CapabilitySignal, ...], AdapterFacts | None]
+    ] = []
+    for model in models:
+        facts = _facts_for(model, is_remote=provider.is_remote)
+        candidate_provider = provider_facts_by_name.get(model.provider_name, provider)
+        signals = _signals_for(by_model.get(model.id, [])) + evidence.get(model.id, ())
+        candidates.append((facts, candidate_provider, signals, None))
+        if not candidate_provider.adapter_hot_swap:
+            # ADR-0062 decision 5: a provider that cannot hot-swap contributes no adapter
+            # subjects at all, which is what keeps ADR-0065's local-only rule true by
+            # construction rather than by a check somebody could forget.
+            continue
+        for adapter in adapters.get(facts.provider_model_name, ()):
+            candidates.append((facts, candidate_provider, _adapter_signals(adapter), adapter))
+    return tuple(candidates)
+
+
+def _adapter_signals(adapter: AdapterFacts) -> tuple[CapabilitySignal, ...]:
+    """Return the signals an adapter subject carries: its manifest's claims, and nothing else.
+
+    An adapter subject inherits **nothing** from its base. A benchmark taken on the bare weights
+    describes the bare weights: attributing it to a subject running a LoRA nobody measured would
+    raise the score of weights nobody measured, which is exactly the mis-binding ADR-0058 §4
+    refuses in the evidence importer. So an adapter subject's only signals are the vocabulary
+    terms its manifest declares (ADR-0064 rule 1), at the same declared score and confidence a
+    provider flag gets — a statement, never a measurement, which is why ``require_adapter_evidence``
+    still rejects it.
+    """
     return tuple(
-        (
-            _facts_for(model, is_remote=provider.is_remote),
-            provider_facts_by_name.get(model.provider_name, provider),
-            _signals_for(by_model.get(model.id, [])) + evidence.get(model.id, ()),
+        CapabilitySignal(
+            capability_id=capability_id,
+            source="declared",
+            score=DECLARED_SCORE,
+            confidence=DECLARED_CONFIDENCE,
         )
-        for model in models
+        for capability_id in adapter.declared_capabilities
     )
 
 
@@ -544,7 +587,7 @@ def route(
     # neutral, and the neutral record still says how many attempts it has seen.
     reliability = factors_for_task(database, task_profile_id=profile.profile_id)
     priors = parameter_band_priors(
-        {facts.canonical_id: facts.parameter_count for facts, _, _ in candidates}
+        {facts.canonical_id: facts.parameter_count for facts, _, _, _ in candidates}
     )
     scoring = ScoringInputs(
         weights=profile.weights,
@@ -558,7 +601,8 @@ def route(
     rejected: list[RejectedCandidate] = []
     selected_budget: ContextBudget | None = None
 
-    for facts, candidate_provider, signals in candidates:
+    top_weighted = _top_weighted_capability(profile.weights)
+    for facts, candidate_provider, signals, adapter in candidates:
         subject, missing_context = _build_subject(
             facts,
             signals,
@@ -566,6 +610,7 @@ def route(
             policy=policy,
             request=request,
             constraints=constraints,
+            adapter=adapter,
         )
         if subject is None:
             rejected.append(
@@ -613,6 +658,8 @@ def route(
                 resident_devices=resident_devices or {},
                 circuit_breaker_details=circuit_breaker_details or {},
                 request_capabilities=request_capabilities,
+                require_adapter_evidence=policy.require_adapter_evidence,
+                top_weighted_capability=top_weighted,
             ),
         )
         if rejection is not None:
@@ -707,6 +754,18 @@ def _no_context_rejection(facts: ModelFacts) -> Rejection:
     )
 
 
+def _top_weighted_capability(weights: Mapping[str, float]) -> str | None:
+    """Return the profile's heaviest capability, or ``None`` for a profile that weights nothing.
+
+    Ties break on the capability ID so that two profiles with the same weights demand evidence of
+    the same capability twice running — a rejection reason is caller-visible vocabulary, and one
+    that moved between two identical decisions would be unexplainable.
+    """
+    if not weights:
+        return None
+    return max(sorted(weights), key=lambda capability: weights[capability])
+
+
 def _build_subject(
     facts: ModelFacts,
     signals: tuple[CapabilitySignal, ...],
@@ -715,6 +774,7 @@ def _build_subject(
     policy: RoutingPolicy,
     request: RouteRequest,
     constraints: TaskProfileConstraints,
+    adapter: AdapterFacts | None = None,
 ) -> tuple[ExecutionSubject | None, ExecutionSubject]:
     """Resolve one model into an execution subject.
 
@@ -729,6 +789,7 @@ def _build_subject(
         min_context_tokens=constraints.min_context_tokens,
         context_configurable=provider.context_configurable,
         override=request.overrides.runtime_profile,
+        adapters_registered=provider.adapters_registered,
     )
     served = resolve_served_context(
         profile=profile, provider=provider, max_context=facts.max_context
@@ -742,6 +803,7 @@ def _build_subject(
             runtime_profile=profile,
             served_context=ServedContext(tokens=0, source="assumed"),
             signals=signals,
+            adapter=adapter,
         )
         return None, placeholder
     subject = ExecutionSubject(
@@ -750,6 +812,7 @@ def _build_subject(
         runtime_profile=profile,
         served_context=served,
         signals=signals,
+        adapter=adapter,
     )
     return subject, subject
 
@@ -808,6 +871,14 @@ def _persist(
                 requested_at=now,
                 duration_ms=int(cast("int", payload["duration_ms"])),
                 selected_model_id=None if primary is None else primary.subject.facts.model_id,
+                selected_adapter_id=(
+                    None
+                    if primary is None or primary.subject.adapter is None
+                    else primary.subject.adapter.adapter_id
+                ),
+                selected_subject_canonical_id=(
+                    None if primary is None else primary.subject.subject_canonical_id
+                ),
                 selected_score=None if primary is None else primary.final_score,
                 selected_runtime_profile_id=(
                     None if primary is None else profile_ids[primary.subject.runtime_profile_hash]
@@ -833,6 +904,12 @@ def _persist(
                 RoutingCandidate(
                     decision_id=explanation.decision_id,
                     model_id=candidate.subject.facts.model_id,
+                    adapter_id=(
+                        None
+                        if candidate.subject.adapter is None
+                        else candidate.subject.adapter.adapter_id
+                    ),
+                    subject_canonical_id=candidate.subject.subject_canonical_id,
                     runtime_profile_id=profile_ids[candidate.subject.runtime_profile_hash],
                     served_context=candidate.subject.served_context.tokens,
                     served_context_source=candidate.subject.served_context.source,
@@ -854,6 +931,10 @@ def _persist(
                 RoutingCandidate(
                     decision_id=explanation.decision_id,
                     model_id=item.subject.facts.model_id,
+                    adapter_id=(
+                        None if item.subject.adapter is None else item.subject.adapter.adapter_id
+                    ),
+                    subject_canonical_id=item.subject.subject_canonical_id,
                     runtime_profile_id=profile_ids[item.subject.runtime_profile_hash],
                     served_context=item.subject.served_context.tokens,
                     served_context_source=item.subject.served_context.source,

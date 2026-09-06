@@ -373,7 +373,9 @@ class QueueRuntime:
         :meth:`provider_facts` the only answer — LoadCoach 1.0's behaviour exactly.
         """
         return {
-            registration.name: provider_facts_for(registration.provider)
+            registration.name: provider_facts_for(
+                registration.provider, adapters_registered=registration.adapters_registered
+            )
             for registration in self.registrations
         }
 

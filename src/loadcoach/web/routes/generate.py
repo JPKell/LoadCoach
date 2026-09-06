@@ -290,9 +290,14 @@ def _context(request: Request) -> ExecutionContext:
     # always present in a served application; ``None`` only outside the lifespan.
     runtime = app.state.queue_runtime
     residency = None if runtime is None else runtime.residency
+    registrations = getattr(app.state, "provider_registrations", ()) or ()
     return ExecutionContext(
         provider=app.state.provider,
         provider_facts=provider_facts_for(app.state.provider),
+        provider_facts_by_name={} if runtime is None else runtime.provider_facts_by_name(),
+        provider_by_name={
+            registration.name: registration.provider for registration in registrations
+        },
         policy=routing_policy_for(app.state.settings, database=app.state.database),
         schemas_dir=DEFAULT_SCHEMAS_DIR,
         snapshot=current_snapshot(app),

@@ -5,7 +5,11 @@ from __future__ import annotations
 from baseaicore import RuntimeProfile
 
 from loadcoach.domain.routing.subject import (
+    AdapterFacts,
+    ExecutionSubject,
+    ModelFacts,
     ProviderFacts,
+    ServedContext,
     resolve_runtime_profile,
     resolve_served_context,
     signals_by_capability,
@@ -108,3 +112,47 @@ def test_signals_group_by_capability_preserving_order() -> None:
     grouped = signals_by_capability(signals)
     assert set(grouped) == {"reasoning", "tool_use"}
     assert [signal.source for signal in grouped["reasoning"]] == ["declared", "manual"]
+
+
+def test_an_adapter_subject_appends_the_suffix_and_a_bare_one_does_not() -> None:
+    """ADR-0058 §3: with no adapter the canonical string does not move at all."""
+    facts = ModelFacts(
+        model_id="01M",
+        canonical_id="llamacpp/qwen2.5-1.5b@sha256:" + "1" * 64,
+        provider_kind="llamacpp",
+        provider_model_name="qwen2.5-1.5b",
+    )
+    bare = ExecutionSubject(
+        facts=facts,
+        provider=ProviderFacts(),
+        runtime_profile=RuntimeProfile(),
+        served_context=ServedContext(tokens=4096, source="configured"),
+    )
+    with_adapter = ExecutionSubject(
+        facts=facts,
+        provider=ProviderFacts(adapter_hot_swap=True),
+        runtime_profile=RuntimeProfile(),
+        served_context=ServedContext(tokens=4096, source="configured"),
+        adapter=AdapterFacts(
+            adapter_id="01A",
+            name="terse",
+            artifact_digest="sha256:" + "9" * 64,
+            base_model_name="qwen2.5-1.5b",
+        ),
+    )
+
+    assert bare.subject_canonical_id == facts.canonical_id
+    assert with_adapter.subject_canonical_id == f"{facts.canonical_id}+terse@sha256:999999999999"
+
+
+def test_adapters_registered_is_stated_or_absent_but_never_invented() -> None:
+    """ADR-0074: a profile that says nothing hashes as it always did; a stated one is a new hash."""
+    unstated = resolve_runtime_profile(defaults=RuntimeProfile())
+    registered = resolve_runtime_profile(defaults=RuntimeProfile(), adapters_registered=True)
+    none_registered = resolve_runtime_profile(defaults=RuntimeProfile(), adapters_registered=False)
+
+    assert unstated.adapters_registered is None
+    assert unstated.profile_hash == RuntimeProfile().profile_hash
+    assert registered.adapters_registered is True
+    assert none_registered.adapters_registered is False
+    assert len({unstated.profile_hash, registered.profile_hash, none_registered.profile_hash}) == 3

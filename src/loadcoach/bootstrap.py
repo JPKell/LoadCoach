@@ -23,6 +23,7 @@ from loadcoach.config import LOOPBACK_HOSTS, InsecureBindingError, LoadedSetting
 from loadcoach.infrastructure.db.models import ApiToken
 from loadcoach.infrastructure.providers.factory import build_registrations
 from loadcoach.observability.logging import configure_logging
+from loadcoach.services.adapters import sync_adapters
 from loadcoach.services.database import Database, ensure_ready
 from loadcoach.services.models import import_manual_capability_scores, try_discover_models
 from loadcoach.services.task_profiles import import_task_profiles, read_task_profiles_file
@@ -141,6 +142,10 @@ def bootstrap() -> Application:
         profiles = read_task_profiles_file()
         import_task_profiles(database, profiles, now=datetime.now(UTC))
         registrations = build_registrations(loaded.settings)
+        # The adapter directory is read into rows *before* discovery, so a routing decision made
+        # in the first second of this process already sees the subjects the operator configured.
+        # A no-op when `[adapters] directory` is empty, which is the default.
+        sync_adapters(database, loaded.settings, now=datetime.now(UTC))
         try_discover_models(database, registrations, now=datetime.now(UTC))
         # After discovery: a manual score names a model by canonical_id and is skipped, not an
         # error, if that model has not been discovered yet.

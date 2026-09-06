@@ -123,6 +123,8 @@ Cross-provider policy, plus the ``[providers.<name>]`` registrations themselves.
 | `routing.prefer_resident_bonus` | `LOADCOACH_ROUTING__PREFER_RESIDENT_BONUS` | `float` | `0.05` | ≥ 0, ≤ 1 | yes | — | `0.05` |  |
 | `routing.min_present_weight` | `LOADCOACH_ROUTING__MIN_PRESENT_WEIGHT` | `float` | `0.5` | ≥ 0, ≤ 1 | yes | — | `0.5` |  |
 | `routing.remote_cost_factor` | `LOADCOACH_ROUTING__REMOTE_COST_FACTOR` | `float` | `0.9` | > 0, ≤ 1 | yes | — | `0.9` | The cost factor applied to a remote provider's candidates (routing §6). 1.0 is always used for local providers; anything below 1 prefers local at equal capability. |
+| `routing.base_switch_penalty` | `LOADCOACH_ROUTING__BASE_SWITCH_PENALTY` | `float` | `0.1` | ≥ 0, ≤ 1 | no | — | `0.1` | Two-level residency's penalty for a candidate that would need its own base loaded while another base is resident (routing §6.1, ADR-0066). Chosen, not measured: twice prefer_resident_bonus, so a base switch is never decided by the tie-break the bonus exists to be. A deployment that has measured its own load times should set it from them. |
+| `routing.require_adapter_evidence` | `LOADCOACH_ROUTING__REQUIRE_ADAPTER_EVIDENCE` | `bool` | `True` | — | no | — | `True` | Refuse to *route* to an adapter subject with no measured evidence for the profile's top-weighted capability (ADR-0064 rule 3). On by default: until FreeWeight measures adapters, every adapter subject is unmeasured, so adapters are invisible to routed selection while pins keep working. That is 'no benchmark, no use' behaving correctly. |
 | `routing.explanation_retention_days` | `LOADCOACH_ROUTING__EXPLANATION_RETENTION_DAYS` | `int` | `0` | ≥ 0 | no | — | `0` | 0 = forever. |
 
 ## `[evidence]`

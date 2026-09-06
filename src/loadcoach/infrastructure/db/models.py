@@ -387,6 +387,10 @@ class RoutingDecision(Base):
     selected_model_id: Mapped[str | None] = mapped_column(
         String(26), ForeignKey("models.id", ondelete="SET NULL"), nullable=True
     )
+    selected_adapter_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("adapters.id", ondelete="SET NULL"), nullable=True
+    )
+    selected_subject_canonical_id: Mapped[str | None] = mapped_column(String, nullable=True)
     selected_score: Mapped[float | None] = mapped_column(nullable=True)
     selected_runtime_profile_id: Mapped[str | None] = mapped_column(
         String(26), ForeignKey("runtime_profiles.id", ondelete="SET NULL"), nullable=True
@@ -424,6 +428,12 @@ class RoutingCandidate(Base):
     )
     model_id: Mapped[str] = mapped_column(
         String(26), ForeignKey("models.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    adapter_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("adapters.id", ondelete="SET NULL"), nullable=True
+    )
+    subject_canonical_id: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
     )
     runtime_profile_id: Mapped[str | None] = mapped_column(
         String(26), ForeignKey("runtime_profiles.id", ondelete="SET NULL"), nullable=True
@@ -620,6 +630,50 @@ class Validation(Base):
     detail_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+
+
+class Adapter(Base):
+    """One reviewed adapter from the operator's directory (data model's ``adapters``, ADR-0061).
+
+    Identity is the **artifact hash**, so a rename is transparent and a content change is a
+    different adapter; ``artifact_path`` and ``manifest_path`` are locators. ``manifest_json``
+    keeps the operator's reviewed document unchanged for the same reason
+    ``capability_evidence.record_json`` does: the columns beside it are the queryable projection,
+    and a payload rebuilt from a projection is not the payload that was reviewed.
+
+    ``available`` goes false with a reason when the artifact is missing or no longer hashes to
+    ``artifact_sha256`` — fail closed, named by ``doctor``, until a rescan.
+    """
+
+    __tablename__ = "adapters"
+    __table_args__ = (
+        UniqueConstraint("artifact_sha256"),
+        Index("ix_adapters_name", "name"),
+        Index("ix_adapters_base_model_name", "base_model_name"),
+        CheckConstraint(
+            "base_identity_confidence IN ('digest', 'name_only')",
+            name="base_identity_confidence",
+        ),
+    )
+
+    id: Mapped[str] = ulid_primary_key()
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    artifact_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    source_sha256: Mapped[str | None] = mapped_column(String, nullable=True)
+    artifact_path: Mapped[str] = mapped_column(String, nullable=False)
+    manifest_path: Mapped[str] = mapped_column(String, nullable=False)
+    base_model_name: Mapped[str] = mapped_column(String, nullable=False)
+    base_artifact_digest: Mapped[str | None] = mapped_column(String, nullable=True)
+    base_identity_confidence: Mapped[str] = mapped_column(String, nullable=False)
+    declared_capabilities_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    data_classification: Mapped[str] = mapped_column(String, nullable=False)
+    adapter_format: Mapped[str] = mapped_column(String, nullable=False, default="gguf")
+    manifest_json: Mapped[object | None] = mapped_column(PortableJSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+    first_seen_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+    available: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    unavailable_reason: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class Residency(Base):

@@ -351,6 +351,15 @@ class ConstraintInputs:
         circuit_breaker_details: Canonical ID -> the open breaker's record (state, reason,
             expiry), merged into the ``recently_failing`` rejection so the explanation shows
             why the model was skipped and until when (queue §7).
+        require_adapter_evidence: Whether an adapter subject must carry measured evidence for
+            ``top_weighted_capability`` before routed selection may reach it (ADR-0064 rule 3,
+            default on). A pin is not routed selection and is not filtered by it — the caller
+            passes ``False`` for a pinned subject.
+        top_weighted_capability: The task profile's heaviest capability, which is what
+            ``require_adapter_evidence`` demands a measurement of. ``None`` for a profile with no
+            weights at all, which cannot demand a measurement of nothing.
+        caller_data_classification: The classification the caller declared, joined with the
+            adapter's by ``max()`` (ADR-0065 rule 2). ``None`` when the caller declared none.
         request_capabilities: The subset of ``requires_capabilities`` the *request* imposed
             rather than the task profile — today only ``tool_use``, from a body carrying tools
             (ADR-0075). Read only to label the rejection ``required_by``, so a caller can tell a
@@ -371,7 +380,16 @@ class ConstraintInputs:
     resident_devices: Mapping[str, frozenset[int]] = field(default_factory=dict)
     circuit_breaker_details: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
     request_capabilities: frozenset[str] = frozenset()
+    require_adapter_evidence: bool = True
+    top_weighted_capability: str | None = None
+    caller_data_classification: str | None = None
 
+
+_MEASURED_SOURCES: Final[frozenset[str]] = frozenset({"benchmark", "production"})
+"""Signal sources that count as a *measurement* for ``require_adapter_evidence``.
+
+A declared flag and a manual score are statements, not measurements: they are exactly what
+"no benchmark, no use" (ADR-0064 rule 3) exists to refuse to route on."""
 
 _CAPABILITY_SUPPORT_ATTRIBUTE: Final[Mapping[str, str]] = {
     "tool_use": "supports_tool_use",
@@ -545,12 +563,136 @@ def evaluate_constraints(
             None,
         )
 
+    if subject.adapter is not None:
+        adapter_rejection = _check_adapter(subject, inputs)
+        if adapter_rejection is not None:
+            return adapter_rejection, fits, None
+
     if facts.canonical_id in inputs.open_circuit_breakers:
         detail: dict[str, object] = {"circuit_breaker": "open"}
         detail.update(inputs.circuit_breaker_details.get(facts.canonical_id, {}))
         return (Rejection("recently_failing", detail), fits, None)
 
     return None, fits, target_gpu_index
+
+
+def _check_adapter(subject: ExecutionSubject, inputs: ConstraintInputs) -> Rejection | None:
+    """Apply routing §4's three adapter constraints to an adapter subject, in the documented order.
+
+    Only ever called for a subject carrying an adapter, so a deployment with no adapters runs
+    exactly LoadCoach 1.0's constraint list.
+
+    Args:
+        subject: The adapter subject.
+        inputs: The same constraint inputs the rest of the filter reads.
+
+    Returns:
+        The first rejection, or ``None`` when the adapter may be applied. Each rejection names its
+        own remedy: ``adapter_incompatible`` cannot be fixed by any configuration,
+        ``adapter_unmeasured`` is fixed by measuring or by turning the gate off, and
+        ``adapter_classification_conflict`` cannot be fixed by a flag at all — which is exactly
+        why it is not ``excluded_by_policy`` (ADR-0079).
+    """
+    adapter = subject.adapter
+    if adapter is None:  # pragma: no cover — the caller checks
+        return None
+    facts = subject.facts
+
+    if not subject.provider.adapter_hot_swap:
+        return Rejection(
+            "adapter_incompatible",
+            {
+                "adapter": adapter.name,
+                "provider_name": facts.provider_name,
+                "provider_kind": facts.provider_kind,
+                "problem": "this provider declares no adapter_hot_swap, so it can serve no adapter",
+            },
+        )
+    served_digest = facts.artifact_digest
+    declared_digest = adapter.base_artifact_digest
+    if (
+        declared_digest is not None
+        and served_digest is not None
+        and declared_digest != served_digest
+    ):
+        return Rejection(
+            "adapter_incompatible",
+            {
+                "adapter": adapter.name,
+                "declared_base_name": adapter.base_model_name,
+                "declared_base_digest": declared_digest,
+                "served_base_digest": served_digest,
+                "problem": (
+                    "the manifest declares a different base artifact than this candidate serves; "
+                    "applying it would run weights nobody trained this adapter against"
+                ),
+            },
+        )
+
+    capability = inputs.top_weighted_capability
+    if inputs.require_adapter_evidence and capability is not None:
+        measured = any(
+            signal.capability_id == capability and signal.source in _MEASURED_SOURCES
+            for signal in subject.signals
+        )
+        if not measured:
+            return Rejection(
+                "adapter_unmeasured",
+                {
+                    "adapter": adapter.name,
+                    "capability": capability,
+                    "require_adapter_evidence": True,
+                    "problem": (
+                        f"no measured evidence for {capability!r} on this adapter subject; "
+                        "routed selection needs a measurement, a pin does not"
+                    ),
+                },
+            )
+
+    if facts.is_remote or subject.provider.is_remote:
+        # Either statement of remoteness makes this candidate an egress: the model row carries the
+        # egress class its registration declared, and a caller holding a bare provider handle has
+        # only the provider's. An adapter never rides an egress, whichever of the two says so.
+        caller = inputs.caller_data_classification
+        effective = _join_classification(caller, adapter.data_classification)
+        return Rejection(
+            "adapter_classification_conflict",
+            {
+                "adapter": adapter.name,
+                "adapter_classification": adapter.data_classification,
+                "caller_classification": caller,
+                "effective_classification": effective,
+                "provider_name": facts.provider_name,
+                "provider_remote": True,
+                "problem": (
+                    "an adapter is a local-only artifact (ADR-0065 rule 3), and this candidate "
+                    "would be served by a remote registration; no flag makes it eligible"
+                ),
+            },
+        )
+    return None
+
+
+def _join_classification(caller: str | None, adapter: str) -> str:
+    """Return ``max(caller, adapter)`` over the ordered classification vocabulary (ADR-0065 rule 2).
+
+    An unreadable or absent caller declaration contributes nothing rather than being guessed at:
+    the join with an absent value is the adapter's own classification, which is the fail-closed
+    direction ADR-0046 fixed.
+    """
+    from baseaicore import DataClassification
+
+    try:
+        adapter_level = DataClassification(adapter)
+    except ValueError:  # pragma: no cover — the manifest contract validates this field
+        return adapter
+    if caller is None:
+        return adapter_level.value
+    try:
+        caller_level = DataClassification(caller)
+    except ValueError:
+        return adapter_level.value
+    return max(caller_level, adapter_level).value
 
 
 def _check_host_ram(estimate: VramEstimate, snapshot: TelemetrySnapshot) -> Rejection | None:

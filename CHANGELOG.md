@@ -8,6 +8,52 @@ packaging and release standards §3.
 ## [Unreleased]
 
 ### Added
+- **Adapter subjects are routing candidates, and three new constraints reject them by name**
+  (ADR-0058, ADR-0064, ADR-0065, ADR-0079, ADR-0080). A candidate is now the triple
+  `(identity, adapter | none, resolved runtime profile)`. Where a registration's provider declares
+  `adapter_hot_swap`, the candidate list gains one subject per `(base, adapter)` pair **beside**
+  the bare base — never instead of it — and a provider that cannot hot-swap contributes none at
+  all, which is what keeps an adapter local by construction. With no adapter the canonical subject
+  string is byte-for-byte the model's canonical ID.
+
+  Three rejections join routing §4's table, each naming a different remedy:
+  `adapter_incompatible` (the manifest's base digest is not the base being served, or the provider
+  cannot hot-swap — no configuration makes it eligible), `adapter_unmeasured` (from the new
+  `[routing] require_adapter_evidence`, **on by default**: until FreeWeight measures adapters every
+  adapter subject is unmeasured, so adapters are invisible to *routed* selection while pins keep
+  working) and `adapter_classification_conflict` (an adapter is a local-only artifact, so a
+  candidate a remote registration would serve is refused — deliberately not `excluded_by_policy`,
+  because that one is fixed by turning remote on and this one cannot be fixed by any flag). Every
+  rejection is persisted with the numbers that caused it and is queryable.
+
+  An adapter subject inherits **no** evidence from its base: its only signals are the vocabulary
+  terms its manifest declares. A benchmark taken on bare weights describes bare weights, and
+  attributing it to a subject running a LoRA nobody measured is the mis-binding ADR-0058 §4 refuses.
+- **The `adapters` table** (migration `0009`), the projection of the operator's directory that
+  routing reads — reading the directory means hashing every artifact, which no routing decision may
+  do. Identity is the artifact hash; a row whose adapter has left the directory is kept and marked
+  unavailable rather than deleted, because a stored decision names it.
+- **Every routing row names its subject twice** (ADR-0080): `adapter_id`, which answers *which
+  adapter* after a rename, and `subject_canonical_id`, the string written at decision time so an
+  explanation still reads correctly after the directory has changed underneath it. Existing rows
+  are backfilled from `models.canonical_id`, which is what a bare base's subject string is.
+- **`[routing] base_switch_penalty`** (default `0.10`, chosen and not measured) and
+  **`[routing] require_adapter_evidence`** (default `true`).
+- **`RuntimeProfile.adapters_registered` is set, never guessed** (ADR-0074): `True` for a
+  hot-swapping registration holding adapters, `False` for one holding none, and left unstated for a
+  provider that has no concept of adapters — so every profile hash a deployment without adapters
+  has ever stored is unchanged. It is derived from what LoadCoach handed the provider, never from a
+  `list_adapters()` snapshot, which moves while a restart is pending.
+
+### Fixed
+- **A migration that adds a foreign key no longer deletes stored routing candidates.** Adding a
+  constraint to an existing SQLite table is a table rebuild, and dropping `routing_decisions`
+  with `foreign_keys=ON` cascades through `routing_candidates` — the explainability promise
+  itself. Foreign keys are now enforced off for the duration of a migration run on SQLite, through
+  the raw driver cursor, because the pragma is a documented no-op inside a transaction and the
+  connection is in one by the time SQLAlchemy would emit it.
+
+### Added
 - **The adapter registry is an operator's directory and a reviewed manifest** (ADR-0061).
   `[adapters] directory` — empty by default, and **empty means the whole feature is off**. The
   directory holds artifacts and one reviewed `model.adapter_manifest` 1.0 per adapter, read and

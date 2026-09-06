@@ -149,12 +149,19 @@ class ProviderRegistration:
         is_remote: The registration's **declared** ``remote`` flag. Never inferred from the kind
             or the URL (ADR-0055 rule 4).
         provider: The constructed handle. Opens no connection by itself.
+        adapters_registered: Whether this registration was handed any adapters — ``True`` when
+            the operator's directory held at least one available adapter and this provider can
+            hot-swap, ``False`` when it can hot-swap and was handed none, and ``None`` for a
+            provider that has no concept of adapters (ADR-0074). Recorded from what LoadCoach
+            offered, never read back from ``list_adapters()``, which moves during a pending
+            restart.
     """
 
     name: str
     kind: str
     is_remote: bool
     provider: Provider
+    adapters_registered: bool | None = None
 
 
 def build_registrations(settings: Settings) -> tuple[ProviderRegistration, ...]:
@@ -204,11 +211,12 @@ def build_registrations(settings: Settings) -> tuple[ProviderRegistration, ...]:
                 provider=_build_one(singular.as_registration(), field="provider.kind"),
             ),
         )
-    _offer_adapters(built, settings)
-    return built
+    return _offer_adapters(built, settings)
 
 
-def _offer_adapters(registrations: tuple[ProviderRegistration, ...], settings: Settings) -> None:
+def _offer_adapters(
+    registrations: tuple[ProviderRegistration, ...], settings: Settings
+) -> tuple[ProviderRegistration, ...]:
     """Hand every hot-swapping provider the adapters the operator's directory holds.
 
     The conversion from a reviewed ``model.adapter_manifest`` into ModelRack's
@@ -220,18 +228,26 @@ def _offer_adapters(registrations: tuple[ProviderRegistration, ...], settings: S
 
     Unavailable entries never reach a provider: an adapter whose artifact no longer matches its
     manifest is refused at the directory, before anything could serve it.
+
+    Returns:
+        The registrations, each carrying what it was actually handed as
+        :attr:`ProviderRegistration.adapters_registered` — the fact LoadCoach must state on every
+        runtime profile it builds for such a provider (ADR-0074), stated here because this is the
+        only place that knows it.
     """
-    directory = settings.adapters.path
-    if directory is None:
-        return
     from loadcoach.infrastructure.adapters import read_directory, registrations_from
 
-    adapters = registrations_from(read_directory(directory).available)
-    if not adapters:
-        return
+    directory = settings.adapters.path
+    adapters = () if directory is None else registrations_from(read_directory(directory).available)
+    offered: list[ProviderRegistration] = []
     for registration in registrations:
-        if registration.provider.capabilities().adapter_hot_swap:
+        if not registration.provider.capabilities().adapter_hot_swap:
+            offered.append(registration)
+            continue
+        if adapters:
             registration.provider.register_adapters(adapters)
+        offered.append(dataclasses.replace(registration, adapters_registered=bool(adapters)))
+    return tuple(offered)
 
 
 def _build_one(settings: ProviderRegistrationSettings, *, field: str) -> Provider:
