@@ -147,6 +147,16 @@ on a real provider at all.
   `list_adapters()` snapshot, which moves while a restart is pending.
 
 ### Fixed
+- **A llama.cpp-served model can be VRAM-estimated at all.** ModelRack's llama.cpp descriptor
+  reports `layers`, `kv_heads`, `attention_heads` and `embedding_dim` but no `head_dim`, and the
+  theoretical KV figure needs all three of the first, the third and `head_dim`. An unknown estimate
+  is a refusal rather than a zero (ADR-0016), so **every** llama.cpp candidate was rejected
+  `insufficient_vram` — with `estimated_bytes: null` — on any machine with GPU telemetry: the only
+  provider kind that can serve an adapter could not serve anything at all through a running server.
+  `head_dim` is now reconstructed as `embedding_dim // attention_heads` where the provider reports
+  only the factors, which is the definition of the field and not an approximation of it; an inexact
+  division yields `None` rather than a rounded guess. Found by IdeaPress's LA2 journey, the first
+  thing to route llama.cpp through a served LoadCoach rather than an in-process one.
 - **A queued job no longer loses its `adapter` and `ignore_residency` overrides.** A leased job's
   submission is rebuilt from `jobs.request_json` and from nothing else, and neither field was
   written to it or read back — so an adapter pin submitted through `POST /jobs` was silently

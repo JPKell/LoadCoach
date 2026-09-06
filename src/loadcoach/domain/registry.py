@@ -21,6 +21,7 @@ __all__ = [
     "declared_capabilities_for",
     "descriptor_geometry",
     "geometry_from_json",
+    "head_dim_from_json",
     "validate_manual_score",
 ]
 
@@ -196,3 +197,35 @@ def geometry_from_json(stored: object, field: str) -> int | None:
         return None
     value = stored.get(field)
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def head_dim_from_json(stored: object) -> int | None:
+    """Return the per-head dimension, deriving it when the provider reported only its factors.
+
+    Args:
+        stored: Whatever ``descriptor_json`` held.
+
+    Returns:
+        ``head_dim`` where the provider reported one; otherwise
+        ``embedding_dim // attention_heads`` where both are stored and divide exactly; otherwise
+        ``None`` — never a guess and never ``0``.
+
+    A model missing this one field cannot be VRAM-estimated at all: the theoretical KV figure needs
+    ``layers``, ``kv_heads`` and ``head_dim`` together, an unknown estimate is a refusal rather than
+    a zero (ADR-0016), and the refusal is ``insufficient_vram`` on every candidate. ModelRack's
+    llama.cpp provider reports ``attention_heads`` and ``embedding_dim`` but no ``head_dim``, so
+    without this derivation **no llama.cpp-served model routes on any machine with GPU telemetry**.
+    The quotient is the definition of the field rather than an approximation of it — including
+    under grouped-query attention, where the *number* of KV heads differs from the number of
+    attention heads but their dimension does not — so it is a reconstruction, not an estimate. An
+    inexact division means the two do not describe one geometry, and nothing is reconstructed from
+    them.
+    """
+    reported = geometry_from_json(stored, "head_dim")
+    if reported is not None:
+        return reported
+    embedding_dim = geometry_from_json(stored, "embedding_dim")
+    attention_heads = geometry_from_json(stored, "attention_heads")
+    if not embedding_dim or not attention_heads or embedding_dim % attention_heads:
+        return None
+    return embedding_dim // attention_heads

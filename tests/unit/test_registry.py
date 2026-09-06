@@ -125,3 +125,44 @@ def test_manual_score_missing_canonical_id_rejected() -> None:
         validate_manual_score(
             "f.toml", 0, {"capability_id": "coding", "score": 0.5, "confidence": 0.5}
         )
+
+
+# ------------------------------------------------------------------ head_dim
+
+
+def test_a_reported_head_dim_is_used_as_reported() -> None:
+    from loadcoach.domain.registry import head_dim_from_json
+
+    assert head_dim_from_json({"head_dim": 64, "embedding_dim": 1536, "attention_heads": 12}) == 64
+
+
+def test_head_dim_is_derived_from_its_factors_when_the_provider_reports_none() -> None:
+    """ModelRack's llama.cpp descriptor carries the factors and not the quotient.
+
+    Without this, a llama.cpp-served model has no theoretical KV figure, an unknown VRAM estimate
+    is a refusal rather than a zero (ADR-0016), and **every** candidate is rejected
+    `insufficient_vram` on any machine with GPU telemetry. Found by IdeaPress's LA2 journey, which
+    is the first thing to route llama.cpp through a served LoadCoach.
+    """
+    from loadcoach.domain.registry import head_dim_from_json
+
+    qwen = {"layers": 28, "kv_heads": 2, "attention_heads": 12, "embedding_dim": 1536}
+    assert head_dim_from_json(qwen) == 128
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    [
+        {},
+        {"embedding_dim": 1536},
+        {"attention_heads": 12},
+        {"embedding_dim": 1536, "attention_heads": 0},
+        # Not a whole number of dimensions per head: the two fields do not describe one geometry,
+        # so nothing is reconstructed from them rather than something being rounded into place.
+        {"embedding_dim": 1000, "attention_heads": 12},
+    ],
+)
+def test_head_dim_is_none_rather_than_a_guess(geometry: dict[str, int]) -> None:
+    from loadcoach.domain.registry import head_dim_from_json
+
+    assert head_dim_from_json(geometry) is None
