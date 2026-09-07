@@ -40,7 +40,9 @@ again. No schema change, no new runtime-changeable key.
   why `queue.paused` and `queue.draining` have no row in its tables — they are not fields of the
   settings model, so no `LOADCOACH_QUEUE__PAUSED` exists and a variable of that name is refused as
   an unknown key. Their stored row is therefore always the effective value, through the same code
-  path as every other key: one rule, no per-key exception.
+  path as every other key: one rule, no per-key exception. That shape — a runtime-changeable
+  setting that is **not** a configuration key — is recorded as ADR-0101, which also states the
+  test for admitting another: a pause is operational state, a threshold is configuration.
 
 ### Added
 
