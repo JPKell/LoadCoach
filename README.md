@@ -3,19 +3,21 @@
 Turns FreeWeight's measurements (or declared capabilities) into routed, queued, validated inference
 execution with a fully explainable decision for every job.
 
-**Status:** `1.0.0` — the M5 release, **tagged and published on PyPI** (2026-08-31). Every phase of the
-[development plan](docs/apps/loadcoach/development-plan.md) is built: the registry and task
-profiles; evidence-weighted routing with a readable explanation for every decision; synchronous and
-streaming generation with validation and corrective retries; a durable priority queue with leases,
-ageing, cancellation, recovery and a circuit breaker; FreeWeight evidence import; production
-feedback, reliability and regression detection; a complete operator UI (dashboard, jobs, live
-queue, models, reliability, system, settings); and the hardening a LAN bind needs — scopes checked
-at the route and in the service, per-token rate limits, per-source queue caps, CSRF, Host
-validation, body limits, content retention.
+**Status:** `1.1.3` in the repository — `v1.1.2` tagged locally (not yet pushed); **PyPI still
+serves `1.0.0`**, the M5 release. Every phase of the
+[development plan](docs/apps/loadcoach/development-plan.md) through 11 is built: the registry and
+task profiles; evidence-weighted routing with a readable explanation for every decision;
+synchronous and streaming generation with validation and corrective retries; a durable priority
+queue with leases, ageing, cancellation, recovery and a circuit breaker; FreeWeight evidence
+import, now binding an adapter-bearing subject rather than only the bare base; more than one
+provider, with adapter subjects that route and pin like any other candidate (LA2/LA3); a complete
+operator UI (dashboard, jobs, live queue, models, reliability, system, settings); and the hardening
+a LAN bind needs — scopes checked at the route and in the service, per-token rate limits,
+per-source queue caps, CSRF, Host validation, body limits, content retention.
 
-Every runtime dependency is on PyPI (`weightsdb 0.2.0` and `mirrorwall 0.2.0` landed on
-2026-08-30); `pip install loadcoach` resolves entirely from the index, `requirements/ci.lock` is
-hash-pinned against it, and every CI job installs from that lock.
+Every runtime dependency resolves from PyPI (`weightsdb>=0.2,<0.3`, `mirrorwall>=0.2,<0.3`);
+`pip install loadcoach` resolves entirely from the index, `requirements/ci.lock` is hash-pinned
+against it, and every CI job installs from that lock.
 
 Part of the **Local AI Suite**.
 

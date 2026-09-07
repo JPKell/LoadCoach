@@ -7,7 +7,7 @@ FreeWeight. Each of those absences is a documented degraded state, never a failu
 ## Install and start
 
 ```bash
-pip install loadcoach          # once v1.0.0 is tagged; every dependency is on PyPI already
+pip install loadcoach          # PyPI serves 1.0.0; the repository has moved on to 1.1.3
 loadcoach serve                # web UI and API on http://127.0.0.1:8766
 ```
 
