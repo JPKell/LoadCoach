@@ -475,5 +475,6 @@ a source past it is refused with `QUEUE_FULL` naming the source, its active coun
    not modify it, so your own prompt-version provenance stays true.
 9. Offer only the tools the caller is actually willing to run. LoadCoach returns the calls a model
    asks for and executes none of them; a definition you send is a tool you have decided to honour,
-   and its `description` is prompt content going into the model's context. Assemble
-   `output.tool_calls`' fragments before replaying them as a turn's `tool_calls` (§4).
+   and its `description` is prompt content going into the model's context. Replay
+   `output.tool_calls_assembled` as the next turn's `tool_calls` (§4); assemble
+   `output.tool_calls`' fragments yourself only against a pre-1.1 server (ADR-0078).
