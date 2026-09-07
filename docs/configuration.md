@@ -19,7 +19,9 @@ set in the file or the environment (spec §14).
 
 Two runtime-changeable keys are absent from the tables below because they are not fields of the
 settings model: `queue.paused` and `queue.draining` live only in the `settings` table, so there is
-no `LOADCOACH_QUEUE__PAUSED` and a variable of that name is refused as an unknown key.
+no `LOADCOACH_QUEUE__PAUSED` and a variable of that name is refused as an unknown key. Their
+stored row is therefore always the effective value; `GET /api/v1/settings` and the Settings page
+are where they are inspected (ADR-0101).
 
 
 ## `[server]`

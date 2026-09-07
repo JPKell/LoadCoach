@@ -371,7 +371,8 @@ or `null`), `source` (`"database"` when the row is what the process is running o
 `"configuration"`) and `shadowed_by` (`"env LOADCOACH_…"` naming the variable that beats the row,
 else `null`). `queue.paused` and `queue.draining` have no configured counterpart at all — a
 `LOADCOACH_QUEUE__PAUSED` variable is refused by the loader as an unknown key — so their stored
-row is always the effective value.
+row is always the effective value, and they have no row in `docs/configuration.md`
+([ADR-0101](../../adr/0101-a-runtime-setting-need-not-be-a-configuration-key.md)).
 
 ## 10. Errors
 
