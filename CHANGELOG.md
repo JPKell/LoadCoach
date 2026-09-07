@@ -38,6 +38,13 @@ packaging and release standards §3.
   upgrade path (M9 audit Group 3, item O1). `.gitignore` now keeps `tests/fixtures/databases/*`
   out of the blanket `*.sqlite3` exclusion, the same way FreeWeight's does.
 
+### Removed
+
+- `pydantic-settings` from `dependencies` — declared but never imported (ADR-0114); each
+  application performs its own layered configuration merge. `requirements/ci.lock`
+  recompiled with pip-tools 7.6.1 on Python 3.13 (M9 audit Group 5, the pydantic-settings
+  finding from row L2).
+
 ## [1.1.3] — 2026-09-07
 
 ### Changed
