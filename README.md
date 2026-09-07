@@ -47,6 +47,20 @@ state. Ollama on `127.0.0.1:11434` is the default provider.
   twice, Host validation before authentication, CSRF on forms, rate limits with `Retry-After`,
   and a `doctor` that names what is wrong.
 
+## Compatibility
+
+Declared version ranges from `pyproject.toml` — kept from drifting by
+`tests/unit/test_readme_compatibility.py`, which parses the file and fails if this table disagrees:
+
+| Package | Range |
+|---|---|
+| `baseaicore` | `>=0.4.2,<0.5` |
+| `setspec` | `>=0.5,<0.7` |
+| `modelrack` | `>=0.7,<0.8` |
+| `sweatmeter` | `>=0.4,<0.5` |
+| `weightsdb` | `>=0.2,<0.3` |
+| `mirrorwall` | `>=0.2,<0.3` |
+
 ## Documentation
 
 | Read this | For |
