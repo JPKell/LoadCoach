@@ -117,3 +117,28 @@ def test_the_settings_page_renders_a_labelled_form_and_saves_behind_csrf(
     assert body["storage.content_retention_hours"] == 48
     assert body["queue.paused"] is False  # an unchecked box is false
     assert "Saved." in client.get("/settings?saved=1").text
+
+
+def test_a_row_the_environment_shadows_is_reported_and_not_applied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Configuration standards §7: the environment beats a stored row, and the row is kept."""
+    monkeypatch.setenv("LOADCOACH_PROVIDER__KIND", "fake")
+    monkeypatch.setenv("LOADCOACH_STORAGE__CONTENT_RETENTION_HOURS", "72")
+    application = bootstrap()
+    with TestClient(application.app, base_url="http://localhost") as client:
+        body = client.put("/api/v1/settings", json={"storage.content_retention_hours": 12}).json()
+        assert body["settings"]["storage.content_retention_hours"] == 72
+        definition = body["definitions"]["storage.content_retention_hours"]
+        assert definition["stored"] == 12
+        assert definition["source"] == "configuration"
+        assert definition["shadowed_by"] == "env LOADCOACH_STORAGE__CONTENT_RETENTION_HOURS"
+        page = client.get("/settings")
+        assert "LOADCOACH_STORAGE__CONTENT_RETENTION_HOURS" in page.text
+        assert "does nothing until" in page.text
+
+        monkeypatch.delenv("LOADCOACH_STORAGE__CONTENT_RETENTION_HOURS")
+        after = client.get("/api/v1/settings").json()
+        assert after["settings"]["storage.content_retention_hours"] == 12
+        assert after["definitions"]["storage.content_retention_hours"]["source"] == "database"
+        assert "Stored here, and effective." in client.get("/settings").text

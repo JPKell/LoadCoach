@@ -363,6 +363,16 @@ returns every key's effective value, its definition and bounds, the configured v
 and the list of config-only keys. A key that is neither runtime-changeable nor security-relevant is
 `400 VALIDATION_ERROR` naming it and listing the set. `PUT` is `admin`-scoped.
 
+Precedence is the standard's (configuration standards §7): `defaults → file → database → env →
+CLI`. A stored row is ignored while the environment pins its key, and the row is kept rather than
+deleted — unsetting the variable makes it effective again. Each entry in `definitions` therefore
+carries, besides `type`, `description`, `minimum`, `maximum` and `configured`: `stored` (the row,
+or `null`), `source` (`"database"` when the row is what the process is running on, else
+`"configuration"`) and `shadowed_by` (`"env LOADCOACH_…"` naming the variable that beats the row,
+else `null`). `queue.paused` and `queue.draining` have no configured counterpart at all — a
+`LOADCOACH_QUEUE__PAUSED` variable is refused by the loader as an unknown key — so their stored
+row is always the effective value.
+
 ## 10. Errors
 
 Standard envelope. Codes as listed in the [spec §13](spec.md), with these presentation rules:
