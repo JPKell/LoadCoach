@@ -12,12 +12,13 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import text
-from weightsdb import MigrationRunner
+from weightsdb import MigrationRunner, create_engine_for
 from weightsdb.errors import MigrationFailed
 from weightsdb.testing import temporary_postgres, temporary_sqlite
 
 from loadcoach.infrastructure.db.models import Base
-from loadcoach.services.database import MIGRATIONS_LOCATION
+from loadcoach.infrastructure.db.repositories.settings import SettingsRepository
+from loadcoach.services.database import MIGRATIONS_LOCATION, Database, ensure_ready
 
 _OTHER_APP_SCRIPT_LOCATION = str(Path(__file__).parent / "_other_app_fixture")
 _OTHER_APP_TABLE = "machines"
@@ -1044,3 +1045,39 @@ def test_migration_0012_round_trips_on_sqlite() -> None:
         runner.upgrade(backup=False)
         assert runner.is_at_head()
         assert runner.check_parity(Base.metadata).matches
+
+
+def test_1_0_0_database_migrates_to_head_and_keeps_its_rows(tmp_path: Path) -> None:
+    """A real released-version database, not one this test created (M9_AUDIT.md Group 3, O1).
+
+    The fixture is a real ``loadcoach==1.0.0`` install (from PyPI, in a scratch venv) migrated by
+    its own ``loadcoach db upgrade`` (to ``0006``, 1.0.0's head) and seeded with two rows through
+    :class:`~loadcoach.infrastructure.db.repositories.settings.SettingsRepository` — the same
+    repository layer a real CLI write would go through. This build's history has moved to
+    ``0014`` since, so this is a real multi-revision upgrade, not the no-op FreeWeight's own
+    equivalent fixture currently is.
+    """
+    fixture = Path(__file__).parent.parent / "fixtures" / "databases" / "loadcoach-1.0.0.sqlite3"
+    working_copy = tmp_path / "loadcoach-1.0.0.sqlite3"
+    shutil.copyfile(fixture, working_copy)
+
+    engine = create_engine_for(f"sqlite:///{working_copy}")
+    try:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        current_before = runner.current()
+        assert current_before == "0006", (
+            f"the 1.0.0 fixture must sit at 1.0.0's own head; found {current_before!r} — either "
+            "the fixture was recaptured from a different release or 1.0.0's head moved"
+        )
+
+        outcome = ensure_ready(Database(engine), auto_migrate=True)
+
+        assert outcome is not None, "0007..head must apply to a 1.0.0 database; nothing ran"
+        assert runner.is_at_head()
+        database = Database(engine)
+        repository = SettingsRepository()
+        with database.read() as session:
+            assert repository.get(session, "fixture.marker") == "loadcoach-1.0.0-fixture"
+            assert repository.get(session, "fixture.count") == 2
+    finally:
+        engine.dispose()

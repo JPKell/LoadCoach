@@ -24,6 +24,20 @@ packaging and release standards §3.
   from `pyproject.toml`, and `tests/unit/test_readme_compatibility.py` asserting the two
   cannot drift (M9 audit Group 5, item R3).
 
+- `tests/integration/test_downgrade_and_schema_ahead.py` drives the packaging standards §6.1
+  downgrade drill end to end: upgrade, write a row, back up, jump `alembic_version` ahead,
+  `SchemaAhead` refuses and names both revisions and the backup directory, restore the backup,
+  start again (M9 audit Group 3, item O2). `ensure_ready` did not previously detect this case at
+  all for LoadCoach — it does now.
+- `tests/integration/test_backup_restore.py` (new), a backup/restore round trip parametrized over
+  `weightsdb.testing.temporary_sqlite`/`temporary_postgres` directly — previously only the CLI
+  verb was tested, and only on SQLite (M9 audit Group 3, item O4).
+- `tests/fixtures/databases/loadcoach-1.0.0.sqlite3`, a real `loadcoach==1.0.0` PyPI install
+  migrated through `0006` and seeded through its own repository layer, exercised by
+  `test_1_0_0_database_migrates_to_head_and_keeps_its_rows`, which proves the real `0007..0014`
+  upgrade path (M9 audit Group 3, item O1). `.gitignore` now keeps `tests/fixtures/databases/*`
+  out of the blanket `*.sqlite3` exclusion, the same way FreeWeight's does.
+
 ## [1.1.3] — 2026-09-07
 
 ### Changed
