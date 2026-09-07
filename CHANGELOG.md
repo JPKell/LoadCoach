@@ -5,7 +5,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 [Semantic Versioning](https://semver.org/), pre-1.0 per
 packaging and release standards §3.
 
-## [Unreleased]
+## [1.1.1] — 2026-09-06
+
+A render and a lever. `GET /models` now carries `provider_name` and `is_remote` on every entry, so
+a consumer reading the remote-provider fact from the registry reads a true one — LoadCoach 1.1
+recorded both columns and rendered neither in the listing, which made every remote registration
+invisible until its first turn. And a task profile's `execution` block may now carry `think`,
+ModelRack's three-state thinking control, overridable per request by `sampling.think` and enforced
+at routing rather than at the provider edge. The five PromptCadence harness profiles ship with it
+**unset**, measured rather than assumed: six runs per cell against Ollama 0.32.13 with
+`gpt-oss:20b` pinned, `tools.plan` delivered 3 of 6 with `think` unset and 0 of 6 with
+`think = false`, and `tools.agent.local_fast` delivered 6 of 6 either way — that model accepts the
+control and does not honour it. `pyproject.toml`'s dependency ranges are unchanged; the CI lock
+pins `modelrack 0.7.1`.
 
 ### Added
 
