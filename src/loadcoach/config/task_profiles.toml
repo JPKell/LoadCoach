@@ -557,15 +557,35 @@ allow_remote_providers = false
 
 [task_profiles."tools.plan".execution]
 temperature = 0.1
-# max_output_tokens stays at 4096, measured rather than assumed (G2, gate E). A reasoning model
+# max_output_tokens stays at 4096, measured rather than assumed (G2 gate E). A reasoning model
 # under `response_format = "json"` spends this budget thinking and can return an empty document:
 # gpt-oss:20b on the reference machine, given PromptCadence's planner.draft 1.1.0 prompt, answered
 # nothing 1 time in 6 at 4096 and 3 times in 6 at 8192 — every empty answer `done_reason=length`
 # with eval_count exactly equal to the budget, and median latency tripling from 58 s to 171 s.
 # Raising the budget therefore buys a longer wait and *more* empty answers, not fewer: the model
-# fills whatever it is given. The lever that would work is a thinking control, and ModelRack's
-# Ollama adapter declares `thinking_control` while exposing no request-side way to ask for it
-# (G2 handoff §8). Until it does, the corrective retry is what absorbs an empty draft.
+# fills whatever it is given.
+#
+# `think` is unset here, and that is a measured decision, not an omission (I3 gate D, ADR-0099).
+# The lever G2 named exists now: ModelRack 0.7 sends Ollama's top-level `think`, and this profile
+# could ask for `think = false`. Six runs per cell through a real LoadCoach against Ollama 0.32.13,
+# same prompt, same 4096 budget, gpt-oss:20b pinned:
+#
+#   profile                | think   | delivered | attempt 1 hit the budget | median
+#   tools.plan             | unset   |  3 / 6    |  2 / 6                   |  12.9 s
+#   tools.plan             | false   |  0 / 6    |  1 / 6                   |   1.3 s
+#   tools.agent.local_fast | unset   |  6 / 6    |  0 / 6                   |   0.9 s
+#   tools.agent.local_fast | false   |  6 / 6    |  0 / 6                   |   1.0 s
+#
+# `think = false` made this profile strictly worse: gpt-oss:20b under Ollama does not honour the
+# control — it emits its reasoning as *content* instead of on the thinking channel, which then
+# fails `require_valid_json` — so four runs died with a provider protocol error in 1.3 s and two
+# exhausted all three attempts on invalid JSON. On the agent profile it changed nothing at all.
+# The remaining `tools.plan` failure mode is unchanged, and "delivered" is generous: 3 of the 6
+# unset runs answered with a real plan document, and the other 3 needed the structured-output
+# corrective, which returned `{}` — valid JSON and an empty plan. Two of those three had spent
+# the whole 4096-token budget on attempt 1. So the corrective retry is still what absorbs an
+# empty draft, and an operator whose model *does* honour the control can set `think` here
+# without a code change.
 max_output_tokens = 4096
 response_format = "json"
 max_attempts = 3

@@ -23,6 +23,23 @@ packaging and release standards §3.
   SetSpec capability vocabulary. A `sampling.think` that is neither boolean nor `null` is a
   `VALIDATION_ERROR`.
 
+### Changed
+
+- **`requirements/ci.lock` pins `modelrack 0.7.1`** (was `0.7.0`), one fix over it: a GGUF
+  descriptor now states `head_dim` when the file omits it, without which every GGUF-served
+  candidate was ineligible on any machine with GPU telemetry. `pyproject.toml`'s range
+  (`modelrack>=0.7,<0.8`) already admitted it and is unchanged — the lock is what CI installs, and
+  it now installs the fix by default. Recompiled on Python 3.13, as `requirements/README.md` says.
+- **The five PromptCadence harness profiles ship with `think` unset**, and the `tools.plan`
+  comment records the measurement that decided it rather than an assumption. Six runs per cell
+  through a real LoadCoach against Ollama 0.32.13 with `gpt-oss:20b` pinned: `tools.plan`
+  delivered 3 of 6 with `think` unset and **0 of 6** with `think = false`; `tools.agent.local_fast`
+  delivered 6 of 6 either way. gpt-oss:20b does not honour the control — it emits its reasoning as
+  content rather than on the thinking channel, which then fails `require_valid_json`. The lever is
+  reachable from configuration for a model that does honour it; no shipped profile's values
+  change, so no profile version moves ([ADR-0099](docs/adr/0099-a-task-profile-may-ask-for-reduced-thinking.md)
+  rule 6).
+
 ### Fixed
 
 - **`GET /models` renders `provider_name` and `is_remote` on every entry**, under the names the
