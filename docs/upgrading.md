@@ -25,6 +25,15 @@ is reported with the backup to restore.
 | 1.0.0 | `0006` | `feedback` and `reliability_stats` (P7). Purely additive; no existing column changes. |
 | 0.9.0b0 | `0001`–`0005` | The beta's schema. |
 
+### Behaviour changes at 1.1.3
+
+* **BREAKING, inside `/api/v1`: `usage.input_tokens` and `usage.output_tokens` render the string
+  `"unsupported"` instead of `null` for an unreported count.** All five `usage` token classes now
+  share one spelling for "not reported" (ADR-0016 rule 4, ADR-0112). A client that modeled either
+  field as `int | None` and read `null` as a measured absence must be updated to expect the string
+  instead, on the job document, `POST /generate` and `POST /generate/stream`'s terminal frame.
+  Storage is unchanged — the columns stay nullable integers — and no migration is needed.
+
 ### Behaviour changes at 1.1.0
 
 * **Nothing changes for a deployment with no `[adapters] directory`.** The feature is off by

@@ -335,10 +335,42 @@ def test_the_job_document_carries_all_four_token_classes(
     usage = document["usage"]
     assert usage["cache_read_tokens"] == expected["cache_read_tokens"]
     assert usage["cache_write_tokens"] == expected["cache_write_tokens"]
-    # Additive: the fields a 1.0.0 client reads are untouched, with their old types.
     assert usage["input_tokens"] == 100
     assert usage["output_tokens"] == 50
     assert usage["thinking_tokens"] == "unsupported"
+
+
+def test_the_job_document_spells_every_unreported_class_the_same_way(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0112: `input_tokens`/`output_tokens` are no longer the odd ones out.
+
+    Every one of the five classes renders the string ``"unsupported"`` for an unreported count,
+    on `GET /jobs/{id}` exactly as on the synchronous path (`tests/integration/test_generate.py`).
+    """
+    generation = FakeGeneration(
+        text="the answer",
+        input_tokens=UNSUPPORTED,
+        output_tokens=UNSUPPORTED,
+        cache_read_tokens=UNSUPPORTED,
+        cache_write_tokens=UNSUPPORTED,
+    )
+    with _client(tmp_path, monkeypatch, generation=generation) as client:
+        response = client.post(
+            "/api/v1/jobs",
+            json={"task": "general.chat", "prompt": "hello", "class": "background"},
+            headers={"X-Client-Name": "ideapress"},
+        )
+        document = _wait(client, response.json()["job_id"])
+
+    assert document["state"] == "completed"
+    assert document["usage"] == {
+        "input_tokens": "unsupported",
+        "output_tokens": "unsupported",
+        "cache_write_tokens": "unsupported",
+        "cache_read_tokens": "unsupported",
+        "thinking_tokens": "unsupported",
+    }
 
 
 # --- the declared finish and the validation checks, read back from the rows -------------------

@@ -1414,11 +1414,15 @@ def job_document(database: Database, job_id: str) -> dict[str, Any]:
             "explanation_url": f"/api/v1/jobs/{record.job_id}/explanation",
         },
         "usage": {
-            "input_tokens": record.input_tokens,
-            "output_tokens": record.output_tokens,
-            # The same four-class shape ExecutionOutcome.as_json renders (api.md §4 and §5 carry
+            # The same five-class shape ExecutionOutcome.as_json renders (api.md §4 and §5 carry
             # one usage object, not two): `0` is a count the adapter reported, "unsupported" is
-            # a class it never reported (ADR-0016 rule 4, ADR-0070 decision 7).
+            # a class it never reported (ADR-0016 rule 4, ADR-0070 decision 7, ADR-0112).
+            "input_tokens": record.input_tokens
+            if record.input_tokens is not None
+            else "unsupported",
+            "output_tokens": record.output_tokens
+            if record.output_tokens is not None
+            else "unsupported",
             "cache_write_tokens": record.cache_write_tokens
             if record.cache_write_tokens is not None
             else "unsupported",

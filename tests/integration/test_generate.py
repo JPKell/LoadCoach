@@ -525,6 +525,47 @@ def test_unreported_cache_classes_are_null_on_the_rows_and_unsupported_on_the_wi
     assert usage["cache_write_tokens"] == "unsupported"
 
 
+def test_every_unreported_class_shares_one_spelling_on_the_generate_response(
+    tmp_path: Path,
+) -> None:
+    """ADR-0112: all five classes spell "not reported" the same way — never a `null` among them.
+
+    Before `loadcoach 1.1.3`, `input_tokens`/`output_tokens` were the one exception (ADR-0105);
+    that exception is gone, so an unreported count on any of the five classes is the string
+    ``"unsupported"``, and none of them is ``None``.
+    """
+    database, provider = _setup(
+        tmp_path,
+        _usage_script(
+            input_tokens=UNSUPPORTED,
+            output_tokens=UNSUPPORTED,
+            cache_read_tokens=UNSUPPORTED,
+            cache_write_tokens=UNSUPPORTED,
+        ),
+    )
+    try:
+        outcome = _execute(database, provider)
+        job, attempt = _rows(database)
+    finally:
+        database.close()
+
+    # Storage is unaffected by ADR-0112: still NULL, not the string (ADR-0016 rule 3).
+    assert job.input_tokens is None
+    assert job.output_tokens is None
+    assert attempt.input_tokens is None
+    assert attempt.output_tokens is None
+
+    usage = outcome.as_json()["usage"]
+    assert usage == {
+        "input_tokens": "unsupported",
+        "output_tokens": "unsupported",
+        "cache_write_tokens": "unsupported",
+        "cache_read_tokens": "unsupported",
+        "thinking_tokens": "unsupported",
+    }
+    assert not any(value is None for value in usage.values())
+
+
 def test_a_reported_zero_is_stored_and_rendered_as_zero(tmp_path: Path) -> None:
     """The assertion the whole ADR-0070 chain is worth anything for.
 
@@ -557,11 +598,12 @@ def test_a_reported_zero_is_stored_and_rendered_as_zero(tmp_path: Path) -> None:
     assert not isinstance(usage["cache_read_tokens"], str)
 
 
-def test_the_usage_object_stays_additive_for_a_1_0_0_client(tmp_path: Path) -> None:
-    """A client written against 1.0.0 reads this response unchanged (api.md, additive within v1).
+def test_a_reported_count_on_every_class_is_still_an_integer(tmp_path: Path) -> None:
+    """A reported count is untouched by ADR-0112: only an *unreported* count changes spelling.
 
-    The three fields 1.0.0 shipped keep their names and their types; the two new ones are added
-    beside them. Nothing is removed and nothing is retyped.
+    The five classes keep their names; a class the provider actually reported keeps rendering as
+    a plain integer, same as it always did. `thinking_tokens` is the one class this fake never
+    reports, so it stays the fixed point for "still unsupported when unreported."
     """
     database, provider = _setup(
         tmp_path,

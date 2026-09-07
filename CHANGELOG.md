@@ -7,6 +7,24 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+## [1.1.3] — 2026-09-07
+
+### Changed
+
+- **BREAKING (inside `/api/v1`): `usage.input_tokens` and `usage.output_tokens` render the string
+  `"unsupported"` for an unreported count, never `null`.** All five token classes —
+  `input_tokens`, `output_tokens`, `cache_write_tokens`, `cache_read_tokens`, `thinking_tokens` —
+  now share one spelling for "not reported" (ADR-0016 rule 4). This reverses this morning's
+  ADR-0105, which kept `null` on these two fields specifically because `/api/v1` is additive-only
+  (ADR-0013). ADR-0112 records the operator's decision to make the change now anyway, as a
+  one-time, explicitly-scoped exception: the surface has no external consumer yet. A client that
+  modeled `input_tokens` as `int | None` will now fail on the string rather than silently reading
+  `null` as if it were a measured absence; treat `"unsupported"` on any of the five classes as
+  unavailable, never total it, on the job document (`GET /jobs/{id}`), the synchronous response
+  (`POST /generate`), and the stream's terminal `result` frame (`POST /generate/stream`). Storage
+  is unchanged: `jobs.input_tokens`/`jobs.output_tokens` and the attempts-table equivalents stay
+  nullable integer columns; only the wire representation moves. `docs/openapi.json` regenerated.
+
 ## [1.1.2] — 2026-09-07
 
 The precedence LoadCoach published, now the one it implements. Configuration standards §7 puts a

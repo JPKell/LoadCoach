@@ -538,13 +538,19 @@ class ExecutionOutcome:
                 "explanation_url": f"/api/v1/jobs/{self.job_id}/explanation",
             },
             "usage": {
-                "input_tokens": self.input_tokens,
-                "output_tokens": self.output_tokens,
                 # ADR-0016 rule 4: an unavailable measurement is the string "unsupported" in
                 # JSON, never null and never 0 — and under ADR-0070 a `0` here is a real count,
                 # the provider's protocol having reported that nothing was billed to this class.
                 # The two are different answers and a consumer's ledger must be able to tell them
-                # apart, which is why neither is rendered as the other.
+                # apart, which is why neither is rendered as the other. All five classes share
+                # this spelling from loadcoach 1.1.3 (ADR-0112, superseding ADR-0105's `null`
+                # exception for input_tokens/output_tokens).
+                "input_tokens": self.input_tokens
+                if self.input_tokens is not None
+                else "unsupported",
+                "output_tokens": self.output_tokens
+                if self.output_tokens is not None
+                else "unsupported",
                 "cache_write_tokens": self.cache_write_tokens
                 if self.cache_write_tokens is not None
                 else "unsupported",

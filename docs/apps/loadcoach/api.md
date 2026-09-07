@@ -236,11 +236,14 @@ Notes:
   `"unsupported"` when it was never reported, which is not a number and must not be totalled as
   one ([ADR-0016](../../adr/0016-unavailable-is-not-zero.md) rule 4,
   [ADR-0070](../../adr/0070-an-absent-token-class-is-zero-only-where-the-protocol-cannot-bill-it.md)).
-  One exception, kept for `/api/v1`'s lifetime: `input_tokens` and `output_tokens` render `null`
-  rather than `"unsupported"` when unreported, because their type shipped in 1.0 and cannot change
-  inside the major; read `null` on those two keys as unavailable, never as zero
-  ([ADR-0105](../../adr/0105-a-shipped-usage-object-keeps-null-until-api-v2.md)). The same `usage` object appears in the job document
-  `GET /jobs/{id}` returns (§5).
+  `input_tokens` and `output_tokens` follow the same rule as the other three, from
+  `loadcoach 1.1.3`: `"unsupported"`, never `null`, for an unreported count. This is a deliberate,
+  one-time exception inside `/api/v1` to the additive-only rule, made because the surface had no
+  external consumer at the time
+  ([ADR-0112](../../adr/0112-the-usage-object-spells-unavailable-one-way-inside-api-v1.md),
+  superseding [ADR-0105](../../adr/0105-a-shipped-usage-object-keeps-null-until-api-v2.md)); it
+  does not license a future breaking change to any other field. The same `usage` object appears in
+  the job document `GET /jobs/{id}` returns (§5).
 * `idempotency_key` makes a retried POST safe: the same key returns the original job rather than
   creating a second one. Keys are scoped **per caller**, not globally, so two clients cannot collide;
   the caller is the authenticated token's name, or `X-Client-Name` on an unauthenticated loopback
