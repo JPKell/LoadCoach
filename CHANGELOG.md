@@ -5,6 +5,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 [Semantic Versioning](https://semver.org/), pre-1.0 per
 packaging and release standards §3.
 
+## [Unreleased]
+
+## [1.1.2] — 2026-09-07
+
+The precedence LoadCoach published, now the one it implements. Configuration standards §7 puts a
+database-backed setting *between* the file and the environment — `defaults → file → database → env
+→ CLI` — and `read_runtime_settings` took a stored row whenever one existed, so a `settings` row
+beat a `LOADCOACH_*` variable an operator had pinned. ADR-0100 recorded that divergence against
+this application while PromptCadence built the same surface correctly; this release closes it, with
+PromptCadence's vocabulary transcribed key for key so an operator moving between the two consoles
+reads one thing. A shadowed row is kept, not deleted: unsetting the variable makes it effective
+again. No schema change, no new runtime-changeable key.
+
+### Changed
+
+- **The environment beats a stored row** (configuration standards §7, ADR-0100).
+  `loadcoach.services.settings.read_runtime_settings` ignores a stored value whose key is set in
+  the environment, and `shadowing_source` names the variable that beats it. `loadcoach serve`
+  applies its flags as environment variables before the loader runs, so the check covers the CLI
+  layer too; `tests/unit/test_runtime_settings.py::test_no_source_module_passes_cli_overrides`
+  fails the day a module under `src/` starts passing `load_settings(cli_overrides=…)`.
+- **`GET /settings` reports a row that does nothing.** Each entry in `definitions` gains `stored`
+  (the row, or `null`), `source` (`"database"` or `"configuration"`) and `shadowed_by` (`"env
+  LOADCOACH_…"`, or `null`); the Settings page prints the same beneath the field it belongs to.
+  api.md §9 documents all three.
+- **`loadcoach config show` marks database-sourced values `(database)`** and prints the stored
+  value, the third of configuration standards §7's rules. A stored row the environment shadows is
+  named beside the variable that beats it. The overlay never raises and never creates a missing
+  SQLite file: an absent, unmigrated or unreachable database means the configured values are the
+  right answer, and an inspection command must not leave a database behind that `db status` would
+  call unmigrated.
+- **`docs/configuration.md`** states the precedence it now implements, the `(database)` mark, and
+  why `queue.paused` and `queue.draining` have no row in its tables — they are not fields of the
+  settings model, so no `LOADCOACH_QUEUE__PAUSED` exists and a variable of that name is refused as
+  an unknown key. Their stored row is therefore always the effective value, through the same code
+  path as every other key: one rule, no per-key exception.
+
+### Added
+
+- `loadcoach.config.env_var_for(path)` — the one spelling of a key's environment variable, shared
+  by the loader's source tracking, the generated reference and `shadowing_source`, so no two of
+  them can disagree about which variable pins a key.
+
 ## [1.1.1] — 2026-09-06
 
 A render and a lever. `GET /models` now carries `provider_name` and `is_remote` on every entry, so
