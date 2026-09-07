@@ -1,7 +1,9 @@
 # LoadCoach — Specification
 
 **Type:** Application · **Import/distribution name:** `loadcoach` · **Default port:** 8766 · **Env prefix:** `LOADCOACH_`
-**Status:** Specified, not implemented. Corrected 2026-08-21 by the
+**Status:** Implemented through Phase 11. `loadcoach 1.0.0` is published; `1.1.0` (LC-E1, the
+adapter registry and pins) is tagged, and `1.1.2` is committed and prepared.
+Corrected 2026-08-21 by the
 [final architecture audit](../../reviews/final_architecture_audit.md) (ADR-0022–0027, ADR-0029).
 **Related:** [Routing](routing.md) · [Queue and Scheduling](queue-and-scheduling.md) · [API](api.md) · [Data Model](data-model.md) · [Development Plan](development-plan.md) · [Risks](risks.md)
 
@@ -367,7 +369,7 @@ Behavioural rules:
   exposed, so it is also the one most exposed to DNS rebinding when it is not.
 * Tool definitions supplied by callers are passed to the provider and returned; **LoadCoach never
   executes a tool call**, and never validates a tool's `parameters` schema
-  ([ADR-0041](../../adr/0041-a-callers-schema-does-not-travel-through-a-router.md)). A tool's
+  ([ADR-0041](../../adr/0041-caller-schemas-do-not-travel-through-a-router.md)). A tool's
   `description` is caller-written prompt content and reaches the model's context unmodified, on the
   same terms as `system` and `prompt`. A request offering tools requires `tool_use` of every routing
   candidate ([ADR-0075](../../adr/0075-a-request-carrying-tools-requires-tool-use-of-every-candidate.md)),

@@ -274,7 +274,7 @@ residency_detail_json NULL           -- which residency level was applied, and b
 Index: `(decision_id, rank)`.
 
 `subject_canonical_id` is written, never parsed
-([ADR-0024 §4](../../adr/0024-model-identity-formatting-and-normalization.md),
+([ADR-0024 §4](../../adr/0024-canonical-id-and-model-references.md),
 [ADR-0080](../../adr/0080-a-persisted-decision-names-the-subject-by-reference-and-by-string.md)):
 every question about *which* adapter is asked of `adapter_id`, and the string exists so an
 explanation still renders what the system believed at the time after the adapter directory has

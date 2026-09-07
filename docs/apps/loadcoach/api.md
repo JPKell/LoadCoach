@@ -123,7 +123,7 @@ only party that knows what a tool does.
 * **`parameters` is passed to the provider unmodified.** LoadCoach does not validate it against
   JSON Schema, rewrite it, infer one, or reject a keyword it does not recognise — the same rule
   that keeps a caller's response schema out of the router
-  ([ADR-0041](../../adr/0041-a-callers-schema-does-not-travel-through-a-router.md)). A schema
+  ([ADR-0041](../../adr/0041-caller-schemas-do-not-travel-through-a-router.md)). A schema
   carrying vendor keywords survives byte-for-byte.
 * **`description` is prompt content and it is the caller's to write.** LoadCoach sends it
   unmodified, exactly as it sends `system` and `prompt` (§4's promise above). It reaches the
