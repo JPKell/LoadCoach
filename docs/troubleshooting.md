@@ -21,6 +21,7 @@ the request ID is in the log line that goes with it.
 |---|---|---|
 | No model chosen; every candidate listed with a reason | `NO_ELIGIBLE_MODEL` | Read the reasons: `insufficient_vram` (free VRAM by device is in `details`), `context_too_small`, `capability_unsupported`, `excluded_by_policy`, `recently_failing`, `model_unavailable`. `loadcoach route explain --task …` reproduces it. |
 | Unknown task | `TASK_PROFILE_NOT_FOUND` | `loadcoach tasks list`. |
+| No model discovered, or none available | `MODEL_NOT_FOUND` | Start the provider and run `loadcoach models refresh`; `loadcoach models list` shows each unavailable reason. Until one is available every route is `NO_ELIGIBLE_MODEL`. |
 | A model you expected is not a candidate | — | `loadcoach models list` shows availability; the explanation's `rejected` list shows the constraint. |
 | `low_evidence` on every decision | — | No FreeWeight evidence; routing uses declared flags and priors. Import a bundle. |
 | `evidence_profile_mismatch` with a remedy | — | FreeWeight measured under a different runtime profile; the remedy is the exact `freeweight run start` command. |
@@ -57,6 +58,17 @@ the request ID is in the log line that goes with it.
 | Bundle rejected | `EVIDENCE_IMPORT_FAILED` (422) | The response names each rejected record and why. |
 | Wrong schema major | `SCHEMA_VERSION_UNSUPPORTED` (422) | Both versions are named; nothing was changed. Upgrade `setspec`, or widen `evidence.accept_schema_majors` only if this build can read it. |
 | `unmatched` records | — | Evidence for a model discovery has not seen; bound automatically when it appears. |
+
+## Reliability and telemetry
+
+`doctor` reports these as `degraded:reliability` and `degraded:telemetry` — neither ever fails the
+command, because a machine with no GPU or no production history yet is not broken.
+
+* **Reliability** — a regressed model (worse than its own baseline) or an open circuit breaker.
+  Read `GET /reliability`; a regressed model is deprioritized, not excluded, and an open breaker
+  is excluded until its cool-down.
+* **Telemetry** — the GPU/VRAM reader is unavailable, or no GPU was reported. Admission degrades
+  to RAM-only or unconstrained, with the reason recorded, rather than inventing a number.
 
 ## Storage
 

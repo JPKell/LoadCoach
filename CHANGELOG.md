@@ -9,6 +9,9 @@ packaging and release standards §3.
 
 ### Added
 
+- `tests/unit/test_troubleshooting_covers_doctor.py`, ported from FreeWeight, holding
+  `docs/troubleshooting.md` to naming every check `doctor` runs (M9 audit Group 5, item D6).
+
 - `docs/upgrading.md` refreshed to cover every shipped version (M9 audit Group 5, item D9).
 
 - `.github/workflows/release.yml` now writes `SHA256SUMS` over `dist/*` and attaches it
