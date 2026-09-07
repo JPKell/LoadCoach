@@ -34,9 +34,17 @@ then CLI flags. Sections and fields are joined with a double underscore in the e
 `[server] port` is `LOADCOACH_SERVER__PORT`. Lists are comma-separated in the environment.
 
 **Runtime-changeable** keys may also be set while the server runs, through `PUT /api/v1/settings`
-or the Settings page; the scheduler applies them within a second (api.md §9). **Security-relevant**
-keys decide exposure, egress, credentials or retention; they are refused there by name and can only
-be set in the file or the environment (spec §14).
+or the Settings page; the scheduler applies them within a second (api.md §9). Their stored value
+sits *between* the file and the environment (configuration standards §7):
+`defaults -> file -> database -> env -> CLI`. A stored value whose key is set in the environment is
+kept but does nothing until that variable is unset, and `loadcoach config show` marks what the
+table decides `(database)` and names the variable that shadows a row. **Security-relevant** keys
+decide exposure, egress, credentials or retention; they are refused there by name and can only be
+set in the file or the environment (spec §14).
+
+Two runtime-changeable keys are absent from the tables below because they are not fields of the
+settings model: `queue.paused` and `queue.draining` live only in the `settings` table, so there is
+no `LOADCOACH_QUEUE__PAUSED` and a variable of that name is refused as an unknown key.
 """
 
 _DERIVED_KEYS: frozenset[str] = frozenset({"providers.registrations"})
