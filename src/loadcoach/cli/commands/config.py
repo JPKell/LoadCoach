@@ -8,9 +8,13 @@ imported lazily inside each command body, per the same startup-performance disci
 from __future__ import annotations
 
 import json
-from typing import Annotated
+from pathlib import Path
+from typing import TYPE_CHECKING, Annotated
 
 import typer
+
+if TYPE_CHECKING:  # imported for typing only: `loadcoach.config` loads pydantic, and the
+    from loadcoach.config import Settings  # CLI keeps that out of module import time
 
 __all__ = ["app"]
 
@@ -20,6 +24,58 @@ app = typer.Typer(help="Configuration inspection and management.")
 def _looks_secret(field_name: str) -> bool:
     lowered = field_name.lower()
     return any(marker in lowered for marker in ("token", "key", "secret", "password"))
+
+
+def _database_overlay(settings: Settings) -> dict[str, tuple[object, str]]:
+    """The runtime-changeable values the ``settings`` table decides, and how to label them.
+
+    Configuration standards §7 asks ``config show`` to mark database-sourced values
+    ``(database)``. This opens the configured database read-only to find them, and **never
+    raises**: an absent, unmigrated or unreadable database is not a failure of ``config show`` —
+    printing the configured values is exactly the right answer when there is no database to
+    consult, and a command that needed one would be unusable on a fresh install.
+
+    Args:
+        settings: The loaded :class:`~loadcoach.config.Settings`.
+
+    Returns:
+        ``path -> (value, source)`` for the keys the database changes, plus the keys whose stored
+        row is shadowed by the environment — those keep their configured value and say that a row
+        exists and does nothing. Empty when no database can be read. ``queue.paused`` and
+        ``queue.draining`` are absent: they are not fields of ``Settings``, so ``config show`` has
+        no row to mark for them.
+    """
+    from baseaicore import SuiteError
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from loadcoach.services.database import Database
+    from loadcoach.services.settings import runtime_settings_document
+
+    database_url = settings.storage.database_url
+    if database_url is None:  # pragma: no cover — StorageSettings always fills this in
+        return {}
+    url = make_url(database_url)
+    if url.drivername.startswith("sqlite") and url.database not in (None, ":memory:"):
+        # Connecting would create the file. An inspection command must not leave a database
+        # behind that `db status` would then report as unmigrated.
+        if not Path(str(url.database)).is_file():
+            return {}
+    try:
+        with Database.from_url(database_url) as database:
+            document = runtime_settings_document(database, settings=settings)
+    except (SQLAlchemyError, SuiteError, OSError):
+        return {}
+    overlay: dict[str, tuple[object, str]] = {}
+    for key, definition in document["definitions"].items():
+        if definition["source"] == "database":
+            overlay[key] = (document["settings"][key], "database")
+        elif definition["shadowed_by"] is not None:
+            overlay[key] = (
+                document["settings"][key],
+                f"{definition['shadowed_by']}; database row {definition['stored']} shadowed",
+            )
+    return overlay
 
 
 @app.command("show")
@@ -33,6 +89,12 @@ def show(
 ) -> None:
     """Print the effective configuration, with the source of every value.
 
+    A runtime-changeable key whose stored row is in force is marked ``(database)`` and shows the
+    stored value (configuration standards §7); a stored row the environment shadows is marked as
+    shadowed beside the variable that beats it. With no readable database — absent, unmigrated or
+    on another host — the output is exactly what it was before there was a settings table, and no
+    database file is created.
+
     Example:
         loadcoach config show --json
     """
@@ -45,12 +107,18 @@ def show(
         raise typer.Exit(3) from exc
 
     dumped = loaded.settings.model_dump(mode="json")
+    sources = dict(loaded.sources)
+    for path, (value, source) in _database_overlay(loaded.settings).items():
+        sources[path] = source
+        section, _, field_name = path.partition(".")
+        if section in dumped and field_name in dumped[section]:
+            dumped[section][field_name] = value
     if json_output:
         typer.echo(
             json.dumps(
                 {
                     "values": dumped,
-                    "sources": loaded.sources,
+                    "sources": sources,
                     "config_path": str(loaded.config_path),
                 }
             )
@@ -63,7 +131,7 @@ def show(
     for section, fields in dumped.items():
         for field_name, value in fields.items():
             path = f"{section}.{field_name}"
-            source = loaded.sources.get(path, "default")
+            source = sources.get(path, "default")
             rendered = "********" if _looks_secret(field_name) else value
             typer.echo(f"{path:<40} {rendered!s:<24} ({source})")
 
