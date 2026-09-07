@@ -7,6 +7,8 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+## [1.1.4] — 2026-09-07
+
 ### Added
 
 - `tests/unit/test_every_command_has_help.py`, walking `typer.main.get_command(app)`
