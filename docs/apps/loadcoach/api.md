@@ -19,7 +19,7 @@ Everything here is additive within v1, and the committed OpenAPI snapshot is dif
 
 | Endpoint | Notes |
 |---|---|
-| `GET /models` | Registry with declared capabilities, evidence summary, reliability, residency |
+| `GET /models` | Registry with declared capabilities, evidence summary, reliability, residency. Every entry also carries `provider_name` and `is_remote` at its top level, under the names §4's response `model` block uses — the registration that served this model's most recent discovery and that registration's **declared** egress class ([ADR-0055](../../adr/0055-loadcoach-registers-providers-by-name-and-kind.md) rule 4, [ADR-0099](../../adr/0099-a-task-profile-may-ask-for-reduced-thinking.md)). `""` and `false` read as *not recorded*: a row discovered before registrations had names keeps the honest defaults its migration gave it, and is never guessed at from the provider kind |
 | `POST /models/discover` | Re-discovery through ModelRack |
 | `GET /models/{model_ref}` | Identity, descriptor, evidence per capability with source, age and `match_state`, reliability, circuit-breaker state. `model_ref` is the local ULID or an unambiguous prefix — **not** the canonical ID, which contains `/`, `:` and `@` and does not survive a path segment ([ADR-0024](../../adr/0024-canonical-id-and-model-references.md)) |
 | `GET /models?canonical_id=…` | Lookup by identity; `?provider_kind=&provider_model_name=&artifact_digest=` is the exact-triple form |
@@ -77,6 +77,18 @@ nothing and the effective classification is the adapter's own, exactly as before
 the vocabulary is a `VALIDATION_ERROR` rather than a silently ignored field. It never widens
 anything: the join can only raise the classification, never lower it, so a caller cannot declare its
 way past a refusal.
+
+`sampling` overrides the task profile's `execution` block for this request alone, and is recorded
+on the attempt. `temperature` and `max_output_tokens` have always been overridable this way; from
+1.1.1 **`think`** is too — `false` asks the provider to suppress reasoning, `true` asks for it, and
+absent or `null` sends no control at all, which is byte-for-byte the request a caller sent before
+the field existed ([ADR-0099](../../adr/0099-a-task-profile-may-ask-for-reduced-thinking.md)). A
+`think` that is neither a boolean nor `null` is a `VALIDATION_ERROR` naming the field rather than a
+value quietly passed to a provider. **A request that sets `think` requires `thinking_control` of
+every candidate**, on top of whatever the task profile requires, so a candidate whose provider
+cannot carry the control is rejected by routing with `capability_unsupported`,
+`details.capability = "thinking_control"` and `details.required_by = "request"` — never served a
+request whose control quietly evaporated. It is the same rule tools get below, for the same reason.
 
 Exactly one of `prompt` (+ optional `system`) or `messages` is supplied; supplying both is a
 `VALIDATION_ERROR`. `messages` is a list of `{"role": "system"|"user"|"assistant"|"tool",

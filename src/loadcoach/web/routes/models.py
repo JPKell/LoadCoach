@@ -25,11 +25,21 @@ ui_router = APIRouter(tags=["ui"], include_in_schema=False)
 
 
 def _model_to_json(overview: ModelOverview) -> dict[str, object]:
+    """One registry entry as ``GET /models`` renders it (api.md §2).
+
+    ``provider_name`` and ``is_remote`` carry the registration that served this model's most
+    recent discovery and that registration's **declared** egress class, under the names the
+    generate response's ``model`` block already uses (ADR-0099 rule 1). ``""`` and ``False`` mean
+    *not recorded* — a row discovered before registrations had names — and are never replaced by a
+    guess from the provider kind, which ADR-0055 rule 4 refuses.
+    """
     entry = overview.entry
     return {
         "canonical_id": entry.canonical_id,
         "model_ref": entry.model_id,
         "provider_kind": entry.provider_kind,
+        "provider_name": entry.provider_name,
+        "is_remote": entry.is_remote,
         "provider_model_name": entry.provider_model_name,
         "identity_confidence": entry.identity_confidence,
         "family": entry.family,

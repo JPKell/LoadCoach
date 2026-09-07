@@ -255,3 +255,40 @@ def test_a_singular_configuration_produces_the_registry_it_always_did(tmp_path: 
     finally:
         bare_db.close()
         named_db.close()
+
+
+def test_the_models_listing_renders_the_registration_and_its_egress_class(database: Any) -> None:
+    """ADR-0099 rule 1: `GET /models` carries `provider_name` and `is_remote` per entry.
+
+    LoadCoach 1.1.0 recorded both columns and rendered neither in the listing, so ADR-0098 rule 1
+    read `False` from a real deployment whatever was registered (I2 handoff §5). The
+    pre-registration row — `""` and `False`, migration 0008's honest defaults — renders as
+    recorded, never guessed at from the provider kind.
+    """
+    from loadcoach.infrastructure.db.models import Model
+    from loadcoach.services.models import registry_overview
+    from loadcoach.web.routes.models import _model_to_json
+
+    discover_models(
+        database,
+        (
+            _registration("local", _model("alpha:8b", "a" * 64)),
+            _registration("hosted", _model("beta:8b", "b" * 64), remote=True),
+        ),
+        now=NOW,
+    )
+    # A row as migration 0008 left one discovered before registrations had names.
+    with database.write() as session:
+        row = session.query(Model).filter(Model.provider_model_name == "alpha:8b").one()
+        row.provider_name = ""
+        row.is_remote = False
+
+    rendered = {
+        str(entry["provider_model_name"]): entry
+        for entry in (_model_to_json(overview) for overview in registry_overview(database))
+    }
+    assert (rendered["beta:8b"]["provider_name"], rendered["beta:8b"]["is_remote"]) == (
+        "hosted",
+        True,
+    )
+    assert (rendered["alpha:8b"]["provider_name"], rendered["alpha:8b"]["is_remote"]) == ("", False)

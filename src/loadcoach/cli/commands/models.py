@@ -67,6 +67,8 @@ def list_models(
                 [
                     {
                         "canonical_id": entry.canonical_id,
+                        "provider_name": entry.provider_name,
+                        "is_remote": entry.is_remote,
                         "available": entry.available,
                         "unavailable_reason": entry.unavailable_reason,
                         "declared_capabilities": entry.declared_capabilities,

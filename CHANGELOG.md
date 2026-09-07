@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 [Semantic Versioning](https://semver.org/), pre-1.0 per
 packaging and release standards §3.
 
+## [Unreleased]
+
+### Fixed
+
+- **`GET /models` renders `provider_name` and `is_remote` on every entry**, under the names the
+  generate response's `model` block already uses, and `loadcoach models list --json` renders them
+  too. LoadCoach 1.1 recorded both columns and rendered neither in the listing, so a consumer
+  reading the remote-provider fact from the registry — PromptCadence does, by
+  [ADR-0098](docs/adr/0098-promptcadence-1-0-ships-with-remote-tiers-refusing-honestly.md) rule 1 —
+  read `false` whatever was registered, and a remote registration stayed invisible until its first
+  turn. `""` and `false` still mean *not recorded* for a row discovered before registrations had
+  names, and are never guessed at from the provider kind
+  ([ADR-0055](docs/adr/0055-loadcoach-registers-providers-by-name-and-kind.md) rule 4,
+  [ADR-0099](docs/adr/0099-a-task-profile-may-ask-for-reduced-thinking.md)). `docs/openapi.json`
+  does not move: `GET /models` returns an untyped mapping and describes no entry field.
+
 ## [1.1.0] — 2026-09-06
 
 LoadCoach 1.1: **LA2 and LA3's consumer half** — more than one provider, an operator's adapter

@@ -45,6 +45,10 @@ def test_get_models_shows_declared_capabilities_and_availability(client: TestCli
     assert model["evidence_summary"] == {"bound": 0, "capabilities": 0, "stale": 0, "unmatched": 0}
     assert model["reliability"]["pairs"] == 0 and model["reliability"]["lowest_factor"] is None
     assert model["residency"] == {"resident": False, "gpu_indexes": []}
+    # api.md §2 from 1.1.1: the registration that served the discovery, and its declared egress
+    # class (ADR-0099 rule 1). The shipped single `[provider]` block is named `fake` and local.
+    assert model["provider_name"] == "fake"
+    assert model["is_remote"] is False
 
 
 def test_models_ui_page_renders(client: TestClient) -> None:

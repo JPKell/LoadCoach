@@ -56,6 +56,7 @@ response_format   = "json_schema"
 json_schema_ref   = "schemas/code_review_findings.json"
 max_attempts      = 3
 fallback_depth    = 2
+think             = false                     # optional; unset, true or false
 
 [task_profiles."code.review".validation]
 require_valid_json = true
@@ -67,6 +68,22 @@ max_output_chars   = 200000
 Rules: profiles are versioned; every job records the version it used; weights are validated to sum to
 1.0; constraints are hard (they filter) while weights are soft (they rank); a profile may not
 reference a capability outside the SetSpec vocabulary.
+
+`execution.think` is the one execution parameter that changes which candidates are *eligible*
+([ADR-0099](../../adr/0099-a-task-profile-may-ask-for-reduced-thinking.md)). It has three states:
+**unset** sends no control and builds the request a profile without the field built before 1.1.1;
+**`false`** asks the provider to suppress reasoning; **`true`** asks for it. A profile that sets it
+either way **requires `thinking_control` of every candidate**, so a candidate whose provider cannot
+carry the control is rejected by `capability_unsupported` with
+`details.capability = "thinking_control"` and `details.required_by = "task_profile"` —
+`"request"` where `sampling.think` imposed it instead. The requirement is enforced at routing, in
+ADR-0075's loop, rather than at the provider edge, because a `CapabilityUnsupported` raised after a
+model has been chosen fails a job that routing could have answered with a reason. `thinking_control`
+is a **provider** capability and is deliberately *not* spellable in `requires_capabilities`, which
+is validated against the SetSpec vocabulary; the vocabulary's neighbouring model flag is `thinking`
+and it means something else. The lever exists because the output budget is not one: gpt-oss:20b
+under `response_format = "json"` answered nothing 1 time in 6 at 4 096 output tokens and 3 in 6 at
+8 192, spending the whole budget reasoning (G2 gate E, and again on an agent turn at I2 §10).
 
 Shipped profiles: `general.chat`, `general.reasoning`, `general.summarize`, `code.generate`,
 `code.review`, `code.debug`, `content.research_synthesis`, `content.outline`,
@@ -185,6 +202,7 @@ Applied in this order; the first failure records the rejection and stops evaluat
 | Task profile needs a context the provider will not be asked to serve | `context_not_configurable` | `ProviderCapabilities.context_configurable` |
 | Estimated context need > served context | `context_limit_exceeded` | Request + resolved profile |
 | Missing a required capability (tools, structured output, vision) | `capability_unsupported` | Provider + declared capabilities, and the request itself ([ADR-0075](../../adr/0075-a-request-carrying-tools-requires-tool-use-of-every-candidate.md)) |
+| A set `think` the provider cannot carry | `capability_unsupported`, `details.capability = "thinking_control"` | `ProviderCapabilities.thinking_control`, required by the profile's `execution.think` or the request's `sampling.think` ([ADR-0099](../../adr/0099-a-task-profile-may-ask-for-reduced-thinking.md)) |
 | Estimated VRAM need > free VRAM + headroom on **every** device | `insufficient_vram` | SweatMeter + estimate, evaluated per GPU ([ADR-0027](../../adr/0027-multi-gpu-semantics.md)) |
 | Estimated RAM need > free RAM | `insufficient_ram` | SweatMeter |
 | Capability score below `min_capability_scores` | `below_minimum_score` | Evidence |
