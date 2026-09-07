@@ -71,6 +71,16 @@ class TaskProfileExecution(BaseModel):
     json_schema_ref: str | None = Field(default=None)
     max_attempts: int = Field(default=1, ge=1)
     fallback_depth: int = Field(default=0, ge=0)
+    think: bool | None = Field(default=None)
+    """Whether this profile asks the provider to reason before answering (ADR-0099 rule 2).
+
+    ModelRack's ``SamplingParameters.think``, name for name and state for state. ``None`` — the
+    default — sends no control at all and builds a request byte-identical to one from before the
+    field existed; ``False`` asks for reasoning suppressed; ``True`` asks for it. A profile that
+    sets it either way **requires** ``thinking_control`` of every candidate, so a provider that
+    cannot carry the control is a named routing rejection rather than a ``CapabilityUnsupported``
+    raised after a model has already been chosen.
+    """
 
 
 class TaskProfileValidation(BaseModel):

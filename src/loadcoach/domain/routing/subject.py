@@ -112,6 +112,11 @@ class ProviderFacts:
         reported_served_context: The context the provider says it will serve, when it exposes one.
         supports_tool_use: Whether the provider accepts tool definitions.
         supports_structured_output: Whether it can be constrained to a JSON Schema.
+        supports_thinking_control: Whether the provider accepts a request-side thinking control
+            (ModelRack's ``ProviderCapabilities.thinking_control``). Gates a task profile's — or a
+            request's — ``think`` (ADR-0099 rule 4). A **provider** flag, deliberately not the
+            SetSpec vocabulary's neighbouring *model* flag ``thinking``, which says the model can
+            reason rather than that the wire can be told not to.
         supports_streaming: Whether it can produce incremental output.
         is_remote: Whether this provider is somewhere other than this machine. Gates
             ``allow_remote_providers`` and the cost factor.
@@ -132,6 +137,7 @@ class ProviderFacts:
     supports_tool_use: bool = False
     supports_structured_output: bool = False
     supports_streaming: bool = False
+    supports_thinking_control: bool = False
     is_remote: bool = False
     adapter_hot_swap: bool = False
     adapters_registered: bool | None = None

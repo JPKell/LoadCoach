@@ -152,6 +152,11 @@ class RouteRequest:
         require_capabilities: Capabilities this *request* needs, whatever its task profile
             requires — a body carrying tools requires ``tool_use`` (ADR-0075). Unioned with the
             profile's, so it can only narrow the field; it never scores and never loosens.
+        think: The request's own thinking control (``sampling.think``), or ``None`` when it set
+            none and the task profile's ``execution.think`` decides. Set either way, it requires
+            ``thinking_control`` of every candidate (ADR-0099 rule 4). Carried separately from
+            ``require_capabilities`` because ``thinking_control`` is a provider flag and not a
+            SetSpec capability, and ``requires_capabilities`` is validated against that vocabulary.
         overrides: Routing §10's overrides.
         data_classification: The caller's own declaration. **Not an override** — it selects
             nothing and relaxes nothing; it is one input to the
@@ -165,6 +170,7 @@ class RouteRequest:
     max_output_tokens: int | None = None
     constraints: TaskProfileConstraints | None = None
     require_capabilities: tuple[str, ...] = ()
+    think: bool | None = None
     overrides: RuntimeOverrides = field(default_factory=RuntimeOverrides)
     data_classification: str | None = None
 
@@ -586,6 +592,15 @@ def route(
             }
         )
     execution = profile.execution
+    # ADR-0099 rule 4: a set thinking control — the request's over the profile's, as `sampling_for`
+    # resolves it — requires `thinking_control` of every candidate, labelled with who asked.
+    requires_thinking_control = (
+        "request"
+        if request.think is not None
+        else "task_profile"
+        if execution.get("think") is not None
+        else None
+    )
     max_output_tokens = request.max_output_tokens or int(
         cast("int", execution.get("max_output_tokens", 1024))
     )
@@ -686,6 +701,7 @@ def route(
                 resident_devices=resident_devices or {},
                 circuit_breaker_details=circuit_breaker_details or {},
                 request_capabilities=request_capabilities,
+                requires_thinking_control=requires_thinking_control,
                 # A pin is not routed selection, so the evidence gate does not apply to it: an
                 # unmeasured adapter *is* pinnable, and every other hard constraint still runs
                 # (routing §10).

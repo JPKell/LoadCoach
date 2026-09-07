@@ -173,6 +173,28 @@ class GenerateBody(BaseModel):
             raise ValueError(message) from None
         return value
 
+    @field_validator("sampling")
+    @classmethod
+    def _think_is_a_switch(cls, value: dict[str, Any]) -> dict[str, Any]:
+        """Refuse a ``sampling.think`` that is neither a boolean nor ``null`` (ADR-0099 rule 3).
+
+        Args:
+            value: The caller's sampling overrides.
+
+        Returns:
+            ``value`` unchanged when it carries no ``think``, a ``null`` one, or a boolean.
+
+        Raises:
+            ValueError: ``think`` is present and is not a boolean. Refused here rather than passed
+                down, because a truthy string would reach the provider as "reason" when the caller
+                wrote ``"false"``, and every other state of this field is byte-visible on the wire.
+        """
+        think = value.get("think")
+        if think is not None and not isinstance(think, bool):
+            message = f"sampling.think must be true, false or null; got {think!r}"
+            raise ValueError(message)
+        return value
+
     @model_validator(mode="after")
     def _exactly_one_form(self) -> GenerateBody:
         """Refuse a body that supplies both a prompt and a transcript, or neither."""

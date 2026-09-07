@@ -370,6 +370,12 @@ class ConstraintInputs:
             weights at all, which cannot demand a measurement of nothing.
         caller_data_classification: The classification the caller declared, joined with the
             adapter's by ``max()`` (ADR-0065 rule 2). ``None`` when the caller declared none.
+        requires_thinking_control: Who asked for a thinking control — ``"task_profile"`` (the
+            profile's ``execution.think``), ``"request"`` (the request's ``sampling.think``) or
+            ``None`` when neither did. A set control requires ``thinking_control`` of the
+            provider, ADR-0075's mechanism for a fact that is **not** in the SetSpec capability
+            vocabulary, so it travels beside ``requires_capabilities`` rather than inside it
+            (ADR-0099 rule 5). The value is the ``required_by`` label the rejection carries.
         request_capabilities: The subset of ``requires_capabilities`` the *request* imposed
             rather than the task profile — today only ``tool_use``, from a body carrying tools
             (ADR-0075). Read only to label the rejection ``required_by``, so a caller can tell a
@@ -390,6 +396,7 @@ class ConstraintInputs:
     resident_devices: Mapping[str, frozenset[int]] = field(default_factory=dict)
     circuit_breaker_details: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
     request_capabilities: frozenset[str] = frozenset()
+    requires_thinking_control: str | None = None
     require_adapter_evidence: bool = True
     top_weighted_capability: str | None = None
     caller_data_classification: str | None = None
@@ -577,6 +584,26 @@ def evaluate_constraints(
                 (),
                 None,
             )
+
+    if (
+        inputs.requires_thinking_control is not None
+        and not subject.provider.supports_thinking_control
+    ):
+        # ADR-0099 rule 4: the same rejection ADR-0075 gives a request carrying tools, for the
+        # same reason — a control the wire cannot carry is a routing answer with a reason, never
+        # a CapabilityUnsupported from the provider edge after a model has been chosen.
+        return (
+            Rejection(
+                "capability_unsupported",
+                {
+                    "capability": "thinking_control",
+                    "provider_kind": facts.provider_kind,
+                    "required_by": inputs.requires_thinking_control,
+                },
+            ),
+            (),
+            None,
+        )
 
     fits: tuple[DeviceFit, ...] = ()
     target_gpu_index: int | None = None

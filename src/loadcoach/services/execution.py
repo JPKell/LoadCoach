@@ -755,7 +755,14 @@ def _problems_text(outcome: ValidationOutcome) -> str:
 def sampling_for(
     request: GenerateRequest, execution_policy: Mapping[str, Any]
 ) -> SamplingParameters:
-    """The sampling parameters an attempt uses: the request's overrides over the profile's."""
+    """The sampling parameters an attempt uses: the request's overrides over the profile's.
+
+    ``think`` (ADR-0099 rules 2 and 3) resolves the same way ``temperature`` and
+    ``max_output_tokens`` do. Unset on both sides it stays ``None``, which is the whole of
+    LoadCoach 1.1.0's wire: ModelRack sends no thinking control at all, so the request is
+    byte-identical to one built before the field existed. An explicit ``null`` from a caller reads
+    as unset, as it does for the other two.
+    """
     return SamplingParameters(
         temperature=cast(
             "float | None",
@@ -767,6 +774,7 @@ def sampling_for(
         ),
         top_p=cast("float | None", request.sampling.get("top_p")),
         seed=cast("int | None", request.sampling.get("seed")),
+        think=cast("bool | None", request.sampling.get("think", execution_policy.get("think"))),
     )
 
 
@@ -1835,6 +1843,9 @@ def execute(
                 # served request whose tools quietly evaporated, and never a CapabilityUnsupported
                 # from the provider edge after a model has already been chosen.
                 require_capabilities=("tool_use",) if request.tools else (),
+                # ADR-0099 rule 4: the request's own control, if it set one, so routing can label
+                # the rejection `required_by: "request"` rather than blaming the task profile.
+                think=cast("bool | None", request.sampling.get("think")),
                 overrides=request.overrides or RuntimeOverrides(),
                 data_classification=request.data_classification,
             ),
@@ -2094,6 +2105,7 @@ def provider_facts_for(
         supports_tool_use=capabilities.tool_calling,
         supports_structured_output=capabilities.structured_output,
         supports_streaming=capabilities.streaming,
+        supports_thinking_control=capabilities.thinking_control,
         is_remote=health.is_remote,
         adapter_hot_swap=capabilities.adapter_hot_swap,
         adapters_registered=adapters_registered,

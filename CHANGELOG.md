@@ -7,6 +7,22 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Added
+
+- **A task profile may ask for reduced thinking.** `execution.think` — `true`, `false` or unset —
+  is ModelRack's `SamplingParameters.think`, name for name and state for state, and
+  `sampling.think` overrides it per request exactly as `sampling.temperature` and
+  `sampling.max_output_tokens` do. Unset on both sides sends no control and builds the request
+  1.1.0 built, byte for byte. A `think` that is set **requires `thinking_control` of every
+  candidate at routing**: a provider that cannot carry the control is rejected with
+  `capability_unsupported`, `details.capability = "thinking_control"` and `details.required_by`
+  naming the profile or the request — never a `CapabilityUnsupported` raised after a model has
+  been chosen, and never a request that quietly differs from its profile
+  ([ADR-0099](docs/adr/0099-a-task-profile-may-ask-for-reduced-thinking.md)). `thinking_control`
+  is a provider flag and stays out of `requires_capabilities`, which is validated against the
+  SetSpec capability vocabulary. A `sampling.think` that is neither boolean nor `null` is a
+  `VALIDATION_ERROR`.
+
 ### Fixed
 
 - **`GET /models` renders `provider_name` and `is_remote` on every entry**, under the names the

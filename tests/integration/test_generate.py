@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from baseaicore import UNSUPPORTED, ModelDescriptor, ModelIdentity
+from baseaicore import UNSUPPORTED, ModelDescriptor, ModelIdentity, SuiteError
 from modelrack import (
     FinishReason,
     GenerationRequest,
@@ -585,3 +585,94 @@ def test_the_usage_object_stays_additive_for_a_1_0_0_client(tmp_path: Path) -> N
         "cache_read_tokens",
         "thinking_tokens",
     }
+
+
+# --- the thinking control (ADR-0099) ------------------------------------------------------
+
+
+def _asking_for(think: bool) -> tuple[Any, ...]:
+    """The shipped profiles with `content.article_draft` asking for a thinking control."""
+    return tuple(
+        profile.model_copy(
+            update={"execution": profile.execution.model_copy(update={"think": think})}
+        )
+        if profile.profile_id == "content.article_draft"
+        else profile
+        for profile in read_task_profiles_file()
+    )
+
+
+def test_a_profile_with_no_think_builds_the_request_1_1_0_built(tmp_path: Path) -> None:
+    """ADR-0099 rule 2's byte-identical promise, asserted at LoadCoach's layer.
+
+    H1 asserted it at ModelRack's: `SamplingParameters` with `think=None` is the value a request
+    built before the field existed carried. This is the other end of the same thread — a profile
+    that says nothing about thinking must still produce exactly that value, so 1.1.1 changes no
+    wire for any caller who does not ask.
+    """
+    from modelrack import SamplingParameters
+
+    database, provider = _setup(tmp_path)
+    try:
+        execute(
+            database,
+            GenerateRequest(task="content.article_draft", prompt="hello"),
+            _context(provider),
+        )
+    finally:
+        database.close()
+
+    sent = provider.requests[0].sampling
+    assert sent.think is None
+    assert sent == SamplingParameters(
+        temperature=sent.temperature,
+        max_output_tokens=sent.max_output_tokens,
+        top_p=None,
+        seed=None,
+    )
+
+
+def test_the_think_a_profile_sets_reaches_the_wire_and_a_request_overrides_it(
+    tmp_path: Path,
+) -> None:
+    """ADR-0099 rules 2 and 3: profile to wire, and `sampling.think` over the profile."""
+    database, provider = _setup(tmp_path)
+    import_task_profiles(database, _asking_for(False), now=NOW)
+    try:
+        execute(
+            database,
+            GenerateRequest(task="content.article_draft", prompt="hello"),
+            _context(provider, supports_thinking_control=True),
+        )
+        execute(
+            database,
+            GenerateRequest(task="content.article_draft", prompt="hello", sampling={"think": True}),
+            _context(provider, supports_thinking_control=True),
+        )
+    finally:
+        database.close()
+
+    assert [request.sampling.think for request in provider.requests] == [False, True]
+
+
+def test_a_provider_that_cannot_carry_think_is_a_named_routing_rejection(tmp_path: Path) -> None:
+    """ADR-0099 rule 4, end to end: the refusal is routing's, with a reason, before any call."""
+    database, provider = _setup(tmp_path)
+    import_task_profiles(database, _asking_for(False), now=NOW)
+    try:
+        with pytest.raises(SuiteError) as raised:
+            execute(
+                database,
+                GenerateRequest(task="content.article_draft", prompt="hello"),
+                _context(provider, supports_thinking_control=False),
+            )
+    finally:
+        database.close()
+
+    assert raised.value.code == "NO_ELIGIBLE_MODEL"
+    rejected = raised.value.details["candidates"]
+    assert [entry["reason"] for entry in rejected] == ["capability_unsupported"]
+    assert rejected[0]["detail"]["capability"] == "thinking_control"
+    assert rejected[0]["detail"]["required_by"] == "task_profile"
+    # Nothing was sent: the model was never chosen.
+    assert provider.requests == []

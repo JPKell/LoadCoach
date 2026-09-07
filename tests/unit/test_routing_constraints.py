@@ -306,6 +306,42 @@ def test_capability_unsupported_names_the_capability() -> None:
     assert rejection.detail["capability"] == "tool_use"
 
 
+def test_a_set_think_requires_thinking_control_and_names_who_asked() -> None:
+    """ADR-0099 rule 4: the profile's control is a routing rejection, not a provider refusal."""
+    estimate = estimate_vram(
+        size_bytes=1 * GIB, served_context=8192, layers=1, kv_heads=1, head_dim=8
+    )
+    rejection, _, _ = evaluate_constraints(
+        _subject(provider=ProviderFacts(supports_thinking_control=False)),
+        estimate,
+        ConstraintInputs(requires_thinking_control="task_profile"),
+    )
+    assert rejection is not None
+    assert rejection.reason == "capability_unsupported"
+    assert rejection.detail["capability"] == "thinking_control"
+    assert rejection.detail["required_by"] == "task_profile"
+
+    from_request, _, _ = evaluate_constraints(
+        _subject(provider=ProviderFacts(supports_thinking_control=False)),
+        estimate,
+        ConstraintInputs(requires_thinking_control="request"),
+    )
+    assert from_request is not None
+    assert from_request.detail["required_by"] == "request"
+
+    # A provider that carries the control is not rejected for it, and a profile that asks for
+    # nothing never imposes the requirement at all.
+    for inputs in (
+        ConstraintInputs(requires_thinking_control="task_profile"),
+        ConstraintInputs(),
+    ):
+        provider = ProviderFacts(
+            supports_thinking_control=inputs.requires_thinking_control is not None
+        )
+        allowed, _, _ = evaluate_constraints(_subject(provider=provider), estimate, inputs)
+        assert allowed is None
+
+
 def test_two_gpus_are_never_summed_and_the_rejection_names_both() -> None:  # ADR-0027 §2
     """14 GB model, 9.8 GB free on GPU 0 and 7.1 GB on GPU 1: 16.9 GB total, and it does not fit."""
     subject = _subject(size_bytes=13 * GIB, served=8192)
