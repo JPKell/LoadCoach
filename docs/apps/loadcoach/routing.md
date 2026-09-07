@@ -85,6 +85,41 @@ and it means something else. The lever exists because the output budget is not o
 under `response_format = "json"` answered nothing 1 time in 6 at 4 096 output tokens and 3 in 6 at
 8 192, spending the whole budget reasoning (G2 gate E, and again on an agent turn at I2 §10).
 
+**Which installed models honour it, measured** (I6, 2026-09-07; Ollama `0.32.13` on the reference
+machine). All ten models installed there, two streamed `POST /api/chat` requests each — `think:
+true` then `think: false` — over **one** prompt for every model: PromptCadence's `planner.draft`
+1.1.0 rendered in I3 gate D's shape (287-character system turn, 1 976-character user turn) under
+`tools.plan`'s execution block, `format: "json"`, `temperature = 0.1`, `num_predict = 4096`. The
+digests, the raw run log and the exact request bodies are in
+[`history/I6_HANDOFF.md`](../../history/I6_HANDOFF.md) §4; nothing here judges answer quality.
+
+| Model (Ollama tag) | `think: true` | `think: false` |
+|---|---|---|
+| `gpt-oss:20b` | `thinking` 2 424 chars, `content` empty, `done_reason=stop` | **Ignores it.** No `thinking` key at all; the reasoning arrives as `content` ("We need to produce a plan…"), so `require_valid_json` fails — and the stream then ends with no terminal chunk (see below) |
+| `qwen3.5:9b-q8_0` | `thinking` 15 988 chars, `content` empty, `done_reason=length` — the whole 4 096 budget | Honours it. No `thinking`; 1 106 chars of valid JSON, `stop` |
+| `sorc/qwen3.5-heretic:9b` | `thinking` 15 036 chars, `content` empty, `length` | Honours it. 1 345 chars of valid JSON, `stop` |
+| `SetneufPT/Qwen3.5-9B-Coder_Q4_256k_ABL_16GB-GPU:latest` | `thinking` 13 617 chars, `content` empty, `length` | Honours it. 778 chars of valid JSON, `stop` |
+| `fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:IQ2_M` | `thinking` 14 941 chars, `content` empty, `length` | Honours it. 1 104 chars of valid JSON, `stop` |
+| `gemma4:12b-it-q8_0` | `thinking` 12 250 chars, `content` empty, `length` | Honours it. 1 026 chars of valid JSON, `stop` |
+| `ornith:9b` | `thinking` 288 chars **and** 721 chars of valid JSON, `stop` | Honours it. 251 chars of valid JSON, `stop` |
+| `hk:latest` | `thinking` 2 713 chars **and** 611 chars of valid JSON, `stop` | Honours it. 243 chars of valid JSON, `stop` |
+| `HammerAI/gemma-4-e4b-heretic:e4b-q8_0` | `thinking` 1 902 chars **and** 817 chars of valid JSON, `stop` | Honours it. 243 chars of valid JSON, `stop` |
+| `deepseek-coder-v2:latest` | Refused: HTTP 400, `"deepseek-coder-v2:latest" does not support thinking` | **Crashes the Ollama server** (3 of 3, with and without `format: "json"`); systemd restarts it |
+
+Three facts an operator should carry out of that table. **Eight of the ten honour the control**, and
+on those eight `think = false` is the difference between spending the whole output budget on
+reasoning and answering in a second — six of the eight returned `done_reason=length` with an empty
+`content` under `think: true`, which is the failure mode the lever exists for. **`gpt-oss:20b` does
+not honour it**: it relocates its reasoning into `content`, which fails `require_valid_json`, and
+under `format: "json"` its stream then dies — measured 6 of 6 straight to Ollama and 1 of 3 through
+ModelRack, with `ProviderProtocolError: The stream from … ended without a terminal chunk` (I6 gate
+C: Ollama closes the stream, `OllamaProvider` reports it honestly, and LoadCoach classifies it
+`protocol_error` and retries the same candidate before falling back). It is the pair that fails —
+`think: false` **and** `format: "json"`; `think: false` alone completed 3 of 3. **`think = false` is
+not free of risk on a model that does not carry the control**: `deepseek-coder-v2:latest` rejects
+`think: true` with a clean 400 and takes the whole Ollama process down on `think: false`, so a
+profile that sets the field is only as safe as the candidates routing can reach.
+
 Shipped profiles: `general.chat`, `general.reasoning`, `general.summarize`, `code.generate`,
 `code.review`, `code.debug`, `content.research_synthesis`, `content.outline`,
 `content.article_draft`, `content.rewrite`, `content.edit`, `content.review`,
