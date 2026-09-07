@@ -74,7 +74,11 @@ loadcoach db restore --source <file> --confirm
 
 Every migration takes a backup first and restores it if the migration fails
 (`storage.backup_retention`, 5). On PostgreSQL the command prints the `pg_dump`/`pg_restore`
-invocation rather than running it.
+invocation rather than running it. A database ahead of the installed code refuses at startup with
+`SchemaAhead`, naming both revisions and the backup directory; the downgrade path is: stop the
+application, restore that backup, install the older version — proved end to end by
+`tests/integration/test_downgrade_and_schema_ahead.py`, with the backup/restore round trip itself
+proved on both dialects by `tests/integration/test_backup_restore.py`.
 
 ## Evidence
 
