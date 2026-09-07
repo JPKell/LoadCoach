@@ -9,6 +9,9 @@ packaging and release standards §3.
 
 ### Added
 
+- `tests/unit/test_every_command_has_help.py`, walking `typer.main.get_command(app)`
+  recursively so every command and option must carry help text (M9 audit Group 5, item D4).
+
 - `tests/unit/test_troubleshooting_covers_doctor.py`, ported from FreeWeight, holding
   `docs/troubleshooting.md` to naming every check `doctor` runs (M9 audit Group 5, item D6).
 
