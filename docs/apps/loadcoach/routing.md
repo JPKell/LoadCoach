@@ -111,8 +111,8 @@ on those eight `think = false` is the difference between spending the whole outp
 reasoning and answering in a second — six of the eight returned `done_reason=length` with an empty
 `content` under `think: true`, which is the failure mode the lever exists for. **`gpt-oss:20b` does
 not honour it**: it relocates its reasoning into `content`, which fails `require_valid_json`, and
-under `format: "json"` its stream then dies — measured 6 of 6 straight to Ollama and 1 of 3 through
-ModelRack, with `ProviderProtocolError: The stream from … ended without a terminal chunk` (I6 gate
+under `format: "json"` its stream then dies — **12 of 13** requests straight to Ollama and 1 of
+3 through ModelRack, with `ProviderProtocolError: The stream from … ended without a terminal chunk` (I6 gate
 C: Ollama closes the stream, `OllamaProvider` reports it honestly, and LoadCoach classifies it
 `protocol_error` and retries the same candidate before falling back). It is the pair that fails —
 `think: false` **and** `format: "json"`; `think: false` alone completed 3 of 3. **`think = false` is
