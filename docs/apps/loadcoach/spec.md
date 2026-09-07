@@ -500,5 +500,7 @@ every pre-existing row is a bare-base subject
 * Batch/affinity scheduling: grouping jobs by model to amortize load time.
 * Cost-aware routing for remote providers.
 * Speculative execution of a cheap model with escalation on validation failure.
-* A `LoadCoachClient` package, once a second external consumer exists
-  ([ADR-0011](../../adr/0011-shared-package-boundaries.md)).
+* A `LoadCoachClient` package. The second consumer (PromptCadence) arrived and extraction was
+  declined for now — the two clients bind different things; the trigger is a third consumer or
+  typed response bodies in the OpenAPI document
+  ([ADR-0107](../../adr/0107-two-loadcoach-clients-are-not-yet-one-package.md)).

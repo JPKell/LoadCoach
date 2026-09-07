@@ -236,7 +236,11 @@ Notes:
   `"unsupported"` when it was never reported, which is not a number and must not be totalled as
   one ([ADR-0016](../../adr/0016-unavailable-is-not-zero.md) rule 4,
   [ADR-0070](../../adr/0070-an-absent-token-class-is-zero-only-where-the-protocol-cannot-bill-it.md)).
-  The same `usage` object appears in the job document `GET /jobs/{id}` returns (§5).
+  One exception, kept for `/api/v1`'s lifetime: `input_tokens` and `output_tokens` render `null`
+  rather than `"unsupported"` when unreported, because their type shipped in 1.0 and cannot change
+  inside the major; read `null` on those two keys as unavailable, never as zero
+  ([ADR-0105](../../adr/0105-a-shipped-usage-object-keeps-null-until-api-v2.md)). The same `usage` object appears in the job document
+  `GET /jobs/{id}` returns (§5).
 * `idempotency_key` makes a retried POST safe: the same key returns the original job rather than
   creating a second one. Keys are scoped **per caller**, not globally, so two clients cannot collide;
   the caller is the authenticated token's name, or `X-Client-Name` on an unauthenticated loopback
