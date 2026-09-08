@@ -26,7 +26,10 @@ dependencies = [
     "baseaicore>=0.4.2,<0.5",
     # 0.5 is the floor for `model.adapter_manifest` 1.0, which the adapter registry reads rather
     # than re-defining (ADR-0061). Widened to admit 0.6 with the rest of the 0.6 movement.
-    "setspec>=0.5,<0.7",
+    # Floor 0.6 (2026-09-08, loadcoach 1.1.6): `EvidenceBundleV1_1In`/`Out` and the
+    # `capability.evidence` 1.1 sibling classes (ADR-0068) are setspec 0.6; the compatibility
+    # matrix's `lowest` cell proved 0.5 imports and then fails at the first bundle.
+    "setspec>=0.6,<0.7",
     # 0.7 is `LlamaCppProvider`, `list_adapters()`, `register_adapters()` and `adapter_hot_swap`.
     "modelrack>=0.7,<0.8",
     "sweatmeter>=0.4,<0.5",

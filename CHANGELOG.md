@@ -7,6 +7,13 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Changed
+
+- `setspec` floor raised from `0.5` to `0.6`: this application imports the `capability.evidence`
+  1.1 sibling classes (`EvidenceBundleV1_1In`/`Out`, ADR-0068), which setspec 0.6 introduced, so
+  a resolver honouring the old floor installed a build that failed at import. Found by the
+  cross-repository compatibility matrix's `lowest` cell (row L6).
+
 ### Added
 
 - `tests/unit/test_readme_version.py` — asserts the version README.md states after its `Status:`
