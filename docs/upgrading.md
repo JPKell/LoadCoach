@@ -21,6 +21,8 @@ is reported with the backup to restore.
 
 | Version | Migration | What it adds |
 |---|---|---|
+| 1.1.5 | none | No schema change — a `mirrorwall` dependency-floor fix (so the declared lowest range resolves) only; nothing behaves differently for an operator. |
+| 1.1.4 | none | No schema change — test and documentation additions only; nothing behaves differently for an operator. |
 | 1.1.3 | none | No schema change — only the `usage` wire spelling moves (below). |
 | 1.1.2 | none | No schema change — precedence fix only (below). |
 | 1.1.1 | none | No schema change — a render fix and a new task-profile field, `execution.think` (config, not schema). |

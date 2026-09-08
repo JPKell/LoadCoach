@@ -7,6 +7,20 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Added
+
+- `tests/unit/test_readme_version.py` — asserts the version README.md states after its `Status:`
+  line equals `__about__.__version__`, so a release cannot leave the README stale (M9 re-audit,
+  row L7).
+
+### Fixed
+
+- README's `Status:` line still read `1.1.3` in the repository with `v1.1.2` tagged and PyPI
+  serving `1.0.0`; it now states `1.1.5` in the repository, tagged locally as `v1.1.5` (not yet
+  pushed), with PyPI still serving `1.1.4`.
+- `docs/upgrading.md`'s migration-notes table stopped at `1.1.3`; it now covers `1.1.4` and
+  `1.1.5` (both dependency-only, no operator behaviour change).
+
 ## [1.1.5] — 2026-09-07
 
 ### Changed
