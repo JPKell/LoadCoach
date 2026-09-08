@@ -6,10 +6,11 @@ re-probed with a single job. The open state, its reason and its expiry are visib
 explanation of any decision that skipped the model.
 
 The *mechanism* is this module's: a state machine per model — ``closed``, ``open``,
-``half_open`` — driven by samples the caller supplies. Phase 5 feeds it ``job_attempts`` outcomes
-in the window; Phase 7 will drive it from ``reliability_stats`` and add the re-probe prompt record.
-The input is a sequence of ``(instant, succeeded)`` pairs precisely so that swap costs nothing
-here. Thresholds are named constants with a reason each, the same way routing's priors are.
+``half_open`` — driven by samples the caller supplies. The worker feeds it from
+``reliability_stats`` (:mod:`loadcoach.services.reliability`), which mirror ``job_attempts``. The
+input is a sequence of ``(instant, succeeded)`` pairs precisely so the source can change without
+touching this module. Thresholds are named constants with a reason each, the same way routing's
+priors are.
 """
 
 from __future__ import annotations

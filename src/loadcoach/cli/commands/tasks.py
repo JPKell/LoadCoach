@@ -7,11 +7,11 @@ Not in the Phase 2 file list verbatim, but required by its Work item ("CLI equiv
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Annotated
 
 import typer
+
+from loadcoach.cli._backend import open_database
 
 if TYPE_CHECKING:
     from loadcoach.config import Settings
@@ -20,26 +20,6 @@ if TYPE_CHECKING:
 __all__ = ["app"]
 
 app = typer.Typer(help="Task profile inspection and validation.")
-
-
-@contextmanager
-def _open_database(config: str | None) -> Iterator[tuple[Database, Settings]]:
-    from loadcoach.config import ConfigurationError, load_settings
-    from loadcoach.services.database import Database
-
-    try:
-        loaded = load_settings(config_path=config)
-    except ConfigurationError as exc:
-        typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
-        raise typer.Exit(3) from exc
-    storage = loaded.settings.storage
-    if storage.database_url is None:  # pragma: no cover — StorageSettings always fills this in
-        typer.echo("Error: no database_url configured (CONFIGURATION_ERROR)", err=True)
-        raise typer.Exit(3)
-    with Database.from_url(
-        storage.database_url, statement_timeout_ms=storage.statement_timeout_ms
-    ) as database:
-        yield database, loaded.settings
 
 
 def _ensure_imported(database: Database, settings: Settings) -> None:
@@ -79,7 +59,7 @@ def list_tasks(
     """
     from loadcoach.services.task_profiles import list_stored_task_profiles
 
-    with _open_database(config) as (database, settings):
+    with open_database(config) as (database, settings):
         _ensure_imported(database, settings)
         profiles = list_stored_task_profiles(database)
 
@@ -111,7 +91,7 @@ def show_task(
     """
     from loadcoach.services.task_profiles import list_stored_task_profiles
 
-    with _open_database(config) as (database, settings):
+    with open_database(config) as (database, settings):
         _ensure_imported(database, settings)
         profiles = list_stored_task_profiles(database)
 

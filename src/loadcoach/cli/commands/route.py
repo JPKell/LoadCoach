@@ -9,41 +9,19 @@ telemetry snapshot — the same three values ``POST /route`` passes, obtained th
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Annotated
 
 import typer
 
+from loadcoach.cli._backend import open_database
+
 if TYPE_CHECKING:
     from sweatmeter import TelemetrySnapshot
 
-    from loadcoach.config import Settings
-    from loadcoach.services.database import Database
 
 __all__ = ["app"]
 
 app = typer.Typer(help="Explain a routing decision without executing it.")
-
-
-@contextmanager
-def _open(config: str | None) -> Iterator[tuple[Database, Settings]]:
-    from loadcoach.config import ConfigurationError, load_settings
-    from loadcoach.services.database import Database
-
-    try:
-        loaded = load_settings(config_path=config)
-    except ConfigurationError as exc:
-        typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
-        raise typer.Exit(3) from exc
-    storage = loaded.settings.storage
-    if storage.database_url is None:  # pragma: no cover — StorageSettings always fills this in
-        typer.echo("Error: no database_url configured (CONFIGURATION_ERROR)", err=True)
-        raise typer.Exit(3)
-    with Database.from_url(
-        storage.database_url, statement_timeout_ms=storage.statement_timeout_ms
-    ) as database:
-        yield database, loaded.settings
 
 
 @app.command("explain")
@@ -107,7 +85,7 @@ def explain(
         task_profiles_path_for,
     )
 
-    with _open(config) as (database, settings):
+    with open_database(config) as (database, settings):
         import_task_profiles(
             database,
             read_task_profiles_file(task_profiles_path_for(settings.routing)),

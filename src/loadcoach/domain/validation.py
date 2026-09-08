@@ -163,7 +163,7 @@ def _reject_unsupported(schema: Any, path: str = "$") -> None:
             )
             raise SchemaUnsupported(message)
         for key, value in schema.items():
-            if key in {"properties"} and isinstance(value, dict):
+            if key == "properties" and isinstance(value, dict):
                 for name, sub in value.items():
                     _reject_unsupported(sub, f"{path}.{name}")
             elif key in {"items", "additionalProperties"} and isinstance(value, dict):
@@ -243,15 +243,17 @@ def _check_node(
 
     if isinstance(value, dict):
         properties = schema.get("properties", {})
-        for name in schema.get("required", []):
-            if name not in value:
-                problems.append({"path": f"{path}.{name}", "problem": "required but missing"})
+        problems.extend(
+            {"path": f"{path}.{name}", "problem": "required but missing"}
+            for name in schema.get("required", [])
+            if name not in value
+        )
         if schema.get("additionalProperties") is False:
-            for name in value:
-                if name not in properties:
-                    problems.append(
-                        {"path": f"{path}.{name}", "problem": "not allowed by the schema"}
-                    )
+            problems.extend(
+                {"path": f"{path}.{name}", "problem": "not allowed by the schema"}
+                for name in value
+                if name not in properties
+            )
         for name, sub_schema in properties.items():
             if name in value and isinstance(sub_schema, dict):
                 _check_node(value[name], sub_schema, f"{path}.{name}", problems)

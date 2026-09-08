@@ -43,7 +43,8 @@ def generate(
     from baseaicore import SuiteError
     from modelrack import ProviderError
 
-    from loadcoach.cli.commands.route import _open, _snapshot
+    from loadcoach.cli._backend import open_database
+    from loadcoach.cli.commands.route import _snapshot
     from loadcoach.domain.authorization import LOCAL
     from loadcoach.infrastructure.providers.factory import build_provider
     from loadcoach.services.execution import (
@@ -69,7 +70,7 @@ def generate(
         raise typer.Exit(2)
     text = prompt if prompt is not None else Path(str(prompt_file)).read_text(encoding="utf-8")
 
-    with _open(config) as (database, settings):
+    with open_database(config) as (database, settings):
         import_task_profiles(
             database,
             read_task_profiles_file(task_profiles_path_for(settings.routing)),

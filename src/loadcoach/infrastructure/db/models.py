@@ -91,7 +91,7 @@ def utcnow() -> datetime:
 class Model(Base):
     """A discovered or declared model. Identity columns identical to FreeWeight's (data model §2).
 
-    Discovery (Phase 2) populates this table; nothing writes to it yet.
+    Discovery populates this table (:mod:`loadcoach.services.models`).
     """
 
     __tablename__ = "models"

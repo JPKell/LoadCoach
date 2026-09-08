@@ -8,38 +8,18 @@ discipline as every other command module.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Annotated
 
 import typer
 
+from loadcoach.cli._backend import open_database
+
 if TYPE_CHECKING:
-    from loadcoach.services.database import Database
+    pass
 
 __all__ = ["app"]
 
 app = typer.Typer(help="Model discovery and inspection.")
-
-
-@contextmanager
-def _open_database(config: str | None) -> Iterator[Database]:
-    from loadcoach.config import ConfigurationError, load_settings
-    from loadcoach.services.database import Database
-
-    try:
-        loaded = load_settings(config_path=config)
-    except ConfigurationError as exc:
-        typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
-        raise typer.Exit(3) from exc
-    storage = loaded.settings.storage
-    if storage.database_url is None:  # pragma: no cover — StorageSettings always fills this in
-        typer.echo("Error: no database_url configured (CONFIGURATION_ERROR)", err=True)
-        raise typer.Exit(3)
-    with Database.from_url(
-        storage.database_url, statement_timeout_ms=storage.statement_timeout_ms
-    ) as database:
-        yield database
 
 
 @app.command("list")
@@ -58,7 +38,7 @@ def list_models(
     """
     from loadcoach.services.models import list_registry
 
-    with _open_database(config) as database:
+    with open_database(config) as (database, _settings):
         entries = list_registry(database)
 
     if json_output:
@@ -101,7 +81,7 @@ def show_model(
     """
     from loadcoach.services.models import list_registry
 
-    with _open_database(config) as database:
+    with open_database(config) as (database, _settings):
         entries = list_registry(database)
 
     matches = [entry for entry in entries if entry.canonical_id == canonical_id]
@@ -159,7 +139,7 @@ def refresh_models(
 
     loaded = load_settings(config_path=config)
     registrations = build_registrations(loaded.settings)
-    with _open_database(config) as database:
+    with open_database(config) as (database, _settings):
         try:
             outcome = discover_models(
                 database, registrations, now=datetime.now(UTC), principal=LOCAL
@@ -202,7 +182,7 @@ def residency(
     """
     from loadcoach.services.status import residency_rows
 
-    with _open_database(config) as database:
+    with open_database(config) as (database, _settings):
         rows = residency_rows(database)
     if json_output:
         typer.echo(json.dumps(rows))

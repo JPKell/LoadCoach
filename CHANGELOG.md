@@ -7,6 +7,15 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Changed
+
+- One `loadcoach.cli._backend` (`load_settings_or_exit`, `open_database`, `open_loaded_database`)
+  replaces the eleven copies of "resolve configuration and open the database, or exit 3" the CLI
+  command modules each carried. Exit codes and messages unchanged.
+- `circuit_breaker` and `models` docstrings describe the shipped application (the breaker is fed
+  from `reliability_stats`; discovery writes `models`), not the phase plan that built it.
+- Small tightenings ruff's SIM/PERF/C4 families flagged. No behaviour change.
+
 ## [1.2.0] — 2026-09-08
 
 ### Added

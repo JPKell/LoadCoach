@@ -7,39 +7,18 @@ scheduler reads every second, so they reach it across the process boundary and s
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Annotated
 
 import typer
 
+from loadcoach.cli._backend import open_database
+
 if TYPE_CHECKING:
-    from loadcoach.config import Settings
-    from loadcoach.services.database import Database
+    pass
 
 __all__ = ["app"]
 
 app = typer.Typer(help="Queue status and operator controls.")
-
-
-@contextmanager
-def _open(config: str | None) -> Iterator[tuple[Database, Settings]]:
-    from loadcoach.config import ConfigurationError, load_settings
-    from loadcoach.services.database import Database
-
-    try:
-        loaded = load_settings(config_path=config)
-    except ConfigurationError as exc:
-        typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
-        raise typer.Exit(3) from exc
-    storage = loaded.settings.storage
-    if storage.database_url is None:  # pragma: no cover — StorageSettings always fills this in
-        typer.echo("Error: no database_url configured (CONFIGURATION_ERROR)", err=True)
-        raise typer.Exit(3)
-    with Database.from_url(
-        storage.database_url, statement_timeout_ms=storage.statement_timeout_ms
-    ) as database:
-        yield database, loaded.settings
 
 
 @app.command("status")
@@ -60,7 +39,7 @@ def status(
 
     from loadcoach.services.status import queue_status
 
-    with _open(config) as (database, settings):
+    with open_database(config) as (database, settings):
         report = queue_status(database, settings=settings, runtime=None, now=datetime.now(UTC))
     if json_output:
         typer.echo(json.dumps(report))
@@ -82,7 +61,7 @@ def _set_flag(config: str | None, name: str, value: bool) -> dict[str, bool]:  #
 
     from loadcoach.services.queue import queue_flags, set_queue_flag
 
-    with _open(config) as (database, _settings):
+    with open_database(config) as (database, _settings):
         set_queue_flag(database, name, value, now=datetime.now(UTC))
         if name == "queue.paused" and not value:
             set_queue_flag(database, "queue.draining", False, now=datetime.now(UTC))
@@ -134,7 +113,7 @@ def drain(
 
     from loadcoach.services.queue import queue_snapshot, set_queue_flag
 
-    with _open(config) as (database, settings):
+    with open_database(config) as (database, settings):
         set_queue_flag(database, "queue.draining", True, now=datetime.now(UTC))
         deadline = time.monotonic() + timeout_seconds
         while True:

@@ -8,15 +8,14 @@ load at module level, per the same startup discipline as every other command mod
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Annotated
 
 import typer
 
+from loadcoach.cli._backend import load_settings_or_exit, open_loaded_database
+
 if TYPE_CHECKING:
-    from loadcoach.config import LoadedSettings
-    from loadcoach.services.database import Database
+    pass
 
 __all__ = ["app"]
 
@@ -24,30 +23,6 @@ app = typer.Typer(help="FreeWeight evidence import and inspection.")
 
 _ConfigOption = Annotated[str | None, typer.Option("--config", help="Path to a config.toml file.")]
 _JsonOption = Annotated[bool, typer.Option("--json", help="Print JSON instead of a table.")]
-
-
-def _load(config: str | None) -> LoadedSettings:
-    from loadcoach.config import ConfigurationError, load_settings
-
-    try:
-        return load_settings(config_path=config)
-    except ConfigurationError as exc:
-        typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
-        raise typer.Exit(3) from exc
-
-
-@contextmanager
-def _open_database(loaded: LoadedSettings) -> Iterator[Database]:
-    from loadcoach.services.database import Database
-
-    storage = loaded.settings.storage
-    if storage.database_url is None:  # pragma: no cover — StorageSettings always fills this in
-        typer.echo("Error: no database_url configured (CONFIGURATION_ERROR)", err=True)
-        raise typer.Exit(3)
-    with Database.from_url(
-        storage.database_url, statement_timeout_ms=storage.statement_timeout_ms
-    ) as database:
-        yield database
 
 
 def _report(outcome: object, *, json_output: bool) -> None:
@@ -116,10 +91,10 @@ def import_evidence(
 
     from datetime import UTC, datetime
 
-    loaded = _load(config)
+    loaded = load_settings_or_exit(config)
     evidence_settings = loaded.settings.evidence
     now = datetime.now(UTC)
-    with _open_database(loaded) as database:
+    with open_loaded_database(loaded) as database:
         try:
             if url is not None:
                 with FreeWeightClient(policy_from_settings(evidence_settings)) as client:
@@ -198,9 +173,9 @@ def show_evidence(
         )
         raise typer.Exit(2)
 
-    loaded = _load(config)
+    loaded = load_settings_or_exit(config)
     configured = loaded.settings.evidence.freeweight_url.strip()
-    with _open_database(loaded) as database:
+    with open_loaded_database(loaded) as database:
         overview = evidence_overview(database, configured_url=configured)
         coverage = capability_coverage(database)
         page = query_evidence(
@@ -285,9 +260,9 @@ def show_sources(config: _ConfigOption = None, json_output: _JsonOption = False)
     """
     from loadcoach.services.evidence import evidence_overview, list_sources
 
-    loaded = _load(config)
+    loaded = load_settings_or_exit(config)
     configured = loaded.settings.evidence.freeweight_url.strip()
-    with _open_database(loaded) as database:
+    with open_loaded_database(loaded) as database:
         sources = list_sources(database, configured_url=configured)
         overview = evidence_overview(database, configured_url=configured)
 
@@ -334,7 +309,7 @@ def refresh_evidence(config: _ConfigOption = None, json_output: _JsonOption = Fa
 
     from loadcoach.services.evidence import evidence_overview, refresh_from_freeweight
 
-    loaded = _load(config)
+    loaded = load_settings_or_exit(config)
     evidence_settings = loaded.settings.evidence
     if not evidence_settings.freeweight_url.strip():
         typer.echo(
@@ -343,7 +318,7 @@ def refresh_evidence(config: _ConfigOption = None, json_output: _JsonOption = Fa
             err=True,
         )
         raise typer.Exit(3)
-    with _open_database(loaded) as database:
+    with open_loaded_database(loaded) as database:
         outcome = refresh_from_freeweight(database, evidence_settings, now=datetime.now(UTC))
         if outcome is None:
             overview = evidence_overview(

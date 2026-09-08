@@ -8,38 +8,18 @@ standards §12).
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Annotated
 
 import typer
 
+from loadcoach.cli._backend import open_database
+
 if TYPE_CHECKING:
-    from loadcoach.services.database import Database
+    pass
 
 __all__ = ["app", "show"]
 
 app = typer.Typer(help="Production reliability per model and task profile.")
-
-
-@contextmanager
-def _open(config: str | None) -> Iterator[Database]:
-    from loadcoach.config import ConfigurationError, load_settings
-    from loadcoach.services.database import Database
-
-    try:
-        loaded = load_settings(config_path=config)
-    except ConfigurationError as exc:
-        typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
-        raise typer.Exit(3) from exc
-    storage = loaded.settings.storage
-    if storage.database_url is None:  # pragma: no cover — StorageSettings always fills this in
-        typer.echo("Error: no database_url configured (CONFIGURATION_ERROR)", err=True)
-        raise typer.Exit(3)
-    with Database.from_url(
-        storage.database_url, statement_timeout_ms=storage.statement_timeout_ms
-    ) as database:
-        yield database
 
 
 def _cell(statistic: dict[str, object], fmt: str) -> str:
@@ -65,7 +45,7 @@ def show(
     """Show production reliability per model and task profile. Mode: local."""
     from loadcoach.services.reliability import reliability_report
 
-    with _open(config) as database:
+    with open_database(config) as (database, _settings):
         entries = reliability_report(database, task_profile_id=task, canonical_id=model)
     if json_output:
         typer.echo(json.dumps({"reliability": [entry.as_json() for entry in entries]}))

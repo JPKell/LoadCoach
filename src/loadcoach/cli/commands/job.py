@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Annotated
 
 import typer
 
+from loadcoach.cli._backend import open_database
+
 if TYPE_CHECKING:
     from loadcoach.config import Settings
     from loadcoach.services.database import Database
@@ -29,23 +31,10 @@ _TERMINAL = frozenset({"completed", "failed", "cancelled"})
 
 @contextmanager
 def _open(config: str | None) -> Iterator[tuple[Database, Settings]]:
-    from loadcoach.config import ConfigurationError, load_settings
-    from loadcoach.services.database import Database
-
-    try:
-        loaded = load_settings(config_path=config)
-    except ConfigurationError as exc:
-        typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
-        raise typer.Exit(3) from exc
-    storage = loaded.settings.storage
-    if storage.database_url is None:  # pragma: no cover — StorageSettings always fills this in
-        typer.echo("Error: no database_url configured (CONFIGURATION_ERROR)", err=True)
-        raise typer.Exit(3)
-    with Database.from_url(
-        storage.database_url, statement_timeout_ms=storage.statement_timeout_ms
-    ) as database:
-        _ensure_profiles_imported(database, loaded.settings)
-        yield database, loaded.settings
+    """Open the database and make sure the shipped task profiles are imported (LC14)."""
+    with open_database(config) as (database, settings):
+        _ensure_profiles_imported(database, settings)
+        yield database, settings
 
 
 def _ensure_profiles_imported(database: Database, settings: Settings) -> None:

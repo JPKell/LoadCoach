@@ -348,7 +348,7 @@ class QueueRuntime:
     flags: QueueFlags = field(default_factory=QueueFlags)
     residency: ResidencyService | None = None
     resources_changed: threading.Event = field(default_factory=threading.Event)
-    resident_model_ids: Callable[[], frozenset[str]] = lambda: frozenset()
+    resident_model_ids: Callable[[], frozenset[str]] = frozenset
     breakers: CircuitBreakers = field(default_factory=CircuitBreakers)
     evidence_refresh: Callable[[datetime], None] | None = None
     breaker_source: Callable[[datetime], Mapping[str, Sequence[AttemptSample]]] | None = None

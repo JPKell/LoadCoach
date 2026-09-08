@@ -8,46 +8,19 @@
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Annotated
 
 import typer
 
-if TYPE_CHECKING:
-    from collections.abc import Iterator
+from loadcoach.cli._backend import load_settings_or_exit, open_loaded_database
 
+if TYPE_CHECKING:
     from loadcoach.config import LoadedSettings
     from loadcoach.infrastructure.providers.factory import ProviderRegistration
-    from loadcoach.services.database import Database
 
 __all__ = ["app", "list_adapters", "scan", "show", "sync"]
 
 app = typer.Typer(help="The adapter registry: an operator's directory and reviewed manifests.")
-
-
-def _load(config: str | None) -> LoadedSettings:
-    from loadcoach.config import ConfigurationError, load_settings
-
-    try:
-        return load_settings(config_path=config)
-    except ConfigurationError as exc:
-        typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
-        raise typer.Exit(3) from exc
-
-
-@contextmanager
-def _open_database(loaded: LoadedSettings) -> Iterator[Database]:
-    """Open the configured database for the one command that writes rows."""
-    from loadcoach.services.database import Database
-
-    storage = loaded.settings.storage
-    if storage.database_url is None:  # pragma: no cover — StorageSettings always fills this in
-        typer.echo("Error: no database_url configured (CONFIGURATION_ERROR)", err=True)
-        raise typer.Exit(3)
-    with Database.from_url(
-        storage.database_url, statement_timeout_ms=storage.statement_timeout_ms
-    ) as database:
-        yield database
 
 
 def _registrations(loaded: LoadedSettings) -> tuple[ProviderRegistration, ...]:
@@ -74,7 +47,7 @@ def scan(
     from loadcoach.domain.authorization import LOCAL
     from loadcoach.services.adapters import AdaptersDisabled, scan_adapters
 
-    loaded = _load(config)
+    loaded = load_settings_or_exit(config)
     try:
         outcome = scan_adapters(loaded.settings, principal=LOCAL)
     except AdaptersDisabled as exc:
@@ -130,8 +103,8 @@ def sync(
     from loadcoach.services.adapters import sync_adapters
     from loadcoach.services.evidence import evidence_overview
 
-    loaded = _load(config)
-    with _open_database(loaded) as database:
+    loaded = load_settings_or_exit(config)
+    with open_loaded_database(loaded) as database:
         registered = sync_adapters(database, loaded.settings, now=datetime.now(UTC))
         overview = evidence_overview(
             database, configured_url=loaded.settings.evidence.freeweight_url.strip()
@@ -174,7 +147,7 @@ def list_adapters(
     from loadcoach.domain.authorization import LOCAL
     from loadcoach.services.adapters import AdaptersDisabled, adapter_overview
 
-    loaded = _load(config)
+    loaded = load_settings_or_exit(config)
     try:
         overview = adapter_overview(loaded.settings, _registrations(loaded), principal=LOCAL)
     except AdaptersDisabled as exc:
@@ -218,7 +191,7 @@ def show(
     from loadcoach.domain.authorization import LOCAL
     from loadcoach.services.adapters import AdapterNotFound, AdaptersDisabled, show_adapter
 
-    loaded = _load(config)
+    loaded = load_settings_or_exit(config)
     try:
         view = show_adapter(name, loaded.settings, _registrations(loaded), principal=LOCAL)
     except AdaptersDisabled as exc:

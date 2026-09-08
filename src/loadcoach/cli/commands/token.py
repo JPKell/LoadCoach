@@ -8,40 +8,20 @@ makes it refuse again. Only ``typer`` and ``json`` load at import time (CLI stan
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Annotated
 
 import typer
 
+from loadcoach.cli._backend import open_database
+
 if TYPE_CHECKING:
-    from loadcoach.services.database import Database
+    pass
 
 __all__ = ["app", "create", "list_command", "revoke"]
 
 app = typer.Typer(help="API tokens for a non-loopback bind: create, list, revoke.")
 
 _SCOPES = ("read", "write", "admin")
-
-
-@contextmanager
-def _open(config: str | None) -> Iterator[Database]:
-    from loadcoach.config import ConfigurationError, load_settings
-    from loadcoach.services.database import Database
-
-    try:
-        loaded = load_settings(config_path=config)
-    except ConfigurationError as exc:
-        typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
-        raise typer.Exit(3) from exc
-    storage = loaded.settings.storage
-    if storage.database_url is None:  # pragma: no cover — StorageSettings always fills this in
-        typer.echo("Error: no database_url configured (CONFIGURATION_ERROR)", err=True)
-        raise typer.Exit(3)
-    with Database.from_url(
-        storage.database_url, statement_timeout_ms=storage.statement_timeout_ms
-    ) as database:
-        yield database
 
 
 @app.command("create")
@@ -72,7 +52,7 @@ def create(
             f"Error: --scope must be one of {', '.join(_SCOPES)} (VALIDATION_ERROR)", err=True
         )
         raise typer.Exit(2)
-    with _open(config) as database:
+    with open_database(config) as (database, _settings):
         try:
             issued = create_token(
                 database,
@@ -104,7 +84,7 @@ def list_command(
     """List tokens: name, scope, created, expiry, revoked. Never the token itself. Mode: local."""
     from loadcoach.services.tokens import list_tokens
 
-    with _open(config) as database:
+    with open_database(config) as (database, _settings):
         records = list_tokens(database)
     if json_output:
         typer.echo(json.dumps({"tokens": [record.as_json() for record in records]}))
@@ -137,7 +117,7 @@ def revoke(
 
     from loadcoach.services.tokens import TokenNotFound, revoke_token
 
-    with _open(config) as database:
+    with open_database(config) as (database, _settings):
         try:
             record = revoke_token(database, name=name, now=datetime.now(UTC))
         except TokenNotFound as exc:

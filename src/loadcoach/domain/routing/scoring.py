@@ -225,7 +225,7 @@ def parameter_band_priors(
     known = {name: count for name, count in parameter_counts.items() if count is not None}
     if not known:
         return {}
-    distinct = sorted({count for count in known.values()})
+    distinct = sorted(set(known.values()))
     midpoint = (PARAMETER_BAND_PRIOR_FLOOR + PARAMETER_BAND_PRIOR_CEILING) / 2
     if len(distinct) == 1:
         return dict.fromkeys(known, midpoint)
