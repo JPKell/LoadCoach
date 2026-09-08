@@ -786,7 +786,7 @@
   },
   "info": {
     "title": "LoadCoach",
-    "version": "1.1.6"
+    "version": "1.2.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -952,7 +952,7 @@
     },
     "/api/v1/evidence/import": {
       "post": {
-        "description": "Import a bundle from the request body, or pull one from a URL (api.md \u00a77).\n\nArgs:\n    request: The incoming request.\n    body: Either a ``benchmark.evidence_bundle`` envelope, or ``{\"url\": \"http://\u2026\"}``.\n\nReturns:\n    Counts of imported / updated / unmatched / rejected, with every rejection's reason.\n\nRaises:\n    ValidationError: The body is neither an envelope nor a ``url``.\n    EvidenceSchemaVersionUnsupported: An unsupported schema major; both versions are named\n        and no evidence is changed.\n    EvidenceImportFailed: The bundle itself was unusable.\n    EvidenceSourceRefused: A ``url`` failed the fetch allowlist (ADR-0026 \u00a73).",
+        "description": "Import a bundle from the request body, or pull one from a URL (api.md \u00a77).\n\nArgs:\n    request: The incoming request.\n    body: Either a ``benchmark.evidence_bundle`` envelope, or ``{\"url\": \"http://\u2026\"}``.\n\nReturns:\n    Counts of imported / updated / unmatched / rejected, with every rejection's reason.\n\nRaises:\n    ValidationError: The body is neither an envelope nor a ``url``.\n    EvidenceSchemaVersionUnsupported: An unsupported schema major; both versions are named\n        and no evidence is changed.\n    EvidenceImportFailed: The bundle itself was unusable.\n    EvidenceSourceRefused: A ``url`` failed the fetch allowlist (ADR-0026 \u00a73).\n    EvidenceSourceIncompatible: The ``url`` names a FreeWeight serving no API major this\n        build speaks, negotiated (ADR-0013) before any evidence is read.",
         "operationId": "import_evidence_api_v1_evidence_import_post",
         "requestBody": {
           "content": {

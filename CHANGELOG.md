@@ -7,6 +7,21 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-09-08
+
+### Added
+
+- `FreeWeightClient.version()` negotiates FreeWeight's `GET /version` (ADR-0013) before any
+  evidence is read, cached with a TTL on the client — the same shape PromptCadence's and
+  IdeaPress's LoadCoach clients already use, transcribed a third time. A served-majors list
+  excluding `v1`, or a FreeWeight too old to serve `/version` at all (a 404), is refused as
+  `EvidenceSourceIncompatible` (`API_VERSION_UNSUPPORTED`), naming both versions, before the export
+  endpoint is ever fetched. Wired into the evidence-import CLI command, the
+  `POST /evidence/import` route, and `refresh_from_freeweight`'s periodic pull; a refusal there
+  leaves the previous import untouched, exactly as a refused URL does — no staleness claim about
+  measurements that are not the problem. Closes the last `untested — behaviour not implemented`
+  cell in `graceful-degradation.md`'s row index, found at row L8 (row M2).
+
 ## [1.1.6] — 2026-09-07
 
 ### Changed
