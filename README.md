@@ -3,8 +3,7 @@
 Turns FreeWeight's measurements (or declared capabilities) into routed, queued, validated inference
 execution with a fully explainable decision for every job.
 
-**Status:** `1.1.5` in the repository — `v1.1.5` tagged locally (not yet pushed); **PyPI still
-serves `1.1.4`**. Every phase of the
+**Status:** `1.1.5` in the repository (tagged `v1.1.5`; `pip index versions loadcoach` says what PyPI serves). Every phase of the
 [development plan](docs/apps/loadcoach/development-plan.md) through 11 is built: the registry and
 task profiles; evidence-weighted routing with a readable explanation for every decision;
 synchronous and streaming generation with validation and corrective retries; a durable priority
