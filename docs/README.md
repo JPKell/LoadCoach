@@ -10,6 +10,8 @@ Operator documents, written for this release:
 * [upgrading.md](upgrading.md) — migrations, behaviour changes, the downgrade path.
 * [security.md](security.md) — the LAN-exposure path end to end.
 * [openapi.json](openapi.json) — the API, as a committed snapshot.
+* [LLAMACPP_SETUP.md](LLAMACPP_SETUP.md) — running llama.cpp behind the suite: install, the model
+  directory, adapters, residency and swapping, router mode, model suggestions (mirrored).
 
 The specification set — `apps/loadcoach/{spec,routing,queue-and-scheduling,api,data-model,
 development-plan,risks}.md` and the standards it cites — is **mirrored** from the suite's
