@@ -109,6 +109,10 @@ _STATUS_BY_CODE: dict[str, int] = {
     "EVIDENCE_IMPORT_FAILED": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "SCHEMA_VERSION_UNSUPPORTED": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "EVIDENCE_SOURCE_REFUSED": status.HTTP_403_FORBIDDEN,
+    # M2, ADR-0013: FreeWeight reachable but serving no API major this build speaks — grouped
+    # with the version-mismatch cell above rather than with EVIDENCE_SOURCE_REFUSED, since this
+    # is "the version is wrong", not "I will not fetch that".
+    "API_VERSION_UNSUPPORTED": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "UNAUTHORIZED": status.HTTP_401_UNAUTHORIZED,
     "FORBIDDEN": status.HTTP_403_FORBIDDEN,
     "RATE_LIMITED": status.HTTP_429_TOO_MANY_REQUESTS,

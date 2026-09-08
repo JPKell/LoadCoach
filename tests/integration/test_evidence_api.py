@@ -92,6 +92,33 @@ def test_import_refuses_a_url_outside_the_allowlist_with_403(client: TestClient)
     assert response.json()["error"]["code"] == "EVIDENCE_SOURCE_REFUSED"
 
 
+def test_import_refuses_a_freeweight_serving_an_incompatible_major_with_422(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0013, row M2: negotiated before any evidence is read — never a fetch, only a refusal."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/version"
+        return httpx.Response(
+            200,
+            json={"application": {"version": "9"}, "api": {"current": "v2", "supported": ["v2"]}},
+        )
+
+    from loadcoach.infrastructure.freeweight_client import FreeWeightClient
+
+    original = FreeWeightClient.__init__
+
+    def patched(self: FreeWeightClient, policy: Any, **kwargs: Any) -> None:
+        original(self, policy, transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr("loadcoach.web.routes.evidence.FreeWeightClient.__init__", patched)
+    response = client.post("/api/v1/evidence/import", json={"url": "http://127.0.0.1:8765"})
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "API_VERSION_UNSUPPORTED"
+    assert error["details"]["supported"] == ["v2"]
+
+
 def test_import_refuses_a_body_that_is_neither_a_bundle_nor_a_url(client: TestClient) -> None:
     response = client.post("/api/v1/evidence/import", json={"nonsense": True})
     assert response.status_code == 400
@@ -434,7 +461,15 @@ def test_a_url_import_over_http_goes_through_the_client(
 ) -> None:
     document = wrap_bundle(golden_bundle).encode()
 
-    def handler(_request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/version":
+            return httpx.Response(
+                200,
+                json={
+                    "application": {"name": "freeweight", "version": "1.1.2"},
+                    "api": {"current": "v1", "supported": ["v1"]},
+                },
+            )
         return httpx.Response(200, content=document, headers={"content-type": "application/json"})
 
     from loadcoach.infrastructure.freeweight_client import FreeWeightClient

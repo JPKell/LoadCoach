@@ -62,6 +62,7 @@ from loadcoach.infrastructure.db.models import (
 )
 from loadcoach.infrastructure.freeweight_client import (
     MAX_IMPORT_BYTES,
+    EvidenceSourceIncompatible,
     EvidenceSourceRefused,
     EvidenceSourceUnreachable,
     FreeWeightClient,
@@ -937,7 +938,7 @@ class SourceStatus:
         kind: ``freeweight_api``, ``file`` or ``manual``.
         url: Where it was pulled from, when it was pulled.
         last_import_at: When LoadCoach last imported from it.
-        last_status: ``ok``, ``unreachable``, ``refused`` or ``failed``.
+        last_status: ``ok``, ``unreachable``, ``refused``, ``incompatible`` or ``failed``.
         schema_version: The bundle version last seen.
         record_count: How many records that import carried.
         error_text: The last failure's message, cleared by a success.
@@ -1138,6 +1139,10 @@ def refresh_from_freeweight(
     * A source that refuses or cannot be reached leaves the previous import in place, badges its
       rows ``source_unreachable``, and returns ``None``. Routing continues on that evidence and
       on its priors, and says so.
+    * A source that answers but serves an incompatible API major (ADR-0013) is refused the same
+      way a disallowed URL is refused: the previous import is left exactly as it was, with no
+      staleness claim about the *measurements* — nothing is wrong with them, this build simply
+      cannot negotiate with that FreeWeight.
 
     Args:
         database: The application's database handle.
@@ -1158,12 +1163,16 @@ def refresh_from_freeweight(
         client if client is not None else FreeWeightClient(policy_from_settings(settings))
     )
     try:
+        fetch_client.version(url)
         credential = credential_for(settings, url)
         fetched = fetch_client.fetch(
             url, since=last_generated_at(database, url=url), credential=credential
         )
     except EvidenceSourceRefused as exc:
         _record_source_failure(database, url=url, status="refused", reason=str(exc), now=now)
+        return None
+    except EvidenceSourceIncompatible as exc:
+        _record_source_failure(database, url=url, status="incompatible", reason=str(exc), now=now)
         return None
     except EvidenceSourceUnreachable as exc:
         mark_source_unreachable(database, url=url, reason=str(exc), now=now)

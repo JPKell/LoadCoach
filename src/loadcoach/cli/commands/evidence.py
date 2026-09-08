@@ -87,7 +87,8 @@ def import_evidence(
     """Import an evidence bundle from a file or a URL. Mode: local.
 
     Exit codes: 0 imported (even with per-record rejections, which are reported), 2 the bundle was
-    unusable or its schema major unsupported, 4 the URL was refused by the fetch allowlist.
+    unusable, its schema major unsupported, or FreeWeight's API major incompatible (ADR-0013),
+    4 the URL was refused by the fetch allowlist.
 
     Example:
         loadcoach evidence import --url http://127.0.0.1:8765
@@ -95,6 +96,7 @@ def import_evidence(
     from pathlib import Path
 
     from loadcoach.infrastructure.freeweight_client import (
+        EvidenceSourceIncompatible,
         EvidenceSourceRefused,
         EvidenceSourceUnreachable,
         FreeWeightClient,
@@ -121,6 +123,7 @@ def import_evidence(
         try:
             if url is not None:
                 with FreeWeightClient(policy_from_settings(evidence_settings)) as client:
+                    client.version(url)
                     fetched = client.fetch(
                         url,
                         since=last_generated_at(database, url=url),
@@ -142,6 +145,9 @@ def import_evidence(
         except EvidenceSourceRefused as exc:
             typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
             raise typer.Exit(4) from exc
+        except EvidenceSourceIncompatible as exc:
+            typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
+            raise typer.Exit(2) from exc
         except EvidenceSourceUnreachable as exc:
             typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
             raise typer.Exit(2) from exc

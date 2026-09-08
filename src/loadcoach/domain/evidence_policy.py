@@ -768,7 +768,8 @@ class EvidenceOverview:
             **not configured**, which is a different state from unavailable and reads differently
             everywhere.
         source_status: The configured source's last outcome — ``ok``, ``unreachable``,
-            ``refused``, ``failed`` — or ``None`` when nothing has been attempted.
+            ``refused``, ``incompatible``, ``failed`` — or ``None`` when nothing has been
+            attempted.
         rows: How many evidence rows exist, in any ``match_state``.
         bound: How many contribute to routing.
         unmatched: Retained for a model discovery has not seen.
@@ -805,7 +806,7 @@ class EvidenceOverview:
         """The one word the UI, ``/health`` and the explanation all use for this state."""
         if not self.configured and self.rows == 0:
             return "not_configured"
-        if self.source_status in ("unreachable", "refused", "failed"):
+        if self.source_status in ("unreachable", "refused", "incompatible", "failed"):
             return self.source_status
         if self.rows == 0:
             return "none"
@@ -835,7 +836,7 @@ class EvidenceOverview:
                 f"stale ({self.stale} of {self.rows} records); routing continues on it and on "
                 "its priors."
             )
-        if self.status in ("refused", "failed"):
+        if self.status in ("refused", "incompatible", "failed"):
             detail = self.error_text or "no detail recorded"
             if self.rows == 0:
                 return (

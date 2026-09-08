@@ -87,6 +87,8 @@ def import_evidence(
             and no evidence is changed.
         EvidenceImportFailed: The bundle itself was unusable.
         EvidenceSourceRefused: A ``url`` failed the fetch allowlist (ADR-0026 §3).
+        EvidenceSourceIncompatible: The ``url`` names a FreeWeight serving no API major this
+            build speaks, negotiated (ADR-0013) before any evidence is read.
     """
     authorize(principal, "admin")
     settings: Settings = request.app.state.settings
@@ -96,6 +98,7 @@ def import_evidence(
     url = body.get("url")
     if isinstance(url, str) and url.strip():
         with FreeWeightClient(policy_from_settings(settings.evidence)) as client:
+            client.version(url.strip())
             fetched = client.fetch(
                 url.strip(),
                 since=last_generated_at(database, url=url.strip()),

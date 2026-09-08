@@ -15,12 +15,27 @@ parsing" a testable claim rather than a comment.
 The size cap is **streaming**, not a check made after the read. A hostile or broken server that
 answers a 2 KiB request with an endless body must cost bounded memory, and a limit applied to an
 already-materialized response would have cost all of it before deciding.
+
+**Version negotiation (ADR-0013) is deliberately not inside :meth:`FreeWeightClient.fetch`.** The
+ADR-0026 §3 fetch mechanics above are shared, vector-for-vector, with ToolYard's generic
+``http_fetch`` tool (``tests/integration/test_adr0026_shared_vectors.py``), which has no concept of
+"a FreeWeight" or an API version at all — folding a FreeWeight-specific negotiation into that
+shared contract would mean either ToolYard's tool silently grows one too, or the two fetchers
+quietly diverge. :meth:`FreeWeightClient.version` is therefore a separate call, made by whichever
+caller is pulling *from a FreeWeight specifically* — the evidence-import CLI command, the
+``POST /evidence/import`` route, and :func:`~loadcoach.services.evidence.refresh_from_freeweight`
+— immediately before its own :meth:`~FreeWeightClient.fetch` call, exactly as ``standards
+§12`` rule 1 asks ("check on first contact"), just one layer up from where PromptCadence's and
+IdeaPress's LoadCoach clients check it, because their whole client speaks to one application while
+this one is a generic ADR-0026 fetcher first and a FreeWeight client second.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import socket
+import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Final
 
@@ -42,11 +57,15 @@ __all__ = [
     "EVIDENCE_COLLECTION_PATH",
     "EVIDENCE_EXPORT_PATH",
     "MAX_REDIRECTS",
+    "SUPPORTED_API_MAJOR",
+    "VERSION_PATH",
+    "EvidenceSourceIncompatible",
     "EvidenceSourceRefused",
     "EvidenceSourceUnreachable",
     "FetchPolicy",
     "FetchedBundle",
     "FreeWeightClient",
+    "VersionInfo",
     "check_url",
     "policy_from_settings",
     "resolve_credential",
@@ -81,6 +100,17 @@ EVIDENCE_COLLECTION_PATH: Final[str] = "/api/v1/evidence"
 """FreeWeight's collection endpoint. Not used for import — a bundle is one document
 (ADR-0025 §2) — and named here so a reader knows which of the two this client speaks."""
 
+VERSION_PATH: Final[str] = "/api/v1/version"
+"""FreeWeight's version-negotiation endpoint (ADR-0013), never authenticated."""
+
+SUPPORTED_API_MAJOR: Final[str] = "v1"
+"""The one API major this build of LoadCoach speaks."""
+
+_VERSION_CACHE_SECONDS: Final[float] = 300.0
+"""standards §12 rule 1: cache the negotiation with a TTL rather than checking every call. Matches
+PromptCadence's ``LoadCoachClient._VERSION_CACHE_SECONDS`` — the same shape, the same number, no
+new configuration key for it."""
+
 
 class EvidenceSourceRefused(SuiteError):
     """LoadCoach declined to fetch, or to keep reading, a URL (spec §13, ADR-0026 §3).
@@ -102,6 +132,30 @@ class EvidenceSourceUnreachable(SuiteError):
     """
 
     code: ClassVar[str] = "EVIDENCE_IMPORT_FAILED"
+
+
+class EvidenceSourceIncompatible(SuiteError):
+    """FreeWeight was reached, but this build cannot speak to it (ADR-0013).
+
+    Two producers: FreeWeight's served API majors (``GET /version``'s ``api.supported``) exclude
+    :data:`SUPPORTED_API_MAJOR`, or FreeWeight answers ``GET /version`` with 404 — a FreeWeight too
+    old to serve version negotiation at all is incompatible, not merely unreachable (this row's own
+    decision). Distinct from :class:`EvidenceSourceUnreachable`, which means the host could not be
+    reached or answered with an ordinary server error: this means it *was* reached and answered,
+    and its version is the problem. ``details`` carries ``supported`` and ``required`` when the
+    majors were read, naming both versions per ADR-0013.
+    """
+
+    code: ClassVar[str] = "API_VERSION_UNSUPPORTED"
+
+
+@dataclass(frozen=True, slots=True)
+class VersionInfo:
+    """``GET /version``: FreeWeight's application version and served API majors."""
+
+    application_version: str
+    api_current: str
+    api_supported: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,7 +355,15 @@ class FreeWeightClient:
     process, and so the one place that opens a socket is visible.
     """
 
-    __slots__ = ("_client", "_policy", "_resolve")
+    __slots__ = (
+        "_client",
+        "_policy",
+        "_resolve",
+        "_monotonic",
+        "_version_info",
+        "_version_cached_at",
+        "_version_origin",
+    )
 
     def __init__(
         self,
@@ -309,6 +371,7 @@ class FreeWeightClient:
         *,
         transport: httpx.BaseTransport | None = None,
         resolve: Resolver = _default_resolver,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         """Build a client bound to one fetch policy.
 
@@ -316,9 +379,14 @@ class FreeWeightClient:
             policy: The fetch rules.
             transport: An httpx transport, injected in tests.
             resolve: Hostname resolution, injected in tests.
+            monotonic: The clock :meth:`version` caches against, injected in tests.
         """
         self._policy = policy
         self._resolve = resolve
+        self._monotonic = monotonic
+        self._version_info: VersionInfo | None = None
+        self._version_cached_at: float = 0.0
+        self._version_origin: str | None = None
         self._client = httpx.Client(
             transport=transport,
             timeout=httpx.Timeout(
@@ -338,6 +406,107 @@ class FreeWeightClient:
     def __exit__(self, *_exc: object) -> None:
         """Always close the pool."""
         self.close()
+
+    def version(self, url: str) -> VersionInfo:
+        """``GET /version`` (ADR-0013): negotiate FreeWeight's API compatibility, cached with a TTL.
+
+        Callers that pull from a specific FreeWeight — the evidence-import CLI command, the
+        ``POST /evidence/import`` route, and
+        :func:`~loadcoach.services.evidence.refresh_from_freeweight` — call this immediately
+        before :meth:`fetch`, so no evidence is ever read from a FreeWeight this build cannot
+        speak to.
+
+        Args:
+            url: Any URL naming the FreeWeight to negotiate with; only its scheme and host are
+                used, and it goes through the same allowlist :func:`check_url` applies to a fetch
+                — a version probe is still an outbound request to a URL a caller supplied.
+
+        Returns:
+            The negotiated :class:`VersionInfo`. A call for the same origin within
+            :data:`_VERSION_CACHE_SECONDS` of the last **successful** negotiation returns the
+            cached result without a round trip. A negotiation that finds the major unsupported is
+            **not** cached: it is re-checked, and re-refused, every time rather than remembered as
+            a working state.
+
+        Raises:
+            EvidenceSourceRefused: The URL fails the fetch allowlist (ADR-0026 §3).
+            EvidenceSourceUnreachable: FreeWeight could not be reached, or ``/version`` answered
+                with a server error.
+            EvidenceSourceIncompatible: FreeWeight serves no API major this build speaks, or does
+                not serve ``/version`` at all (a 404 — too old to negotiate).
+        """
+        checked = check_url(url, self._policy, resolve=self._resolve)
+        origin = str(checked.copy_with(path="", query=None, fragment=None))
+        now = self._monotonic()
+        if (
+            self._version_info is not None
+            and self._version_origin == origin
+            and (now - self._version_cached_at) < _VERSION_CACHE_SECONDS
+        ):
+            return self._version_info
+        target = checked.copy_with(path=VERSION_PATH, query=None, fragment=None)
+        request = self._client.build_request("GET", target)
+        try:
+            response = self._client.send(request)
+        except httpx.HTTPError as exc:
+            raise EvidenceSourceUnreachable(
+                f"Could not reach {target}: {exc}",
+                details={"reason": "transport_error", "url": str(target)},
+            ) from exc
+        try:
+            info = self._parse_version(response, target)
+        finally:
+            response.close()
+        self._version_info = info
+        self._version_cached_at = now
+        self._version_origin = origin
+        return info
+
+    @staticmethod
+    def _parse_version(response: httpx.Response, target: httpx.URL) -> VersionInfo:
+        """Read one ``/version`` answer, or refuse it — never cached by the caller on refusal."""
+        if response.status_code == 404:
+            raise EvidenceSourceIncompatible(
+                f"{target} answered 404; a FreeWeight too old to serve version negotiation at "
+                "all is incompatible, not merely unreachable (ADR-0013).",
+                details={"reason": "no_version_endpoint", "url": str(target)},
+            )
+        if response.status_code >= 400:  # noqa: PLR2004 — HTTP's own boundary
+            raise EvidenceSourceUnreachable(
+                f"{target} answered {response.status_code}.",
+                details={
+                    "reason": "http_status",
+                    "status_code": response.status_code,
+                    "url": str(target),
+                },
+            )
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise EvidenceSourceIncompatible(
+                f"{target} did not answer /version with JSON.",
+                details={"reason": "malformed_version_response", "url": str(target)},
+            ) from exc
+        application = body.get("application") if isinstance(body, Mapping) else None
+        api = body.get("api") if isinstance(body, Mapping) else None
+        if not isinstance(application, Mapping) or not isinstance(api, Mapping):
+            raise EvidenceSourceIncompatible(
+                f"{target} answered /version with no 'application' and 'api' blocks.",
+                details={"reason": "malformed_version_response", "url": str(target)},
+            )
+        supported = tuple(str(major) for major in api.get("supported") or ())
+        info = VersionInfo(
+            application_version=str(application.get("version", "")),
+            api_current=str(api.get("current", "")),
+            api_supported=supported,
+        )
+        if SUPPORTED_API_MAJOR not in supported:
+            raise EvidenceSourceIncompatible(
+                f"FreeWeight {info.application_version} serves API majors {list(supported)}; "
+                f"LoadCoach speaks {SUPPORTED_API_MAJOR}.",
+                details={"supported": list(supported), "required": SUPPORTED_API_MAJOR},
+            )
+        return info
 
     def fetch(
         self, url: str, *, since: datetime | None = None, credential: str | None = None

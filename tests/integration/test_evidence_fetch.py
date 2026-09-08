@@ -20,6 +20,8 @@ from loadcoach.infrastructure.db.models import CapabilityEvidence, EvidenceSourc
 from loadcoach.infrastructure.freeweight_client import (
     EVIDENCE_EXPORT_PATH,
     MAX_IMPORT_BYTES,
+    VERSION_PATH,
+    EvidenceSourceIncompatible,
     EvidenceSourceRefused,
     EvidenceSourceUnreachable,
     FetchPolicy,
@@ -53,8 +55,34 @@ def _database(tmp_path: Path) -> Database:
     return database
 
 
+def _version_response(*, majors: tuple[str, ...] = ("v1",)) -> httpx.Response:
+    """A compatible ``GET /version`` answer — FreeWeight's own shape (``system.py``)."""
+    return _json_response(
+        json.dumps(
+            {
+                "application": {"name": "freeweight", "version": "1.1.2"},
+                "api": {"current": majors[-1], "supported": list(majors)},
+            }
+        ).encode()
+    )
+
+
 def _transport(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.MockTransport:
-    return httpx.MockTransport(handler)
+    """Wrap a test's handler so ``GET /api/v1/version`` always answers compatibly.
+
+    ``refresh_from_freeweight`` negotiates a version before every fetch (ADR-0013, row M2); every
+    test in this file predates that and scripts only the export path, so this is the one place
+    that keeps all of them passing without touching two dozen handler functions individually. The
+    version-specific behaviour itself (incompatible major, 404, unreachable, the TTL cache) is
+    proved directly against :meth:`FreeWeightClient.version`, below, with its own transport.
+    """
+
+    def wrapped(request: httpx.Request) -> httpx.Response:
+        if request.url.path == VERSION_PATH:
+            return _version_response()
+        return handler(request)
+
+    return httpx.MockTransport(wrapped)
 
 
 def _json_response(body: bytes, *, status: int = 200, **headers: str) -> httpx.Response:
@@ -634,5 +662,167 @@ def test_a_successful_import_clears_the_source_unreachable_badge(
         with database.read() as session:
             reasons = {row.stale_reason for row in session.query(CapabilityEvidence).all()}
         assert "source_unreachable" not in reasons
+    finally:
+        database.close()
+
+
+# --------------------------------------------------------------------------------------------
+# ADR-0013: FreeWeightClient.version() negotiates before any evidence is read (row M2)
+# --------------------------------------------------------------------------------------------
+
+
+def test_a_compatible_freeweight_negotiates_then_the_fetch_proceeds() -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == VERSION_PATH:
+            return _version_response()
+        return _json_response(b"{}")
+
+    with FreeWeightClient(LOOPBACK, transport=httpx.MockTransport(handler)) as client:
+        info = client.version("http://127.0.0.1:8765")
+        assert info.api_current == "v1"
+        assert info.api_supported == ("v1",)
+        client.fetch("http://127.0.0.1:8765")
+    assert paths == [VERSION_PATH, EVIDENCE_EXPORT_PATH]
+
+
+def test_an_incompatible_major_is_refused_before_any_evidence_is_read() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == VERSION_PATH:
+            return _version_response(majors=("v2",))
+        return _json_response(MALFORMED)  # pragma: no cover - never reached
+
+    with FreeWeightClient(LOOPBACK, transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(EvidenceSourceIncompatible) as caught:
+            client.version("http://127.0.0.1:8765")
+    assert caught.value.code == "API_VERSION_UNSUPPORTED"
+    assert caught.value.details is not None
+    assert caught.value.details["supported"] == ["v2"]
+    assert caught.value.details["required"] == "v1"
+
+
+def test_a_freeweight_too_old_to_serve_version_is_incompatible_not_unreachable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == VERSION_PATH:
+            return httpx.Response(404)
+        return _json_response(MALFORMED)  # pragma: no cover - never reached
+
+    with FreeWeightClient(LOOPBACK, transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(EvidenceSourceIncompatible) as caught:
+            client.version("http://127.0.0.1:8765")
+    assert caught.value.details is not None
+    assert caught.value.details["reason"] == "no_version_endpoint"
+
+
+def test_an_unreachable_freeweight_fails_version_as_unreachable_not_incompatible() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    with FreeWeightClient(LOOPBACK, transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(EvidenceSourceUnreachable) as caught:
+            client.version("http://127.0.0.1:8765")
+    assert caught.value.code == "EVIDENCE_IMPORT_FAILED"
+
+
+def test_a_500_on_version_is_unreachable_not_incompatible() -> None:
+    """A 404 is "too old to negotiate" (incompatible); any other server error is ordinary
+    unreachability — FreeWeight was having a bad moment, not serving the wrong major."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, content=MALFORMED, headers={"content-type": "application/json"})
+
+    with FreeWeightClient(LOOPBACK, transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(EvidenceSourceUnreachable) as caught:
+            client.version("http://127.0.0.1:8765")
+    assert caught.value.details is not None
+    assert caught.value.details["status_code"] == 503
+
+
+def test_a_malformed_version_body_is_incompatible() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(MALFORMED)
+
+    with FreeWeightClient(LOOPBACK, transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(EvidenceSourceIncompatible) as caught:
+            client.version("http://127.0.0.1:8765")
+    assert caught.value.details is not None
+    assert caught.value.details["reason"] == "malformed_version_response"
+
+
+def test_a_version_body_with_no_application_or_api_block_is_incompatible() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(b'{"ok": true}')
+
+    with FreeWeightClient(LOOPBACK, transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(EvidenceSourceIncompatible) as caught:
+            client.version("http://127.0.0.1:8765")
+    assert caught.value.details is not None
+    assert caught.value.details["reason"] == "malformed_version_response"
+
+
+def test_the_version_cache_is_honoured_within_its_ttl_and_expires_after_it() -> None:
+    """Two calls inside the TTL cost one request; a third after it expires costs a second."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return _version_response()
+
+    ticks = iter([0.0, 10.0, 400.0])
+    with FreeWeightClient(
+        LOOPBACK, transport=httpx.MockTransport(handler), monotonic=lambda: next(ticks)
+    ) as client:
+        client.version("http://127.0.0.1:8765")
+        client.version("http://127.0.0.1:8765")
+        assert len(requests) == 1, "the second call landed inside the TTL"
+        client.version("http://127.0.0.1:8765")
+        assert len(requests) == 2, "the third call landed after the TTL expired"
+
+
+def test_an_incompatible_negotiation_is_never_cached() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return _version_response(majors=("v2",))
+
+    with FreeWeightClient(
+        LOOPBACK, transport=httpx.MockTransport(handler), monotonic=lambda: 0.0
+    ) as client:
+        for _ in range(2):
+            with pytest.raises(EvidenceSourceIncompatible):
+                client.version("http://127.0.0.1:8765")
+    assert len(requests) == 2, "a refused negotiation is re-checked, never remembered as working"
+
+
+def test_an_incompatible_freeweight_records_the_refusal_without_touching_evidence(
+    tmp_path: Path, golden_bundle: dict[str, Any], wrap_bundle: Callable[..., str]
+) -> None:
+    database = _database(tmp_path)
+    try:
+        import_bundle(
+            database,
+            wrap_bundle(golden_bundle),
+            now=NOW,
+            source_kind="freeweight_api",
+            url="http://127.0.0.1:8765",
+        )
+        settings = EvidenceSettings(freeweight_url="http://127.0.0.1:8765")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == VERSION_PATH:
+                return _version_response(majors=("v2",))
+            return _json_response(MALFORMED)  # pragma: no cover - never reached
+
+        with FreeWeightClient(LOOPBACK, transport=httpx.MockTransport(handler)) as client:
+            assert refresh_from_freeweight(database, settings, now=NOW, client=client) is None
+        (source,) = list_sources(database, configured_url=settings.freeweight_url)
+        assert source.last_status == "incompatible"
+        assert source.rows == 3
+        assert source.stale_rows == 0, (
+            "an incompatible version is not a staleness claim about the measurements"
+        )
     finally:
         database.close()
