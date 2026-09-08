@@ -7,6 +7,8 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+## [1.1.6] — 2026-09-07
+
 ### Changed
 
 - `setspec` floor raised from `0.5` to `0.6`: this application imports the `capability.evidence`
