@@ -198,7 +198,14 @@ def test_a_probe_cancelled_before_it_reports_is_handed_back(runtime: QueueRuntim
         now=datetime.now(UTC),
         on_request=runtime.in_flight.request_cancel,
     )
-    assert _wait_terminal(runtime, job_id) is JobState.CANCELLED
+    # ponytail: the generation's first_chunk_delay_ms=700 is a real `time.sleep` (needed so the
+    # cancel lands genuinely mid-flight) and modelrack's fake only checks the cancellation token
+    # *after* that sleep returns (ModelRack fake.py, the per-delta check) — so this waits out one
+    # real, uninterruptible 700ms sleep plus whatever the OS defers it by under load, not a bounded
+    # worker cadence. Widened from 10s to 30s the way PromptCadence's 9b3ce00 and FreeWeight's
+    # 5efec5d widened their own real-wall-clock waits past CI/parallel-load noise; raise further if
+    # it ever flakes again rather than re-tightening it.
+    assert _wait_terminal(runtime, job_id, timeout_seconds=30.0) is JobState.CANCELLED
     runtime.refresh_breakers(datetime.now(UTC))
     released = _verdict(runtime)
     assert released.state is BreakerState.HALF_OPEN  # a cancellation says nothing about the model
