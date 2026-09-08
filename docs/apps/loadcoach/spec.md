@@ -334,7 +334,12 @@ as `INTERNAL_ERROR`:
 
 `EVIDENCE_SOURCE_REFUSED` is returned when an import URL fails the fetch allowlist
 ([ADR-0026 §3](../../adr/0026-local-http-hardening.md)); it is distinct from
-`EVIDENCE_IMPORT_FAILED`, which means the bundle itself was unusable.
+`EVIDENCE_IMPORT_FAILED`, which means the bundle itself was unusable. `FreeWeightClient` also
+negotiates FreeWeight's API version on the same call, before any evidence is read
+(ADR-0013): a served-majors list excluding `v1`, or a FreeWeight too old to answer `GET /version`
+at all (404), is `API_VERSION_UNSUPPORTED`, naming both versions — distinct again from
+`EVIDENCE_SOURCE_REFUSED`, which is LoadCoach declining to fetch, and from
+`EVIDENCE_IMPORT_FAILED`, which is FreeWeight being unreachable or the bundle being unusable.
 
 Behavioural rules:
 * `NO_ELIGIBLE_MODEL` always lists every candidate and the constraint that rejected it.
