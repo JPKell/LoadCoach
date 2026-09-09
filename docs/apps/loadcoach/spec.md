@@ -62,7 +62,7 @@ every decision afterwards.
 ## 5. Dependencies
 
 **Suite:** `baseaicore`, `setspec`, `modelrack`, `sweatmeter`, `weightsdb`, `mirrorwall`.
-**Third party:** `fastapi`, `uvicorn[standard]`, `typer`, `pydantic`, `pydantic-settings`,
+**Third party:** `fastapi`, `uvicorn[standard]`, `typer`, `pydantic`,
 `sqlalchemy`, `alembic`, `jinja2`, `httpx` (for the optional FreeWeight evidence client).
 **External services:** a model provider (Ollama by default). **Optional:** FreeWeight, for evidence.
 
