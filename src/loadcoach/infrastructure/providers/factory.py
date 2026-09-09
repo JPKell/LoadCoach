@@ -13,6 +13,7 @@ degraded health *about*, and this is the only place one is built.
 from __future__ import annotations
 
 import dataclasses
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -20,6 +21,8 @@ from typing import TYPE_CHECKING, Final
 from baseaicore import ConfigurationError
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from modelrack.provider import Provider
     from modelrack.testing import FakeModel
 
@@ -35,7 +38,10 @@ __all__ = [
     "ProviderRegistration",
     "build_provider",
     "build_registrations",
+    "close_registrations",
 ]
+
+logger = logging.getLogger(__name__)
 
 SUPPORTED_PROVIDER_KINDS: frozenset[str] = frozenset({"ollama", "llamacpp", "fake"})
 """``provider.kind`` values this phase can construct.
@@ -335,3 +341,34 @@ def build_provider(settings: ProviderSettings) -> Provider:
             ``insufficient_vram`` — see :class:`~loadcoach.config.FakeProviderSettings`).
     """
     return _build_one(settings.as_registration(), field="provider.kind")
+
+
+def close_registrations(registrations: Sequence[ProviderRegistration]) -> None:
+    """Release every registration's provider handle at shutdown.
+
+    Args:
+        registrations: Every provider this process built.
+
+    A supervising provider owns an operating-system process, and dropping the handle does not end
+    it: ``LlamaCppProvider`` terminates its servers in ``close()`` and otherwise only in a
+    finalizer, which runs at collection or interpreter exit — later than a terminated service, and
+    not at all when the process is signalled. So a `loadcoach serve` that was stopped left its
+    ``llama-server`` running and holding the whole card, and the failure that causes is not "out of
+    memory" but something far harder to read: the *next* candidate is refused ``insufficient_vram``
+    before its classification or its compatibility is ever considered, so a defect in shutdown
+    presents as a defect in routing. Found by IdeaPress's LA2 journey, which left six orphans
+    holding 13 GB of a 16 GB card across three runs.
+
+    Every provider is closed even if one raises: a handle that failed to release is a reason to log
+    and continue, never a reason to leak the rest.
+    """
+    for registration in registrations:
+        close = getattr(registration.provider, "close", None)
+        if not callable(close):
+            continue
+        try:
+            close()
+        except Exception:  # noqa: BLE001 — a failed release must not prevent the others
+            logger.warning(
+                "provider.close_failed", extra={"provider_name": registration.name}, exc_info=True
+            )

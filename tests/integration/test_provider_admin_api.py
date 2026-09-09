@@ -99,3 +99,16 @@ def test_a_disabled_model_is_refused_by_routing_and_named(client: TestClient) ->
     again = client.post(f"/api/v1/models/{model_ref}/enabled", json={"enabled": True})
     assert again.json()["enabled"] is True
     assert client.post("/api/v1/route", json={"task": "general.chat"}).status_code == 200
+
+
+def test_the_replaced_provider_handles_are_closed(client: TestClient) -> None:
+    """A supervising provider owns a process; dropping the handle would orphan it (LA2's six)."""
+    closed: list[str] = []
+    for registration in client.app.state.provider_registrations:  # type: ignore[attr-defined]
+        registration.provider.close = lambda name=registration.name: closed.append(name)
+
+    client.put("/api/v1/providers/fake", json={"kind": "fake", "timeout_seconds": 42.0})
+
+    assert closed == ["fake"]
+    live = client.app.state.provider_registrations  # type: ignore[attr-defined]
+    assert [registration.name for registration in live] == ["fake"]

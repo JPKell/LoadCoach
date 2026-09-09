@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from loadcoach.config import load_settings
 from loadcoach.domain.authorization import authorize
-from loadcoach.infrastructure.providers.factory import build_registrations
+from loadcoach.infrastructure.providers.factory import build_registrations, close_registrations
 from loadcoach.services.providers import (
     WRITABLE_FIELDS,
     config_digest,
@@ -50,8 +50,16 @@ def _reregister(request: Request) -> None:
 
     Only the provider handles are rebuilt. Every other value this process captured at startup
     keeps what it captured (ADR-0117 decision 5), and the page says so.
+
+    **The replaced handles are closed.** A supervising provider owns an operating-system process,
+    and dropping the handle does not end it — the orphaned ``llama-server`` holding a whole card
+    that :func:`loadcoach.web.app._close_providers` exists to prevent at shutdown is the same
+    orphan a provider edit would leave behind here. The cost is that work in flight on a provider
+    whose registration was just rewritten is interrupted, which is the honest reading of an
+    operator changing that provider while it runs.
     """
     app = request.app
+    previous = tuple(getattr(app.state, "provider_registrations", ()) or ())
     settings = load_settings(config_path=app.state.config_path).settings
     app.state.settings.providers = settings.providers
     app.state.settings.provider = settings.provider
@@ -61,6 +69,7 @@ def _reregister(request: Request) -> None:
     runtime = app.state.queue_runtime
     if runtime is not None:
         runtime.replace_registrations(registrations)
+    close_registrations(previous)
 
 
 def _document(request: Request) -> dict[str, Any]:

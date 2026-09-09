@@ -25,6 +25,10 @@ packaging and release standards §3.
 - The Models page gained a **Scan** button over the existing `POST /models/discover`, and a **Warm**
   button that loads a model by enqueuing one small pinned `general.chat` job — the ordinary path,
   which already owns admission, residency and eviction.
+- `close_registrations` moved from `web/app.py` to `infrastructure/providers/factory.py`, which is
+  where a provider handle is built and therefore where releasing one belongs. Shutdown behaviour is
+  unchanged; the provider admin calls it too, so an edit that replaces a supervising provider does
+  not orphan the `llama-server` it was supervising.
 
 ### Changed
 

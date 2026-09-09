@@ -21,13 +21,12 @@ import pytest
 from baseaicore import ConfigurationError
 
 from loadcoach.config import Settings
-from loadcoach.infrastructure.providers.factory import ProviderRegistration
+from loadcoach.infrastructure.providers.factory import ProviderRegistration, close_registrations
 from loadcoach.services.task_profiles import (
     DEFAULT_TASK_PROFILES_PATH,
     read_task_profiles_file,
     task_profiles_path_for,
 )
-from loadcoach.web.app import _close_providers
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -55,7 +54,7 @@ def test_every_provider_is_closed_at_shutdown() -> None:
     """A supervised server outlives its handle; only `close()` ends it."""
     first, second = _Closable(), _Closable()
 
-    _close_providers([_registration("local", first), _registration("second", second)])
+    close_registrations([_registration("local", first), _registration("second", second)])
 
     assert (first.closed, second.closed) == (1, 1)
 
@@ -64,7 +63,7 @@ def test_one_handle_that_cannot_be_released_does_not_leak_the_rest() -> None:
     """A failed release is a reason to log and continue, never a reason to leak the others."""
     failing, healthy = _Closable(raises=True), _Closable()
 
-    _close_providers([_registration("broken", failing), _registration("local", healthy)])
+    close_registrations([_registration("broken", failing), _registration("local", healthy)])
 
     assert healthy.closed == 1
 
@@ -75,7 +74,7 @@ def test_a_provider_with_no_close_is_skipped_rather_than_crashing_shutdown() -> 
     class _Bare:
         pass
 
-    _close_providers([_registration("bare", _Bare())])
+    close_registrations([_registration("bare", _Bare())])
 
 
 def test_no_configured_path_means_the_shipped_profiles() -> None:
