@@ -276,8 +276,12 @@ environment, then CLI, field by field. Principal sections:
                                            # min_context_tokens sets it explicitly where the
                                            # provider reports context_configurable
               kv_cache_precision = ""  flash_attention = false  keep_alive = "5m"
-[runtime.models."ollama/qwen3.5:9b-q8_0@sha256:1f3a9c4e2b70"]   # optional per-model override
-              context_size = 32768
+                                           # precision f16|q8_0|q4_0 and flash attention are
+                                           # llama.cpp launch settings (ADR-0120): q8_0/q4_0
+                                           # need flash attention; an Ollama registration
+                                           # rejects either by name at routing time
+[runtime.models."llamacpp/gemma-4-12b-it.q4_k_m@sha256:…"]   # optional per-model override
+              context_size = 32768  kv_cache_precision = "q4_0"  flash_attention = true
 [queue]       max_depth = 1000  max_active_per_source = 200  lease_seconds = 60  poll_interval_ms = 250
               lease_renewal_interval_seconds = 20   # lease_seconds must exceed 3x this + slack
               ageing_interval_seconds = 30

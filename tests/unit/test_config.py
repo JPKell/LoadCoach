@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from baseaicore import ConfigurationError
 
 from loadcoach.config import InsecureBindingError, load_settings
 
@@ -247,4 +248,34 @@ def test_a_misspelled_key_under_providers_is_refused_rather_than_collected(
     config_file.write_text("[providers]\nallow_remot = true\n")
 
     with pytest.raises(ConfigurationError, match="allow_remot"):
+        load_settings(config_path=config_file)
+
+
+def test_a_per_model_override_carries_kv_precision_and_flash_attention(tmp_path: Path) -> None:
+    """ADR-0120: the two llama.cpp launch settings are per-model configuration."""
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        "[runtime]\nflash_attention = true\n"
+        '[runtime.models."llamacpp/m@sha256:aaaa"]\nkv_cache_precision = "q4_0"\n'
+        "flash_attention = false\n"
+    )
+    settings = load_settings(config_path=config_file).settings
+    override = settings.runtime.models["llamacpp/m@sha256:aaaa"]
+    assert override.kv_cache_precision == "q4_0"
+    assert override.flash_attention is False
+
+
+def test_a_quantized_default_cache_without_flash_attention_is_refused(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('[runtime]\nkv_cache_precision = "q8_0"\n')
+    with pytest.raises(ConfigurationError, match="flash_attention"):
+        load_settings(config_path=config_file)
+
+
+def test_a_memory_throttle_without_a_cap_is_refused_on_the_registration(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        '[providers.local]\nkind = "llamacpp"\nmodel_directory = "~/m"\nmemory_high_bytes = 1\n'
+    )
+    with pytest.raises(ConfigurationError, match="memory_high_bytes"):
         load_settings(config_path=config_file)

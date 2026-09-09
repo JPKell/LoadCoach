@@ -9,6 +9,22 @@ packaging and release standards §3.
 
 ### Added
 
+- **Per-model `kv_cache_precision` and `flash_attention`** in `[runtime.models."<canonical id>"]`,
+  merged through the existing resolution chain (ADR-0120, row N6). Two new hard constraints,
+  evaluated on the *resolved* profile right after `model_disabled`: `runtime_setting_unhonoured`
+  (an Ollama registration asked for either — its settings are daemon-wide) and
+  `kv_cache_needs_flash_attention` (a quantized cache without flash attention, which llama.cpp
+  would silently serve at f16). Both surface in `route explain` as named rejections. `[runtime]
+  kv_cache_precision` is now one of `""`, `f16`, `q8_0`, `q4_0`, and a quantized default without
+  `flash_attention = true` is refused at load.
+- **`loadcoach models show` prints `runtime_profile`** — the profile the two configuration levels
+  resolve to for that model, with its `profile_hash` — and `runtime_profile_refusal` when its
+  provider cannot serve it as stated.
+- **`memory_max_bytes` / `memory_high_bytes` on a `llamacpp` registration**: the host-memory cap
+  ModelRack 0.8.0 applies to every server it launches (ADR-0119). Requires `modelrack>=0.8`.
+  `--fit` stays at llama-server's default here (ADR-0121 §3): a served model that runs slowly beats
+  one that does not run; the cap is what protects the host.
+
 - A **Providers** page and `GET`/`PUT`/`DELETE /api/v1/providers`: the `[providers.<name>]`
   registrations are now editable from the web admin, and the configuration file stays the source of
   truth (ADR-0117). A write edits only the provider tables — comments, key order and formatting

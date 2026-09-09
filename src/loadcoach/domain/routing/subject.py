@@ -369,6 +369,51 @@ def resolve_runtime_profile(
     return replace(resolved, adapters_registered=adapters_registered)
 
 
+def runtime_profile_refusal(
+    profile: RuntimeProfile, *, provider_kind: str
+) -> tuple[str, dict[str, object]] | None:
+    """Say why a resolved profile cannot be served as stated, or ``None`` (ADR-0120 rules 3, 4).
+
+    Evaluated on the *resolved* profile, because the chain may supply the two halves of a rule
+    from two levels — a default ``flash_attention`` and a per-model ``q8_0``, say.
+
+    Args:
+        profile: The resolved profile.
+        provider_kind: The candidate's provider kind.
+
+    Returns:
+        ``(reason, detail)`` for a rejection, or ``None``. ``runtime_setting_unhonoured`` when an
+        Ollama registration is asked for ``flash_attention`` or ``kv_cache_precision``, which it
+        reads once, daemon-wide — a served request whose recorded profile claimed either would
+        describe a server never launched that way. ``kv_cache_needs_flash_attention`` when a
+        quantized cache is asked for without flash attention, which llama.cpp would silently serve
+        at f16.
+    """
+    stated = {
+        key: value
+        for key, value in (
+            ("flash_attention", profile.flash_attention),
+            ("kv_cache_precision", profile.kv_cache_precision),
+        )
+        if value is not None
+    }
+    if provider_kind == "ollama" and stated:
+        field = next(iter(stated))
+        return (
+            "runtime_setting_unhonoured",
+            {"field": field, "value": stated[field], "provider_kind": provider_kind},
+        )
+    if profile.kv_cache_precision in {"q8_0", "q4_0"} and profile.flash_attention is not True:
+        return (
+            "kv_cache_needs_flash_attention",
+            {
+                "kv_cache_precision": profile.kv_cache_precision,
+                "flash_attention": profile.flash_attention,
+            },
+        )
+    return None
+
+
 def _merge(base: RuntimeProfile, layer: RuntimeProfile | None) -> RuntimeProfile:
     """Return ``base`` with every field ``layer`` actually states overriding it."""
     if layer is None:

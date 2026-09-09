@@ -232,6 +232,9 @@ Applied in this order; the first failure records the rejection and stops evaluat
 
 | Constraint | Rejection reason | Source |
 |---|---|---|
+| An operator disabled the model | `model_disabled` | Registry ([ADR-0118](../../adr/0118-a-discovered-model-can-be-disabled.md)) |
+| The resolved profile asks an Ollama registration for `flash_attention` or `kv_cache_precision`, which it reads daemon-wide | `runtime_setting_unhonoured` | Resolved profile + provider kind ([ADR-0120](../../adr/0120-kv-cache-precision-and-flash-attention-are-per-model-llamacpp-settings.md) rule 4) |
+| The resolved profile asks for a `q8_0`/`q4_0` KV cache without flash attention | `kv_cache_needs_flash_attention` | Resolved profile ([ADR-0120](../../adr/0120-kv-cache-precision-and-flash-attention-are-per-model-llamacpp-settings.md) rule 3) |
 | Model not available from any healthy provider | `model_unavailable` | Registry + provider health |
 | **Served** context < `min_context_tokens` | `context_too_small` | Resolved profile + provider |
 | Task profile needs a context the provider will not be asked to serve | `context_not_configurable` | `ProviderCapabilities.context_configurable` |

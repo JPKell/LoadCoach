@@ -31,7 +31,7 @@ dependencies = [
     # matrix's `lowest` cell proved 0.5 imports and then fails at the first bundle.
     "setspec>=0.6,<0.7",
     # 0.7 is `LlamaCppProvider`, `list_adapters()`, `register_adapters()` and `adapter_hot_swap`.
-    "modelrack>=0.7,<0.8",
+    "modelrack>=0.8,<0.9",
     "sweatmeter>=0.4,<0.5",
     "weightsdb>=0.2,<0.3",
     # Floor 0.2.2 (2026-09-07, row L6): 0.2.0 and 0.2.1 still pinned setspec<0.5, below this

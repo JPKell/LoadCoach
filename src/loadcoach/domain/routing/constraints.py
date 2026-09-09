@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Final
 from baseaicore import is_supported
 
 from loadcoach.domain.evidence_policy import EVIDENCE_EXCLUSIONS
+from loadcoach.domain.routing.subject import runtime_profile_refusal
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -507,6 +508,13 @@ def evaluate_constraints(
         # ADR-0118: evaluated before `model_unavailable` so that an explanation names the person
         # who excluded this model rather than blaming whatever the provider happens to report.
         return (Rejection("model_disabled", {"enabled": False}), (), None)
+
+    refusal = runtime_profile_refusal(subject.runtime_profile, provider_kind=facts.provider_kind)
+    if refusal is not None:
+        # ADR-0120 rules 3 and 4: a profile the provider cannot serve as stated is a person's
+        # configuration mistake, named before the provider's own state is consulted.
+        reason, refusal_detail = refusal
+        return (Rejection(reason, refusal_detail), (), None)
 
     if not facts.available or not subject.provider.healthy:
         return (

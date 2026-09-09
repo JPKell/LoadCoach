@@ -407,10 +407,48 @@ class ProviderRegistrationSettings(BaseModel):
         description="For kind='llamacpp': the server binary, found on PATH by default.",
         examples=["llama-server"],
     )
+    memory_max_bytes: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "For kind='llamacpp': a host-memory cap on every server this registration launches "
+            "(ADR-0119) — a systemd-run user scope with MemoryMax at this value and swap denied, "
+            "so a server that does not fit is killed rather than swapping the host. Unset "
+            "launches uncapped."
+        ),
+        examples=[25769803776],
+    )
+    memory_high_bytes: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "For kind='llamacpp': the throttle point below memory_max_bytes (MemoryHigh). "
+            "Requires memory_max_bytes and must be below it."
+        ),
+        examples=[23622320128],
+    )
     fake: FakeProviderSettings = Field(
         default_factory=FakeProviderSettings,
         description="For kind='fake' only; see ProviderSettings.fake.",
     )
+
+    @model_validator(mode="after")
+    def _check_memory_cap(self) -> ProviderRegistrationSettings:
+        """Refuse a throttle point without a cap, or one not below it (ADR-0119).
+
+        Raises:
+            ValueError: ``memory_high_bytes`` is set without ``memory_max_bytes``, or is not
+                below it. ModelRack refuses the same shape at construction; catching it here names
+                the configuration key rather than a constructor argument.
+        """
+        if self.memory_high_bytes is not None and (
+            self.memory_max_bytes is None or self.memory_high_bytes >= self.memory_max_bytes
+        ):
+            raise ValueError(
+                f"memory_high_bytes ({self.memory_high_bytes}) requires memory_max_bytes and "
+                f"must be below it (got {self.memory_max_bytes})."
+            )
+        return self
 
 
 class ProvidersSettings(BaseModel):
@@ -517,7 +555,14 @@ class ExecutionSettings(BaseModel):
 
 
 class RuntimeModelOverride(BaseModel):
-    """A per-model override of the default runtime profile (ADR-0023)."""
+    """A per-model override of the default runtime profile (ADR-0023).
+
+    Every field left ``None`` says nothing and lets the ``[runtime]`` default through.
+    ``kv_cache_precision`` and ``flash_attention`` are llama.cpp launch settings (ADR-0120): a
+    resolved profile that sets either for an Ollama registration is rejected by name at routing
+    time, and a quantized cache without flash attention likewise — both are evaluated on the
+    *resolved* profile, because the default level may supply the other half.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -526,6 +571,19 @@ class RuntimeModelOverride(BaseModel):
         gt=0,
         description="Context window to serve for this specific model, in tokens.",
         examples=[32768],
+    )
+    kv_cache_precision: Literal["f16", "q8_0", "q4_0"] | None = Field(
+        default=None,
+        description=(
+            "KV-cache precision for this model: f16, q8_0 or q4_0 (llamacpp only, ADR-0120). "
+            "q8_0 and q4_0 require flash attention on the resolved profile."
+        ),
+        examples=["q8_0"],
+    )
+    flash_attention: bool | None = Field(
+        default=None,
+        description="Flash attention for this model (llamacpp only, ADR-0120).",
+        examples=[True],
     )
 
 
@@ -549,8 +607,13 @@ class RuntimeSettings(BaseModel):
         ),
         examples=[0],
     )
-    kv_cache_precision: str = Field(
-        default="", description="Empty leaves it to the provider.", examples=[""]
+    kv_cache_precision: Literal["", "f16", "q8_0", "q4_0"] = Field(
+        default="",
+        description=(
+            "Empty leaves it to the provider. f16, q8_0 or q4_0 is sent to llama.cpp launches; "
+            "q8_0 and q4_0 require flash_attention = true (ADR-0120)."
+        ),
+        examples=[""],
     )
     flash_attention: bool = Field(
         default=False, description="Empty/false leaves it to the provider.", examples=[False]
@@ -565,6 +628,24 @@ class RuntimeSettings(BaseModel):
         description="Per-model runtime overrides, keyed by canonical model ID.",
         examples=[{"ollama/qwen3.5:9b-q8_0@sha256:1f3a9c4e2b70": {"context_size": 32768}}],
     )
+
+    @model_validator(mode="after")
+    def _check_quantized_cache_has_flash_attention(self) -> RuntimeSettings:
+        """Refuse a quantized default KV cache without flash attention (ADR-0120 rule 3).
+
+        Raises:
+            ValueError: ``kv_cache_precision`` is ``q8_0`` or ``q4_0`` and ``flash_attention``
+                is false. llama.cpp would keep the V cache at f16 without saying so, and a stored
+                profile naming a precision that was not served is a fabricated subject. A
+                per-model override is checked on the resolved profile at routing time instead.
+        """
+        if self.kv_cache_precision in {"q8_0", "q4_0"} and not self.flash_attention:
+            raise ValueError(
+                f"runtime.kv_cache_precision = {self.kv_cache_precision!r} requires "
+                "runtime.flash_attention = true: llama.cpp cannot quantize the V cache without "
+                "flash attention and would silently serve f16."
+            )
+        return self
 
 
 class QueueSettings(BaseModel):

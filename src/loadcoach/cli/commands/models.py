@@ -79,10 +79,13 @@ def show_model(
     Example:
         loadcoach models show "ollama/qwen3.5:9b@sha256:1f3a9c4e2b70"
     """
+    from loadcoach.domain.routing.subject import resolve_runtime_profile, runtime_profile_refusal
     from loadcoach.services.models import list_registry
+    from loadcoach.services.routing import runtime_layers
 
-    with open_database(config) as (database, _settings):
+    with open_database(config) as (database, settings):
         entries = list_registry(database)
+        defaults, per_model = runtime_layers(settings.runtime)
 
     matches = [entry for entry in entries if entry.canonical_id == canonical_id]
     if not matches:
@@ -91,6 +94,11 @@ def show_model(
         )
         raise typer.Exit(5)
     entry = matches[0]
+    # The profile routing would resolve for this model from configuration alone — the two
+    # operator levels of ADR-0023's chain — and whether its provider can serve it as stated
+    # (ADR-0120). A task profile or a request override may still change it per decision.
+    profile = resolve_runtime_profile(defaults=defaults, per_model=per_model.get(canonical_id))
+    refusal = runtime_profile_refusal(profile, provider_kind=entry.provider_kind)
     typer.echo(
         json.dumps(
             {
@@ -108,6 +116,16 @@ def show_model(
                 "declared_capabilities": entry.declared_capabilities,
                 "first_seen_at": entry.first_seen_at.isoformat(),
                 "last_seen_at": entry.last_seen_at.isoformat(),
+                "runtime_profile": {
+                    "context_size": profile.context_size,
+                    "kv_cache_precision": profile.kv_cache_precision,
+                    "flash_attention": profile.flash_attention,
+                    "keep_alive": profile.keep_alive,
+                    "profile_hash": profile.profile_hash,
+                },
+                "runtime_profile_refusal": (
+                    None if refusal is None else {"reason": refusal[0], **refusal[1]}
+                ),
             },
             indent=2,
         )

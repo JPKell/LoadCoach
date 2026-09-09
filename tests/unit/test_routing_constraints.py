@@ -90,11 +90,13 @@ def _subject(
     head_dim: int | None = 128,
     requested_context: int | None = None,
     adapter: AdapterFacts | None = None,
+    provider_kind: str = "fake",
+    runtime_profile: RuntimeProfile | None = None,
 ) -> ExecutionSubject:
     facts = ModelFacts(
         model_id="01ABCDEFGHJKMNPQRSTVWXYZ00",
         canonical_id=canonical_id,
-        provider_kind="fake",
+        provider_kind=provider_kind,
         provider_model_name="m",
         available=available,
         unavailable_reason=None if available else "not reported by the last discovery",
@@ -110,7 +112,9 @@ def _subject(
     return ExecutionSubject(
         facts=facts,
         provider=provider or ProviderFacts(context_configurable=True, supports_tool_use=True),
-        runtime_profile=RuntimeProfile(
+        runtime_profile=runtime_profile
+        if runtime_profile is not None
+        else RuntimeProfile(
             context_size=requested_context if requested_context is not None else served
         ),
         served_context=ServedContext(tokens=served, source=source),
@@ -239,6 +243,52 @@ def test_a_disabled_model_is_rejected_before_anything_else_is_evaluated() -> Non
     assert rejection is not None
     assert rejection.reason == "model_disabled"
     assert rejection.detail["enabled"] is False
+
+
+def test_a_quantized_cache_on_ollama_is_rejected_by_name_before_availability() -> None:
+    """ADR-0120 rule 4: a person's configuration mistake, named before the provider's state."""
+    rejection, _, _ = evaluate_constraints(
+        _subject(
+            provider_kind="ollama",
+            available=False,
+            runtime_profile=RuntimeProfile(flash_attention=True, kv_cache_precision="q8_0"),
+        ),
+        estimate_vram(size_bytes=None, served_context=8192),
+        ConstraintInputs(),
+    )
+    assert rejection is not None
+    assert rejection.reason == "runtime_setting_unhonoured"
+    assert rejection.detail["field"] == "flash_attention"
+    assert rejection.detail["provider_kind"] == "ollama"
+
+
+def test_a_quantized_cache_without_flash_attention_is_rejected_on_the_resolved_profile() -> None:
+    """ADR-0120 rule 3: llama.cpp would silently serve f16."""
+    rejection, _, _ = evaluate_constraints(
+        _subject(
+            provider_kind="llamacpp", runtime_profile=RuntimeProfile(kv_cache_precision="q4_0")
+        ),
+        estimate_vram(size_bytes=None, served_context=8192),
+        ConstraintInputs(),
+    )
+    assert rejection is not None
+    assert rejection.reason == "kv_cache_needs_flash_attention"
+    assert rejection.detail["kv_cache_precision"] == "q4_0"
+
+
+def test_a_quantized_cache_with_flash_attention_on_llamacpp_passes_this_gate() -> None:
+    rejection, _, _ = evaluate_constraints(
+        _subject(
+            provider_kind="llamacpp",
+            runtime_profile=RuntimeProfile(flash_attention=True, kv_cache_precision="q4_0"),
+        ),
+        estimate_vram(size_bytes=None, served_context=8192),
+        ConstraintInputs(),
+    )
+    assert rejection is None or rejection.reason not in {
+        "runtime_setting_unhonoured",
+        "kv_cache_needs_flash_attention",
+    }
 
 
 def test_advertised_131072_served_4096_is_rejected_as_context_too_small() -> None:

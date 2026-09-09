@@ -98,7 +98,7 @@ Cross-provider policy, plus the ``[providers.<name>]`` registrations themselves.
 | Key | Environment variable | Type | Default | Range | Runtime-changeable | Security | Example | Description |
 |---|---|---|---|---|---|---|---|---|
 | `runtime.context_size` | `LOADCOACH_RUNTIME__CONTEXT_SIZE` | `int` | `0` | ≥ 0 | no | — | `0` | Context window to serve, in tokens. 0 leaves it to the provider; a task profile with min_context_tokens sets it explicitly where the provider reports context_configurable. |
-| `runtime.kv_cache_precision` | `LOADCOACH_RUNTIME__KV_CACHE_PRECISION` | `str` | `''` | — | no | — | `''` | Empty leaves it to the provider. |
+| `runtime.kv_cache_precision` | `LOADCOACH_RUNTIME__KV_CACHE_PRECISION` | `'' \| 'f16' \| 'q8_0' \| 'q4_0'` | `''` | — | no | — | `''` | Empty leaves it to the provider. f16, q8_0 or q4_0 is sent to llama.cpp launches; q8_0 and q4_0 require flash_attention = true (ADR-0120). |
 | `runtime.flash_attention` | `LOADCOACH_RUNTIME__FLASH_ATTENTION` | `bool` | `False` | — | no | — | `False` | Empty/false leaves it to the provider. |
 | `runtime.keep_alive` | `LOADCOACH_RUNTIME__KEEP_ALIVE` | `str` | `'5m'` | — | no | — | `'5m'` | How long the provider holds a model resident after a call. |
 | `runtime.models` | `LOADCOACH_RUNTIME__MODELS` | `dict[str, table]` | `{}` | — | no | — | `{'ollama/qwen3.5:9b-q8_0@sha256:1f3a9c4e2b70': {'context_size': 32768}}` | Per-model runtime overrides, keyed by canonical model ID. |

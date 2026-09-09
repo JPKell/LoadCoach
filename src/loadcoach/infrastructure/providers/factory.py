@@ -321,6 +321,8 @@ def _build_llamacpp(settings: ProviderRegistrationSettings, *, field: str, name:
         state_dir=state_path,
         server_path=settings.server_path,
         timeout=settings.timeout_seconds,
+        memory_max_bytes=settings.memory_max_bytes,
+        memory_high_bytes=settings.memory_high_bytes,
     )
 
 

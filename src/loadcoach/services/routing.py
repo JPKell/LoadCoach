@@ -218,6 +218,7 @@ class RoutingPolicy:
         sent as an explicit ``false``, because a profile that says nothing about flash attention
         must hash the same as one written before the field existed.
         """
+        runtime_defaults, runtime_per_model = runtime_layers(runtime)
         return cls(
             strategy=routing.strategy,
             min_confidence=routing.min_confidence,
@@ -227,19 +228,42 @@ class RoutingPolicy:
             min_present_weight=routing.min_present_weight,
             remote_cost_factor=routing.remote_cost_factor,
             vram_headroom_bytes=telemetry.vram_headroom_bytes,
-            runtime_defaults=RuntimeProfile(
-                context_size=runtime.context_size or None,
-                kv_cache_precision=runtime.kv_cache_precision or None,
-                flash_attention=True if runtime.flash_attention else None,
-                keep_alive=runtime.keep_alive or None,
-            ),
-            runtime_per_model={
-                canonical_id: RuntimeProfile(context_size=override.context_size)
-                for canonical_id, override in runtime.models.items()
-            },
+            runtime_defaults=runtime_defaults,
+            runtime_per_model=runtime_per_model,
             machine_fingerprint=machine_fingerprint,
             evidence_url="" if evidence is None else evidence.freeweight_url.strip(),
         )
+
+
+def runtime_layers(runtime: RuntimeSettings) -> tuple[RuntimeProfile, dict[str, RuntimeProfile]]:
+    """Turn ``[runtime]`` and ``[runtime.models]`` into the two configuration layers of ADR-0023.
+
+    TOML has no ``None``, so the settings model spells "say nothing" as ``0``, ``""`` and
+    ``false``; the profile spells it ``None``. Shared by routing and ``loadcoach models show`` so
+    both resolve exactly the same profile for a model.
+
+    Args:
+        runtime: The ``[runtime]`` section.
+
+    Returns:
+        ``(defaults, per_model)`` — the default profile and the per-model overrides keyed by
+        canonical id, each carrying only the fields it states.
+    """
+    defaults = RuntimeProfile(
+        context_size=runtime.context_size or None,
+        kv_cache_precision=runtime.kv_cache_precision or None,
+        flash_attention=True if runtime.flash_attention else None,
+        keep_alive=runtime.keep_alive or None,
+    )
+    per_model = {
+        canonical_id: RuntimeProfile(
+            context_size=override.context_size,
+            kv_cache_precision=override.kv_cache_precision,
+            flash_attention=override.flash_attention,
+        )
+        for canonical_id, override in runtime.models.items()
+    }
+    return defaults, per_model
 
 
 @dataclass(frozen=True, slots=True)

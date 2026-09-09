@@ -48,6 +48,13 @@ _FLAG_MEANINGS: dict[str, str] = {
 
 _REJECTION_MEANINGS: dict[str, str] = {
     "model_disabled": "an operator disabled this model here",
+    "runtime_setting_unhonoured": (
+        "its provider cannot honour a configured runtime setting (Ollama's flash attention and "
+        "KV-cache type are daemon-wide)"
+    ),
+    "kv_cache_needs_flash_attention": (
+        "its resolved profile asks for a quantized KV cache without flash attention"
+    ),
     "model_unavailable": "the provider currently reports the model as unavailable",
     "insufficient_vram": "its estimated footprint does not fit in the free VRAM of any device",
     "insufficient_ram": "its estimated footprint does not fit in free host RAM",
