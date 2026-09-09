@@ -18,6 +18,7 @@ import re
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Final
 
 from baseaicore import SuiteError, new_id
@@ -36,7 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from loadcoach.__about__ import __version__
-from loadcoach.config import LOOPBACK_HOSTS, Settings
+from loadcoach.config import LOOPBACK_HOSTS, Settings, resolve_config_path
 from loadcoach.infrastructure.providers.factory import (
     ProviderRegistration,
     build_registrations,
@@ -56,6 +57,7 @@ from loadcoach.web.routes import evidence as evidence_routes
 from loadcoach.web.routes import generate as generate_routes
 from loadcoach.web.routes import jobs as jobs_routes
 from loadcoach.web.routes import models as models_routes
+from loadcoach.web.routes import providers as providers_routes
 from loadcoach.web.routes import queue as queue_routes
 from loadcoach.web.routes import reliability as reliability_routes
 from loadcoach.web.routes import routing as routing_routes
@@ -369,7 +371,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.provider = None
 
 
-def create_app(settings: Settings) -> FastAPI:
+def create_app(settings: Settings, *, config_path: Path | None = None) -> FastAPI:
     """Build the FastAPI application for the given settings.
 
     Registers, from outermost to innermost: MirrorWall's request-ID middleware, its Host-header
@@ -391,6 +393,9 @@ def create_app(settings: Settings) -> FastAPI:
         lifespan=_lifespan,
     )
     app.state.settings = settings
+    # The file a provider edit writes (ADR-0117). Resolved here when the caller did not say,
+    # which is what a test that builds an app without a file gets.
+    app.state.config_path = config_path if config_path is not None else resolve_config_path()
     app.state.database = None
     app.state.provider = None
     app.state.telemetry_collector = None
@@ -430,6 +435,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(evidence_routes.router, prefix="/api/v1")
     app.include_router(reliability_routes.router, prefix="/api/v1")
     app.include_router(settings_routes.router, prefix="/api/v1")
+    app.include_router(providers_routes.router, prefix="/api/v1")
     app.include_router(dashboard_routes.ui_router)
     app.include_router(models_routes.ui_router)
     app.include_router(task_profiles_routes.ui_router)
@@ -438,6 +444,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(queue_routes.ui_router)
     app.include_router(evidence_routes.ui_router)
     app.include_router(reliability_routes.ui_router)
+    app.include_router(providers_routes.ui_router)
     app.include_router(system_routes.ui_router)
     app.include_router(settings_routes.ui_router)
     app.include_router(access_routes.ui_router)

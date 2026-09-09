@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from baseaicore import is_supported
+from baseaicore import ValidationError, is_supported
 from modelrack import ProviderError
 from weightsdb import upsert
 
@@ -42,6 +42,7 @@ __all__ = [
     "DiscoveryOutcome",
     "RegistryEntry",
     "discover_models",
+    "set_model_enabled",
     "import_manual_capability_scores",
     "list_registry",
     "try_discover_models",
@@ -328,6 +329,38 @@ def discover_models(
     )
 
 
+def set_model_enabled(
+    database: Database,
+    *,
+    model_id: str,
+    enabled: bool,
+    principal: Principal | None = None,
+) -> None:
+    """Permit or refuse this model, and nothing else (ADR-0118).
+
+    The flag is an operator's decision. Discovery never writes it, so a disabled model that
+    disappears from the provider and comes back is still disabled, and nothing about the model's
+    evidence, reliability or history changes either way.
+
+    Args:
+        database: The application's database handle.
+        model_id: The registry ULID of the row to change.
+        enabled: Whether the model may be routed to and executed on.
+        principal: Who asks; ``admin`` is required, as it is for discovery.
+
+    Raises:
+        InsufficientScope: ``principal`` is below ``admin``; nothing was written.
+        ValidationError: No registry row has that id.
+    """
+    authorize(principal, "admin")
+    with database.write() as session:
+        model = session.get(Model, model_id)
+        if model is None:
+            message = f"no model with id {model_id!r} is in the registry."
+            raise ValidationError(message, details={"field": "model_id", "value": model_id})
+        model.enabled = enabled
+
+
 @dataclass(frozen=True, slots=True)
 class RegistryEntry:
     """One model as shown by ``GET /models`` and ``loadcoach models list``."""
@@ -353,6 +386,9 @@ class RegistryEntry:
     as "not recorded" — a row discovered before registrations had names."""
     is_remote: bool = False
     """The registration's declared egress class, never inferred from the kind (ADR-0055 rule 4)."""
+    enabled: bool = True
+    """Whether an operator permits this model to be used (ADR-0118). Not ``available``: that is
+    the provider's report, this is a person's decision, and neither implies the other."""
 
 
 def list_registry(database: Database) -> tuple[RegistryEntry, ...]:
@@ -387,6 +423,7 @@ def list_registry(database: Database) -> tuple[RegistryEntry, ...]:
                     model_id=model.id,
                     provider_name=model.provider_name,
                     is_remote=model.is_remote,
+                    enabled=model.enabled,
                 )
             )
         return tuple(entries)

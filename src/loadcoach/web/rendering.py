@@ -31,6 +31,7 @@ TELEMETRY_STREAM_URL = "/api/v1/system/telemetry/stream"
 NAV_ITEMS: tuple[dict[str, str], ...] = (
     {"key": "dashboard", "href": "/", "label": "Dashboard"},
     {"key": "models", "href": "/models", "label": "Models"},
+    {"key": "providers", "href": "/providers", "label": "Providers"},
     {"key": "task-profiles", "href": "/task-profiles", "label": "Task profiles"},
     {"key": "routing", "href": "/routing", "label": "Routing"},
     {"key": "jobs", "href": "/jobs", "label": "Jobs"},

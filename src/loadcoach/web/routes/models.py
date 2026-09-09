@@ -7,16 +7,28 @@ residency api.md §2 names arrive with P8, read from the same services their own
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Annotated, Any
+from urllib.parse import parse_qs
 
 from baseaicore import SuiteError
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Body, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from loadcoach.domain.authorization import authorize
-from loadcoach.services.models import ModelOverview, discover_models, registry_overview
+from loadcoach.domain.priority import JobClass
+from loadcoach.domain.routing.subject import RuntimeOverrides
+from loadcoach.services.models import (
+    ModelOverview,
+    discover_models,
+    registry_overview,
+    set_model_enabled,
+)
+from loadcoach.services.queue import JobSubmission, enqueue
 from loadcoach.web.auth import CurrentPrincipal
-from loadcoach.web.rendering import render
+from loadcoach.web.csrf import render_form_page
+
+if TYPE_CHECKING:
+    from loadcoach.services.database import Database
 
 __all__ = ["router", "ui_router"]
 
@@ -49,6 +61,7 @@ def _model_to_json(overview: ModelOverview) -> dict[str, object]:
         "parameter_count": entry.parameter_count,
         "available": entry.available,
         "unavailable_reason": entry.unavailable_reason,
+        "enabled": entry.enabled,
         "declared_capabilities": entry.declared_capabilities,
         "first_seen_at": entry.first_seen_at.isoformat(),
         "last_seen_at": entry.last_seen_at.isoformat(),
@@ -73,13 +86,45 @@ async def models_page(request: Request, principal: CurrentPrincipal) -> HTMLResp
     """Render every model with evidence coverage, reliability and residency."""
     authorize(principal, "read")
     overviews = registry_overview(request.app.state.database)
-    return HTMLResponse(render("models/index.html", page="models", models=overviews))
+    # ``render_form_page`` rather than ``render``: every row carries the enable/disable and warm
+    # forms, and a form on this page needs the same CSRF token the settings page's does.
+    return render_form_page(
+        request,
+        "models/index.html",
+        page="models",
+        models=overviews,
+        scanned=request.query_params.get("scanned") == "1",
+    )
 
 
 class ModelNotFound(SuiteError):
     """No registry row matches ``model_ref`` — or more than one does (an ambiguous prefix)."""
 
     code = "MODEL_NOT_FOUND"
+
+
+def _resolve(database: Database, model_ref: str) -> ModelOverview:
+    """The one registry row ``model_ref`` names.
+
+    ``model_ref`` is the registry ULID or an unambiguous prefix of it — never the canonical ID,
+    which does not survive a path segment (ADR-0024).
+
+    Raises:
+        ModelNotFound: Nothing matches, or more than one row does.
+    """
+    matches = [
+        overview
+        for overview in registry_overview(database)
+        if overview.entry.model_id.startswith(model_ref)
+    ]
+    if len(matches) != 1:
+        raise ModelNotFound(
+            f"No model matches {model_ref!r}."
+            if not matches
+            else f"{model_ref!r} is ambiguous: {len(matches)} models start with it.",
+            details={"model_ref": model_ref, "matches": [m.entry.model_id for m in matches]},
+        )
+    return matches[0]
 
 
 @router.post("/models/discover", summary="Re-discover models through the provider")
@@ -112,19 +157,7 @@ def get_model(request: Request, principal: CurrentPrincipal, model_ref: str) -> 
     """
     authorize(principal, "read")
     database = request.app.state.database
-    matches = [
-        overview
-        for overview in registry_overview(database)
-        if overview.entry.model_id.startswith(model_ref)
-    ]
-    if len(matches) != 1:
-        raise ModelNotFound(
-            f"No model matches {model_ref!r}."
-            if not matches
-            else f"{model_ref!r} is ambiguous: {len(matches)} models start with it.",
-            details={"model_ref": model_ref, "matches": [m.entry.model_id for m in matches]},
-        )
-    overview = matches[0]
+    overview = _resolve(database, model_ref)
     from sqlalchemy import select
 
     from loadcoach.infrastructure.db.models import CapabilityEvidence, Model
@@ -167,3 +200,97 @@ def get_model(request: Request, principal: CurrentPrincipal, model_ref: str) -> 
         "reliability_by_task_profile": reliability,
         "circuit_breaker": {"state": overview.reliability["circuit_state"]},
     }
+
+
+@router.post("/models/{model_ref}/enabled", summary="Permit or refuse a model")
+def post_model_enabled(
+    request: Request,
+    principal: CurrentPrincipal,
+    model_ref: str,
+    body: Annotated[dict[str, Any], Body()],
+) -> dict[str, object]:
+    """Set the operator's ``enabled`` flag on one model (ADR-0118); ``admin`` scope.
+
+    A disabled model stays in the registry with its evidence and its history; routing rejects it
+    by name with ``model_disabled``, and asking for it explicitly is an error rather than a quiet
+    substitution.
+    """
+    authorize(principal, "admin")
+    database = request.app.state.database
+    overview = _resolve(database, model_ref)
+    set_model_enabled(
+        database,
+        model_id=overview.entry.model_id,
+        enabled=bool(body.get("enabled", True)),
+        principal=principal,
+    )
+    return _model_to_json(_resolve(database, overview.entry.model_id))
+
+
+@router.post("/models/{model_ref}/warm", summary="Load a model by running a job on it")
+def post_model_warm(
+    request: Request, principal: CurrentPrincipal, model_ref: str
+) -> dict[str, object]:
+    """Make a model resident by submitting one small pinned job through the ordinary queue.
+
+    Loading a model is something the executor does on the way to running work: admission,
+    residency and eviction all live on that path, and a second way in would be a second admission
+    policy to keep correct. So this enqueues a `general.chat` job pinned to the model
+    (routing §10's ``overrides.model``) and lets that path do the loading it already does.
+    """
+    authorize(principal, "write")
+    app = request.app
+    overview = _resolve(app.state.database, model_ref)
+    runtime = app.state.queue_runtime
+    outcome = enqueue(
+        app.state.database,
+        JobSubmission(
+            task="general.chat",
+            prompt="Reply with the single word: ready.",
+            overrides=RuntimeOverrides(model=overview.entry.canonical_id, disallow_fallback=True),
+            job_class=JobClass("interactive"),
+            idempotent=True,
+            source="loadcoach.ui",
+        ),
+        now=datetime.now(UTC),
+        queue_settings=app.state.settings.queue,
+        execution_settings=app.state.settings.execution,
+        sink=app.state.event_sink,
+        wakeup=None if runtime is None else runtime.wakeup,
+        principal=principal,
+    )
+    return {"job_id": outcome.job_id, "model_ref": overview.entry.model_id}
+
+
+@ui_router.post("/models/{model_ref}/enabled", summary="Enable or disable from the page")
+async def models_enabled_form(
+    request: Request, principal: CurrentPrincipal, model_ref: str
+) -> RedirectResponse:
+    """The models page's enable/disable buttons (CSRF-checked)."""
+    authorize(principal, "admin")
+    raw = parse_qs((await request.body()).decode("utf-8", "replace"))
+    database = request.app.state.database
+    overview = _resolve(database, model_ref)
+    set_model_enabled(
+        database,
+        model_id=overview.entry.model_id,
+        enabled=raw.get("enabled", ["false"])[-1] == "true",
+        principal=principal,
+    )
+    return RedirectResponse("/models", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@ui_router.post("/models/discover", summary="Scan for models from the page")
+async def models_discover_form(request: Request, principal: CurrentPrincipal) -> RedirectResponse:
+    """The models page's scan button: one discovery pass over every registration."""
+    discover(request, principal)
+    return RedirectResponse("/models?scanned=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@ui_router.post("/models/{model_ref}/warm", summary="Warm from the page")
+async def models_warm_form(
+    request: Request, principal: CurrentPrincipal, model_ref: str
+) -> RedirectResponse:
+    """The models page's warm button: submits the pinned job and shows it on the jobs page."""
+    outcome = post_model_warm(request, principal, model_ref)
+    return RedirectResponse(f"/jobs/{outcome['job_id']}", status_code=status.HTTP_303_SEE_OTHER)

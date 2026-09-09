@@ -503,6 +503,11 @@ def evaluate_constraints(
     facts = subject.facts
     served = subject.served_context
 
+    if not facts.enabled:
+        # ADR-0118: evaluated before `model_unavailable` so that an explanation names the person
+        # who excluded this model rather than blaming whatever the provider happens to report.
+        return (Rejection("model_disabled", {"enabled": False}), (), None)
+
     if not facts.available or not subject.provider.healthy:
         return (
             Rejection(

@@ -82,6 +82,7 @@ def _subject(
     source: ServedContextSource = "configured",
     max_context: int | None = 32768,
     available: bool = True,
+    enabled: bool = True,
     provider: ProviderFacts | None = None,
     is_remote: bool = False,
     layers: int | None = 32,
@@ -97,6 +98,7 @@ def _subject(
         provider_model_name="m",
         available=available,
         unavailable_reason=None if available else "not reported by the last discovery",
+        enabled=enabled,
         max_context=max_context,
         size_bytes=size_bytes,
         parameter_count=8_000_000_000,
@@ -225,6 +227,18 @@ def test_model_unavailable_names_the_reason() -> None:
     assert rejection is not None
     assert rejection.reason == "model_unavailable"
     assert rejection.detail["reason"] == "not reported by the last discovery"
+
+
+def test_a_disabled_model_is_rejected_before_anything_else_is_evaluated() -> None:
+    """ADR-0118: an operator's exclusion is the named reason, not an incidental provider state."""
+    rejection, _, _ = evaluate_constraints(
+        _subject(enabled=False, available=False),
+        estimate_vram(size_bytes=None, served_context=8192),
+        ConstraintInputs(),
+    )
+    assert rejection is not None
+    assert rejection.reason == "model_disabled"
+    assert rejection.detail["enabled"] is False
 
 
 def test_advertised_131072_served_4096_is_rejected_as_context_too_small() -> None:

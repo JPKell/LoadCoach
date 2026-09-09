@@ -1171,6 +1171,10 @@ sweatmeter==0.4.0 \
     --hash=sha256:026b952ebcb1a090510cfb44c79e6e23fb8b23f8e006f5524ebad8819bdbb2c7 \
     --hash=sha256:ae405aab5fb3b280e545baee5044035b1ca15707a4e5003ea29f1e584d43ff5d
     # via loadcoach (pyproject.toml)
+tomlkit==0.15.1 \
+    --hash=sha256:177a05aece5a8ca5266fd3c448abb47b8d352f09d477d3ca8332db4d89b24304 \
+    --hash=sha256:e25bbf38843005246210a12982776f27f99cb9be67160e14434d0c0d21ee1e97
+    # via loadcoach (pyproject.toml)
 typer==0.27.2 \
     --hash=sha256:269b7eb9d3c202ca84b4bc9618cb04ebb43d3d4d1e567e4c768607232c05f945 \
     --hash=sha256:b3a5fc4342d5fc8fda8fc3010b1cf117e9249aab7fae800c2eff62fd3842d97d

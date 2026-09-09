@@ -90,8 +90,18 @@ GET  /jobs/{id}/explanation      GET  /queue                    GET  /evidence
 POST /evidence/import            GET  /evidence/sources         GET  /reliability
 GET  /settings                   PUT  /settings                 GET  /routing-decisions
 GET  /routing-decisions/{id}     POST /queue/pause              POST /queue/resume
-POST /queue/drain
+POST /queue/drain                GET  /providers                PUT  /providers/{name}
+DELETE /providers/{name}         POST /models/{model_ref}/enabled
+POST /models/{model_ref}/warm
 ```
+
+`GET`/`PUT`/`DELETE /providers` read and write the `[providers.<name>]` tables in the configuration
+file itself, in place and with the operator's comments intact
+([ADR-0117](../../adr/0117-provider-registrations-are-edited-in-place-in-the-config-file.md)); the
+file stays the source of truth, and `providers.allow_remote` — the egress boundary — stays
+config-only. `POST /models/{model_ref}/enabled` carries an operator's decision that a discovered
+model may not be used, which routing then names as `model_disabled`
+([ADR-0118](../../adr/0118-a-discovered-model-can-be-disabled.md)).
 
 `POST /route` performs routing **without executing** — the "explain what you would do" endpoint, and
 the cheapest way for a caller to understand the system.

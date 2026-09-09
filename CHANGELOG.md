@@ -7,6 +7,25 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Added
+
+- A **Providers** page and `GET`/`PUT`/`DELETE /api/v1/providers`: the `[providers.<name>]`
+  registrations are now editable from the web admin, and the configuration file stays the source of
+  truth (ADR-0117). A write edits only the provider tables — comments, key order and formatting
+  everywhere else survive it — is validated by loading the candidate document through the ordinary
+  precedence chain, keeps the previous file as `config.toml.bak`, and re-registers the running
+  server so the change is live without a restart. `providers.allow_remote` stays config-only: a
+  registration marked remote can be added here and stays unroutable until a human edits the file.
+  A file that changed since the page was rendered is a `409 CONFLICT`, not an overwrite.
+- A discovered model can be **disabled** (ADR-0118): `POST /api/v1/models/{model_ref}/enabled`, and
+  a button per row on the Models page. Routing rejects a disabled candidate as `model_disabled`
+  before it evaluates availability, so an explanation names the person who excluded it; asking for
+  one by name is refused rather than answered by a substitute. The row, its evidence and its
+  history all stay, and discovery never writes the flag.
+- The Models page gained a **Scan** button over the existing `POST /models/discover`, and a **Warm**
+  button that loads a model by enqueuing one small pinned `general.chat` job — the ordinary path,
+  which already owns admission, residency and eviction.
+
 ### Changed
 
 - One `loadcoach.cli._backend` (`load_settings_or_exit`, `open_database`, `open_loaded_database`)

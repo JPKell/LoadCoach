@@ -425,6 +425,38 @@ class QueueRuntime:
         )
         self.resident_model_ids = self.residency.resident_model_ids
 
+    def replace_registrations(self, registrations: Sequence[ProviderRegistration]) -> None:
+        """Point the workers at the registrations the configuration file now names.
+
+        For the provider admin (ADR-0117 decision 5): a registration written to the file takes
+        effect on the next dispatch instead of at the next restart. Same shape as
+        :meth:`replace_provider` — the primary handle, the registry and every residency service
+        are replaced together, because a residency service holds its own provider handle and one
+        left behind would load models on a provider this call retired.
+
+        Args:
+            registrations: Every registration the reloaded configuration builds. Must not be
+                empty; ``build_registrations`` never returns an empty tuple.
+        """
+        self.registrations = tuple(registrations)
+        self.provider = self.registrations[0].provider
+        self.residency = ResidencyService(
+            self.database, self.provider, settings=self.settings.residency, clock=self.clock
+        )
+        self.residency_by_name = {
+            registration.name: ResidencyService(
+                self.database,
+                registration.provider,
+                settings=self.settings.residency,
+                clock=self.clock,
+            )
+            for registration in self.registrations
+        }
+        services = tuple(self.residency_by_name.values()) or (self.residency,)
+        self.resident_model_ids = lambda: frozenset(
+            model_id for service in services for model_id in service.resident_model_ids()
+        )
+
     def apply_runtime_settings(self) -> dict[str, Any]:
         """Re-read the runtime-changeable settings and apply the routing ones to ``policy``.
 

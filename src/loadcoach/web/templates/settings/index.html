@@ -4,8 +4,11 @@
 {% block content %}
 <h2>Settings</h2>
 <p class="muted">Only what can change while the server runs. Everything else — the bind, allowed
-hosts, providers, credentials, what is retained — lives in <span class="mono">config.toml</span> or
-the environment and is refused here by name (api.md §9). A change is applied by the scheduler
+hosts, credentials, what is retained — lives in <span class="mono">config.toml</span> or
+the environment and is refused here by name (api.md §9). Provider registrations live in that file
+too and are edited on the <a href="/providers">Providers</a> page, which writes the
+<span class="mono">[providers]</span> tables in place (ADR-0117); the egress boundary,
+<span class="mono">providers.allow_remote</span>, stays config-only there as well. A change is applied by the scheduler
 within a second, and reaches every process sharing this database.</p>
 <p class="muted">A key set in the environment beats a stored value (configuration standards §7):
 <span class="mono">defaults → file → database → env → CLI</span>. A stored value that cannot take

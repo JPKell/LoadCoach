@@ -154,7 +154,10 @@ def bootstrap() -> Application:
         # After discovery: a manual score names a model by canonical_id and is skipped, not an
         # error, if that model has not been discovered yet.
         import_manual_capability_scores(database, now=datetime.now(UTC))
-    return Application(loaded_settings=loaded, app=create_app(loaded.settings))
+    return Application(
+        loaded_settings=loaded,
+        app=create_app(loaded.settings, config_path=loaded.config_path),
+    )
 
 
 def create_app_from_environment() -> FastAPI:

@@ -1618,6 +1618,232 @@
         ]
       }
     },
+    "/api/v1/models/{model_ref}/enabled": {
+      "post": {
+        "description": "Set the operator's ``enabled`` flag on one model (ADR-0118); ``admin`` scope.\n\nA disabled model stays in the registry with its evidence and its history; routing rejects it\nby name with ``model_disabled``, and asking for it explicitly is an error rather than a quiet\nsubstitution.",
+        "operationId": "post_model_enabled_api_v1_models__model_ref__enabled_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model_ref",
+            "required": true,
+            "schema": {
+              "title": "Model Ref",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Post Model Enabled Api V1 Models  Model Ref  Enabled Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Permit or refuse a model",
+        "tags": [
+          "models"
+        ]
+      }
+    },
+    "/api/v1/models/{model_ref}/warm": {
+      "post": {
+        "description": "Make a model resident by submitting one small pinned job through the ordinary queue.\n\nLoading a model is something the executor does on the way to running work: admission,\nresidency and eviction all live on that path, and a second way in would be a second admission\npolicy to keep correct. So this enqueues a `general.chat` job pinned to the model\n(routing \u00a710's ``overrides.model``) and lets that path do the loading it already does.",
+        "operationId": "post_model_warm_api_v1_models__model_ref__warm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model_ref",
+            "required": true,
+            "schema": {
+              "title": "Model Ref",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Post Model Warm Api V1 Models  Model Ref  Warm Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Load a model by running a job on it",
+        "tags": [
+          "models"
+        ]
+      }
+    },
+    "/api/v1/providers": {
+      "get": {
+        "description": "Every registration, with what an environment variable shadows, and the file they live in.",
+        "operationId": "get_providers_api_v1_providers_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Providers Api V1 Providers Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The configured provider registrations",
+        "tags": [
+          "providers"
+        ]
+      }
+    },
+    "/api/v1/providers/{name}": {
+      "delete": {
+        "description": "Remove ``[providers.<name>]``; ``admin`` scope. The last registration cannot be removed.",
+        "operationId": "delete_provider_api_v1_providers__name__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Provider Api V1 Providers  Name  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove one registration",
+        "tags": [
+          "providers"
+        ]
+      },
+      "put": {
+        "description": "Write ``[providers.<name>]`` into the configuration file; ``admin`` scope.\n\n``400 VALIDATION_ERROR`` names a key this refuses to write or a value the registration model\nrejects; ``409 CONFLICT`` means the file changed since ``base_digest`` was read.",
+        "operationId": "put_provider_api_v1_providers__name__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Provider Api V1 Providers  Name  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create or change one registration",
+        "tags": [
+          "providers"
+        ]
+      }
+    },
     "/api/v1/queue": {
       "get": {
         "description": "Queue \u00a711's report.",

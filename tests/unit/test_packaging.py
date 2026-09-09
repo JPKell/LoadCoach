@@ -35,7 +35,17 @@ SUITE_PACKAGES = frozenset(
 # gold-standards.md §1.1: the enumerated non-suite runtime dependencies approved for
 # LoadCoach.
 APPROVED_NON_SUITE_DEPENDENCIES: frozenset[str] = frozenset(
-    {"alembic", "fastapi", "httpx", "jinja2", "pydantic", "sqlalchemy", "typer", "uvicorn"}
+    {
+        "alembic",
+        "fastapi",
+        "httpx",
+        "jinja2",
+        "pydantic",
+        "sqlalchemy",
+        "tomlkit",
+        "typer",
+        "uvicorn",
+    }
 )
 
 

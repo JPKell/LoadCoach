@@ -2,10 +2,24 @@
 {% from "mirrorwall/components.html" import badge, empty_state, table %}
 {% block title %}Models — LoadCoach{% endblock %}
 {% block content %}
+{# Rendered by ``render_form_page``; the defaults keep the page renderable by a caller that
+   has no request behind it, which is how the template tests render it. #}
+{% set token_field = csrf_field_name | default("csrf_token") %}
+{% set token_value = csrf_token | default("") %}
 <h2>Models</h2>
 <p class="muted">Every model discovery has seen, with what is known about it: declared flags, imported
 benchmark evidence (<a href="/evidence">Benchmarks</a>), production reliability
 (<a href="/reliability">Reliability</a>) and whether it is loaded right now (<a href="/queue">Queue</a>).</p>
+<p class="muted">Scanning asks every configured registration (<a href="/providers">Providers</a>) what it
+serves now. Disabling keeps a model in the registry, with its evidence and history, and stops routing
+choosing it: it is rejected by name as <span class="mono">model_disabled</span>, and asking for it
+explicitly is refused rather than quietly answered by another model (ADR-0118). Warming loads a model
+by running one small pinned job on it, which is the same path any job takes.</p>
+{% if scanned | default(false) %}<p class="notice" role="status">Scanned. The registry below is what the providers reported.</p>{% endif %}
+<form method="post" action="/models/discover">
+  <input type="hidden" name="{{ token_field }}" value="{{ token_value }}">
+  <button type="submit" data-variant="primary">Scan for models</button>
+</form>
 {% if not models %}
 {{ empty_state("No models discovered yet. Run `loadcoach models refresh` or start the provider.") }}
 {% else %}
@@ -13,7 +27,7 @@ benchmark evidence (<a href="/evidence">Benchmarks</a>), production reliability
   {"label": "Canonical ID"}, {"label": "Family"}, {"label": "Context", "numeric": true},
   {"label": "Size", "numeric": true}, {"label": "Declared capabilities"},
   {"label": "Evidence", "numeric": true}, {"label": "Reliability"}, {"label": "Resident"},
-  {"label": "Availability"}
+  {"label": "Availability"}, {"label": "Use"}
 ] %}
 {% set rows = [] %}
 {% for item in models %}
@@ -34,7 +48,15 @@ benchmark evidence (<a href="/evidence">Benchmarks</a>), production reliability
     ~ ((" · " ~ badge(item.reliability.circuit_state | e, tone="danger")) if item.reliability.circuit_state != "closed" else "")) | safe if item.reliability.pairs else "no production evidence",
   (badge("resident", tone="success") ~ " GPU " ~ (item.residency.gpu_indexes | join(", ") | e)) | safe if item.residency.resident else "no",
   badge("available", tone="success") if model.available
-    else badge("unavailable", tone="danger") ~ " " ~ (model.unavailable_reason or "")
+    else badge("unavailable", tone="danger") ~ " " ~ (model.unavailable_reason or ""),
+  ((badge("enabled", tone="success") if model.enabled else badge("disabled", tone="danger"))
+    ~ '<form method="post" action="/models/' ~ (model.model_id | e) ~ '/enabled">'
+    ~ '<input type="hidden" name="' ~ token_field ~ '" value="' ~ token_value ~ '">'
+    ~ '<input type="hidden" name="enabled" value="' ~ ("false" if model.enabled else "true") ~ '">'
+    ~ '<button type="submit">' ~ ("Disable" if model.enabled else "Enable") ~ '</button></form>'
+    ~ '<form method="post" action="/models/' ~ (model.model_id | e) ~ '/warm">'
+    ~ '<input type="hidden" name="' ~ token_field ~ '" value="' ~ token_value ~ '">'
+    ~ '<button type="submit">Warm</button></form>') | safe
 ]) %}
 {# Adapter subjects sit immediately under the base they run on (dev-plan P10): one row each,
    naming the subject, the evidence source routing would use for it and the registration that
@@ -51,7 +73,8 @@ benchmark evidence (<a href="/evidence">Benchmarks</a>), production reliability
   "per-subject",
   "with its base",
   (badge("available", tone="success") if adapter.available
-    else badge("unavailable", tone="danger") ~ " " ~ (adapter.unavailable_reason or "")) | safe
+    else badge("unavailable", tone="danger") ~ " " ~ (adapter.unavailable_reason or "")) | safe,
+  "with its base"
 ]) %}
 {% endfor %}
 {% endfor %}

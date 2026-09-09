@@ -348,6 +348,7 @@ def _facts_for(model: Model, *, is_remote: bool) -> ModelFacts:
         artifact_digest=model.artifact_digest,
         available=model.available,
         unavailable_reason=model.unavailable_reason,
+        enabled=model.enabled,
         max_context=model.max_context,
         size_bytes=model.size_bytes,
         parameter_count=model.parameter_count,

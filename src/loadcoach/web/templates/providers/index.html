@@ -1,0 +1,89 @@
+{% extends "mirrorwall/base.html" %}
+{% block title %}Providers — LoadCoach{% endblock %}
+{% block content %}
+<h2>Providers</h2>
+<p class="muted">Each block below is one <span class="mono">[providers.&lt;name&gt;]</span> table in
+<span class="mono">{{ document.config_path }}</span>. Saving edits that file in place — comments and
+everything outside the provider tables are left exactly as they are — and the running server
+re-registers immediately. Every other value this process read at startup keeps what it read
+(ADR-0117).</p>
+<p class="muted">Remote providers are {% if document.allow_remote %}allowed{% else %}<strong>not
+allowed</strong>{% endif %} here. <span class="mono">providers.allow_remote</span> is the egress
+boundary and is config-only: a registration marked remote can be added on this page and stays
+unroutable until that key is changed in the file.</p>
+{% if saved %}<p class="notice" role="status">Saved. The file was written and the server re-registered.</p>{% endif %}
+
+{% for registration in document.registrations %}
+<form method="post" action="/providers">
+  <h3>{{ registration.name }}</h3>
+  <input type="hidden" name="{{ csrf_field_name }}" value="{{ csrf_token }}">
+  <input type="hidden" name="base_digest" value="{{ document.config_digest }}">
+  <input type="hidden" name="name" value="{{ registration.name }}">
+  <div class="field">
+    <label for="{{ registration.name }}-kind">kind</label>
+    <input type="text" id="{{ registration.name }}-kind" name="kind" value="{{ registration.kind }}"
+           aria-describedby="{{ registration.name }}-kind-hint">
+    <p class="field-hint" id="{{ registration.name }}-kind-hint">ollama, llamacpp or fake.</p>
+  </div>
+  <div class="field">
+    <label for="{{ registration.name }}-base_url">base_url</label>
+    <input type="text" id="{{ registration.name }}-base_url" name="base_url" value="{{ registration.base_url }}"
+           aria-describedby="{{ registration.name }}-base_url-hint">
+    <p class="field-hint" id="{{ registration.name }}-base_url-hint">The endpoint, where the kind takes one. Ignored by llamacpp.</p>
+  </div>
+  <div class="field">
+    <label for="{{ registration.name }}-timeout_seconds">timeout_seconds</label>
+    <input type="number" step="0.1" min="0.1" id="{{ registration.name }}-timeout_seconds"
+           name="timeout_seconds" value="{{ registration.timeout_seconds }}">
+  </div>
+  <div class="field">
+    <label for="{{ registration.name }}-model_directory">model_directory</label>
+    <input type="text" id="{{ registration.name }}-model_directory" name="model_directory"
+           value="{{ registration.model_directory }}" aria-describedby="{{ registration.name }}-model_directory-hint">
+    <p class="field-hint" id="{{ registration.name }}-model_directory-hint">For llamacpp: the directory of GGUF weights this server serves.</p>
+  </div>
+  <div class="field">
+    <label for="{{ registration.name }}-server_path">server_path</label>
+    <input type="text" id="{{ registration.name }}-server_path" name="server_path" value="{{ registration.server_path }}">
+  </div>
+  <div class="field">
+    <label for="{{ registration.name }}-remote"><input type="checkbox" id="{{ registration.name }}-remote"
+           name="remote"{% if registration.remote %} checked{% endif %}> remote</label>
+    <p class="field-hint">Declared, never inferred: this says the endpoint is somewhere other than this machine.</p>
+  </div>
+  {% if registration.shadowed_by %}
+  <p class="notice" role="status">Shadowed by <span class="mono">{{ registration.shadowed_by }}</span>:
+  the file is written, and the environment keeps winning until that variable is unset.</p>
+  {% endif %}
+  <button type="submit" name="action" value="save" data-variant="primary">Save {{ registration.name }}</button>
+  <button type="submit" name="action" value="delete">Remove {{ registration.name }}</button>
+</form>
+{% endfor %}
+
+<h3>Add a registration</h3>
+<form method="post" action="/providers">
+  <input type="hidden" name="{{ csrf_field_name }}" value="{{ csrf_token }}">
+  <input type="hidden" name="base_digest" value="{{ document.config_digest }}">
+  <div class="field">
+    <label for="new-name">name</label>
+    <input type="text" id="new-name" name="name" value="" aria-describedby="new-name-hint">
+    <p class="field-hint" id="new-name-hint">Yours to choose. It is what routing explanations, the models page and <span class="mono">doctor</span> call this provider.</p>
+  </div>
+  <div class="field">
+    <label for="new-kind">kind</label>
+    <input type="text" id="new-kind" name="kind" value="ollama">
+  </div>
+  <div class="field">
+    <label for="new-base_url">base_url</label>
+    <input type="text" id="new-base_url" name="base_url" value="http://127.0.0.1:11434">
+  </div>
+  <div class="field">
+    <label for="new-model_directory">model_directory</label>
+    <input type="text" id="new-model_directory" name="model_directory" value="">
+  </div>
+  <div class="field">
+    <label for="new-remote"><input type="checkbox" id="new-remote" name="remote"> remote</label>
+  </div>
+  <button type="submit" name="action" value="save" data-variant="primary">Add registration</button>
+</form>
+{% endblock %}

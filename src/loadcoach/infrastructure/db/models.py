@@ -32,6 +32,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     text,
+    true,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from weightsdb import PortableJSON, UtcDateTime, measurement_columns, ulid_primary_key
@@ -144,6 +145,11 @@ class Model(Base):
     last_seen_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
     available: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     unavailable_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    # ADR-0118: the operator's decision, written only by an operator. Discovery never touches
+    # it, and it is not `available` — that is a fact about the provider, this is about a person.
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=true()
+    )
 
 
 class ModelCapability(Base):

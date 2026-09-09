@@ -64,6 +64,9 @@ class ModelFacts:
             a different model (ADR-0008, ADR-0024).
         available: Whether the most recent discovery still saw it.
         unavailable_reason: Why not, when ``available`` is false.
+        enabled: Whether an operator permits this model to be used at all (ADR-0118). A
+            separate statement from ``available``: one is a provider's report, the other a
+            person's decision, and neither is derived from the other.
         max_context: The **advertised** maximum. Never a constraint input on its own (ADR-0023);
             it is only ever the last resort for ``served_context``, and then flagged ``assumed``.
         size_bytes: On-disk weight size, the base of the VRAM estimate.
@@ -87,6 +90,7 @@ class ModelFacts:
     artifact_digest: str | None = None
     available: bool = True
     unavailable_reason: str | None = None
+    enabled: bool = True
     max_context: int | None = None
     size_bytes: int | None = None
     parameter_count: int | None = None

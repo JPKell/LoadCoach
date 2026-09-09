@@ -20,7 +20,9 @@ Everything here is additive within v1, and the committed OpenAPI snapshot is dif
 | Endpoint | Notes |
 |---|---|
 | `GET /models` | Registry with declared capabilities, evidence summary, reliability, residency. Every entry also carries `provider_name` and `is_remote` at its top level, under the names §4's response `model` block uses — the registration that served this model's most recent discovery and that registration's **declared** egress class ([ADR-0055](../../adr/0055-loadcoach-registers-providers-by-name-and-kind.md) rule 4, [ADR-0099](../../adr/0099-a-task-profile-may-ask-for-reduced-thinking.md)). `""` and `false` read as *not recorded*: a row discovered before registrations had names keeps the honest defaults its migration gave it, and is never guessed at from the provider kind |
-| `POST /models/discover` | Re-discovery through ModelRack |
+| `POST /models/discover` | Re-discovery through ModelRack; the Models page's **Scan** button posts here |
+| `POST /models/{model_ref}/enabled` | `admin`. Body `{"enabled": bool}` — the operator's decision about whether this model may be used at all ([ADR-0118](../../adr/0118-a-discovered-model-can-be-disabled.md)). Separate from `available`, which is the provider's report: a disabled model keeps its row, its evidence and its history, is rejected by routing as `model_disabled`, and is refused rather than substituted when asked for by name |
+| `POST /models/{model_ref}/warm` | `write`. Loads a model by enqueuing one small `general.chat` job pinned to it, so admission, residency and eviction stay on the one path that owns them. Returns the `job_id` |
 | `GET /models/{model_ref}` | Identity, descriptor, evidence per capability with source, age and `match_state`, reliability, circuit-breaker state. `model_ref` is the local ULID or an unambiguous prefix — **not** the canonical ID, which contains `/`, `:` and `@` and does not survive a path segment ([ADR-0024](../../adr/0024-canonical-id-and-model-references.md)) |
 | `GET /models?canonical_id=…` | Lookup by identity; `?provider_kind=&provider_model_name=&artifact_digest=` is the exact-triple form |
 | `GET /task-profiles` · `GET /task-profiles/{id}` | Definitions with version, weights, constraints, execution and validation policy |
@@ -380,6 +382,27 @@ else `null`). `queue.paused` and `queue.draining` have no configured counterpart
 `LOADCOACH_QUEUE__PAUSED` variable is refused by the loader as an unknown key — so their stored
 row is always the effective value, and they have no row in `docs/configuration.md`
 ([ADR-0101](../../adr/0101-a-runtime-setting-need-not-be-a-configuration-key.md)).
+
+## 9.1 Providers
+
+`GET /providers`, `PUT /providers/{name}`, `DELETE /providers/{name}` — the
+`[providers.<name>]` registrations, read from and written to the configuration file itself
+([ADR-0117](../../adr/0117-provider-registrations-are-edited-in-place-in-the-config-file.md)).
+
+`GET` is `read` and returns every registration, the file they live in, that file's digest, and
+`shadowed_by` — the `LOADCOACH_PROVIDERS__*` variable, if any, that beats the file for that
+registration. `PUT` and `DELETE` are `admin`.
+
+A write edits **only** the provider tables: the file is round-tripped with comments, key order and
+formatting intact, the candidate document is validated by loading it through the ordinary
+precedence chain, the previous file is kept as `config.toml.bak`, and the running server rebuilds
+its provider handles so the change is live without a restart. Nothing else this process read at
+startup is re-read.
+
+Refusals: `400 VALIDATION_ERROR` names a key outside the registration — `allow_remote` included,
+because the egress boundary stays config-only — or a value the registration model rejects;
+`409 CONFLICT` means the file changed since `base_digest` was read, and nothing was written; the
+last remaining registration cannot be deleted.
 
 ## 10. Errors
 
