@@ -7,6 +7,25 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-09-09
+
+### Added
+
+- **`loadcoach config schema --json`** (ADR-0127 rule 1): one versioned document —
+  `Settings.model_json_schema()`, the runtime-changeable registry, the security-relevant keys,
+  every other key, which provider form (`singular` or `plural`, ADR-0077) is effective, the source
+  of every leaf, and any unknown key in the file, reported rather than dropped. Built for
+  WeightRoomGym's settings form (row WS2), which hardcodes none of LoadCoach's configuration
+  surface.
+- **`loadcoach config validate --file <path>`** (ADR-0127 rule 2): validates an arbitrary
+  candidate file through the same parse, validation and security refusals as startup, without
+  touching the installation's own `config.toml`. Without `--file` the verb keeps its present
+  meaning.
+- `loadcoach.config.leaf_keys()` and `load_settings_tolerant()`, and
+  `loadcoach.services.settings.database_overlay()` and `config_schema_document()` — the objects
+  the two new verbs are built from, reused by `config show` and the configuration reference
+  rather than duplicated.
+
 ## [1.3.0] — 2026-09-09
 
 ### Added

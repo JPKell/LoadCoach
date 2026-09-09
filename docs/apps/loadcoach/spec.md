@@ -110,7 +110,7 @@ the cheapest way for a caller to understand the system.
 
 ```text
 loadcoach serve | health | doctor | version
-loadcoach config show|validate|init|path|reference
+loadcoach config show|validate|init|path|reference|schema
 loadcoach db upgrade|status|backup|restore
 loadcoach models list|show|refresh|residency    loadcoach tasks list|show|validate
 loadcoach route explain --task … [--prompt-file …]
@@ -127,6 +127,16 @@ directory that has none, writing it beside the artifact for a person to review a
 overwrites a kept manifest and nothing trusts a draft
 ([ADR-0061](../../adr/0061-the-adapter-registry-is-a-directory-and-a-manifest.md) rule 4). `list`
 and `show` report each adapter's registration status, base compatibility and evidence state.
+
+`loadcoach config schema --json` prints the settings-schema document
+([ADR-0127](../../adr/0127-every-application-publishes-its-settings-schema.md) rule 1): the
+`Settings.model_json_schema()`, the runtime-changeable registry, the security-relevant keys, every
+other key, which `[provider]`/`[providers.<name>]` form (ADR-0077) is effective, the source of
+every leaf, and any unknown key in the file reported rather than dropped. `loadcoach config
+validate --file <path>` (rule 2) runs an arbitrary candidate through the same parse, validation
+and security refusals as startup, without touching the installation's own `config.toml`; without
+`--file` the verb keeps its present meaning. Both exist for WeightRoomGym's settings form, which
+reads this document rather than hardcoding LoadCoach's configuration surface.
 
 ## 8. Inputs
 
