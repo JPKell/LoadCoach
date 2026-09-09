@@ -1,0 +1,1269 @@
+{
+  "application": "loadcoach",
+  "config_only": [
+    "adapters.directory",
+    "evidence.accept_schema_majors",
+    "evidence.import_interval_hours",
+    "execution.attempt_backoff_seconds",
+    "execution.default_timeout_seconds",
+    "execution.max_attempts",
+    "execution.max_concurrent_jobs",
+    "logging.format",
+    "logging.level",
+    "provider.fake",
+    "provider.timeout_seconds",
+    "queue.ageing_interval_seconds",
+    "queue.ageing_priority_per_minute",
+    "queue.cancelling_watchdog_seconds",
+    "queue.idempotency_ttl_hours",
+    "queue.lease_renewal_interval_seconds",
+    "queue.lease_seconds",
+    "queue.max_active_per_source",
+    "queue.max_affinity_streak",
+    "queue.max_depth",
+    "queue.max_wait_seconds",
+    "queue.overflow_allowance",
+    "queue.poll_interval_ms",
+    "residency.max_resident_models",
+    "residency.unload_idle_seconds",
+    "routing.base_switch_penalty",
+    "routing.explanation_retention_days",
+    "routing.require_adapter_evidence",
+    "routing.strategy",
+    "routing.task_profiles_path",
+    "runtime.context_size",
+    "runtime.flash_attention",
+    "runtime.keep_alive",
+    "runtime.kv_cache_precision",
+    "runtime.models",
+    "server.failed_auth_per_minute",
+    "server.max_body_bytes",
+    "server.rate_limit_burst",
+    "server.rate_limit_per_minute",
+    "storage.auto_migrate",
+    "storage.backup_retention",
+    "storage.statement_timeout_ms",
+    "telemetry.interval_ms",
+    "telemetry.vram_headroom_bytes"
+  ],
+  "config_path": "<config_path>",
+  "env_prefix": "LOADCOACH_",
+  "json_schema": {
+    "$defs": {
+      "AdaptersSettings": {
+        "additionalProperties": false,
+        "description": "``[adapters]`` \u2014 the operator's directory of adapter artifacts and their manifests.\n\nOpt-in, per application (ADR-0061 rule 2): **empty means the whole feature is off**, and a\ndeployment that has never heard of adapters is unaffected by every part of it.",
+        "properties": {
+          "directory": {
+            "default": "",
+            "description": "Directory holding adapter artifacts and their reviewed manifests. Empty \u2014 the default \u2014 turns adapters off entirely; nothing is scanned, registered or routed.",
+            "examples": [
+              "~/models/adapters"
+            ],
+            "title": "Directory",
+            "type": "string"
+          }
+        },
+        "title": "AdaptersSettings",
+        "type": "object"
+      },
+      "EvidenceSettings": {
+        "additionalProperties": false,
+        "description": "``[evidence]`` \u2014 the optional FreeWeight evidence source (Phase 6, ADR-0026).",
+        "properties": {
+          "accept_schema_majors": {
+            "default": [
+              1
+            ],
+            "description": "Which `benchmark.evidence_bundle` schema majors this installation reads. May only narrow what this build carries payload models for, never widen it.",
+            "examples": [
+              [
+                1
+              ]
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "title": "Accept Schema Majors",
+            "type": "array"
+          },
+          "allowed_source_hosts": {
+            "default": [
+              "127.0.0.1",
+              "localhost",
+              "::1"
+            ],
+            "description": "Fetch allowlist for evidence import URLs (ADR-0026 \u00a73).",
+            "examples": [
+              [
+                "127.0.0.1",
+                "localhost",
+                "::1"
+              ]
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Source Hosts",
+            "type": "array"
+          },
+          "freeweight_api_key_env": {
+            "default": "",
+            "description": "Environment variable naming a bearer token, or empty (ADR-0026).",
+            "examples": [
+              ""
+            ],
+            "title": "Freeweight Api Key Env",
+            "type": "string"
+          },
+          "freeweight_api_key_file": {
+            "default": "",
+            "description": "Path to a file containing a bearer token, or empty (ADR-0026).",
+            "examples": [
+              ""
+            ],
+            "title": "Freeweight Api Key File",
+            "type": "string"
+          },
+          "freeweight_url": {
+            "default": "",
+            "description": "Empty means not configured, not unavailable.",
+            "examples": [
+              ""
+            ],
+            "title": "Freeweight Url",
+            "type": "string"
+          },
+          "import_interval_hours": {
+            "default": 24.0,
+            "examples": [
+              24.0
+            ],
+            "exclusiveMinimum": 0,
+            "title": "Import Interval Hours",
+            "type": "number"
+          }
+        },
+        "title": "EvidenceSettings",
+        "type": "object"
+      },
+      "ExecutionSettings": {
+        "additionalProperties": false,
+        "description": "``[execution]`` \u2014 concurrency, timeout and retry policy for job execution (Phase 4-5).",
+        "properties": {
+          "attempt_backoff_seconds": {
+            "default": 2.0,
+            "description": "Delay between retry attempts.",
+            "examples": [
+              2.0
+            ],
+            "minimum": 0,
+            "title": "Attempt Backoff Seconds",
+            "type": "number"
+          },
+          "default_timeout_seconds": {
+            "default": 300.0,
+            "description": "Per-job execution timeout.",
+            "examples": [
+              300.0
+            ],
+            "exclusiveMinimum": 0,
+            "title": "Default Timeout Seconds",
+            "type": "number"
+          },
+          "max_attempts": {
+            "default": 3,
+            "description": "Attempts before a job is marked failed.",
+            "examples": [
+              3
+            ],
+            "minimum": 1,
+            "title": "Max Attempts",
+            "type": "integer"
+          },
+          "max_concurrent_jobs": {
+            "default": 1,
+            "description": "Raise only on multi-GPU or CPU-only setups.",
+            "examples": [
+              1
+            ],
+            "minimum": 1,
+            "title": "Max Concurrent Jobs",
+            "type": "integer"
+          }
+        },
+        "title": "ExecutionSettings",
+        "type": "object"
+      },
+      "FakeProviderSettings": {
+        "additionalProperties": false,
+        "description": "``[provider.fake]`` \u2014 override the declared model ``kind = \"fake\"`` serves (E6).\n\nEvery field defaults to ``None``, in which case :func:`loadcoach.infrastructure.providers.\nfactory.build_provider` uses its own small built-in fake model \u2014 one whose VRAM estimate never\ntrips the ``insufficient_vram`` hard constraint (routing.md \u00a74), so a fake-provider journey is\nreproducible on any machine rather than gated on a free GPU.\n\nSetting these lets an operator deliberately reproduce ``insufficient_vram`` end to end, with\nthe whole ``estimate`` block populated, on a machine with plenty of free VRAM. All four fields\nmust be set together, or none: the estimate's KV term (``2 \u00d7 layers \u00d7 kv_heads \u00d7 head_dim \u00d7 2\nbytes`` for the assumed f16 precision, multiplied by the served context) dominates\n``size_bytes`` at any interesting context length, so ``size_bytes`` alone cannot reliably\nprovoke the rejection this block exists to reach.",
+        "properties": {
+          "head_dim": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Per-head dimension to declare, overriding the small built-in default.",
+            "examples": [
+              128
+            ],
+            "title": "Head Dim"
+          },
+          "kv_heads": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Key/value head count to declare, overriding the small built-in default.",
+            "examples": [
+              8
+            ],
+            "title": "Kv Heads"
+          },
+          "layers": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Transformer block count to declare, overriding the small built-in default.",
+            "examples": [
+              32
+            ],
+            "title": "Layers"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "On-disk weight size to declare, overriding the small built-in default.",
+            "examples": [
+              8540000000
+            ],
+            "title": "Size Bytes"
+          }
+        },
+        "title": "FakeProviderSettings",
+        "type": "object"
+      },
+      "LoggingSettings": {
+        "additionalProperties": false,
+        "description": "Structured-logging behaviour.",
+        "properties": {
+          "format": {
+            "default": "auto",
+            "description": "text, json, or auto (text on a TTY, json otherwise).",
+            "enum": [
+              "text",
+              "json",
+              "auto"
+            ],
+            "examples": [
+              "auto"
+            ],
+            "title": "Format",
+            "type": "string"
+          },
+          "include_content": {
+            "default": false,
+            "description": "Log full prompts and responses. Off by default: only hashes and lengths are logged.",
+            "examples": [
+              false
+            ],
+            "title": "Include Content",
+            "type": "boolean"
+          },
+          "level": {
+            "default": "INFO",
+            "description": "Log verbosity.",
+            "examples": [
+              "INFO"
+            ],
+            "title": "Level",
+            "type": "string"
+          }
+        },
+        "title": "LoggingSettings",
+        "type": "object"
+      },
+      "ProviderRegistrationSettings": {
+        "additionalProperties": false,
+        "description": "One ``[providers.<name>]`` block: a provider LoadCoach registers, by name and kind.\n\nLC-E1, generalized (ADR-0055). The name is the operator's, and it is what explanations, the\nmodels UI and ``doctor`` refer to; the kind decides which adapter is constructed.",
+        "properties": {
+          "base_url": {
+            "default": "",
+            "description": "The provider's API endpoint, where its kind takes one.",
+            "examples": [
+              "http://127.0.0.1:11434"
+            ],
+            "title": "Base Url",
+            "type": "string"
+          },
+          "fake": {
+            "$ref": "#/$defs/FakeProviderSettings",
+            "description": "For kind='fake' only; see ProviderSettings.fake."
+          },
+          "kind": {
+            "description": "Which provider adapter serves this registration.",
+            "examples": [
+              "ollama",
+              "llamacpp",
+              "fake"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "memory_high_bytes": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "For kind='llamacpp': the throttle point below memory_max_bytes (MemoryHigh). Requires memory_max_bytes and must be below it.",
+            "examples": [
+              23622320128
+            ],
+            "title": "Memory High Bytes"
+          },
+          "memory_max_bytes": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "For kind='llamacpp': a host-memory cap on every server this registration launches (ADR-0119) \u2014 a systemd-run user scope with MemoryMax at this value and swap denied, so a server that does not fit is killed rather than swapping the host. Unset launches uncapped.",
+            "examples": [
+              25769803776
+            ],
+            "title": "Memory Max Bytes"
+          },
+          "model_directory": {
+            "default": "",
+            "description": "For kind='llamacpp': the directory of GGUF weights this server serves. Required for that kind, meaningless for every other \u2014 a llama.cpp registration launches and supervises its own server rather than talking to one that is already running.",
+            "examples": [
+              "~/models/llm"
+            ],
+            "title": "Model Directory",
+            "type": "string"
+          },
+          "remote": {
+            "default": false,
+            "description": "Whether this registration is somewhere other than this machine. Declared, never inferred from the kind or the URL: an OpenAI-compatible endpoint on loopback is local, and the same kind pointed at a hosted API is remote (ADR-0055 rule 4).",
+            "examples": [
+              false
+            ],
+            "title": "Remote",
+            "type": "boolean"
+          },
+          "server_path": {
+            "default": "llama-server",
+            "description": "For kind='llamacpp': the server binary, found on PATH by default.",
+            "examples": [
+              "llama-server"
+            ],
+            "title": "Server Path",
+            "type": "string"
+          },
+          "state_dir": {
+            "default": "",
+            "description": "For kind='llamacpp': where the supervisor keeps its per-server state and the artifact-digest file (ADR-0071). Empty uses `<data_dir>/llamacpp/<name>`.",
+            "examples": [
+              ""
+            ],
+            "title": "State Dir",
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "default": 300.0,
+            "description": "Per-call provider timeout.",
+            "examples": [
+              300.0
+            ],
+            "exclusiveMinimum": 0,
+            "title": "Timeout Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "ProviderRegistrationSettings",
+        "type": "object"
+      },
+      "ProviderSettings": {
+        "additionalProperties": false,
+        "description": "The default model provider LoadCoach talks to.",
+        "properties": {
+          "base_url": {
+            "default": "http://127.0.0.1:11434",
+            "description": "The provider's API endpoint.",
+            "examples": [
+              "http://127.0.0.1:11434"
+            ],
+            "title": "Base Url",
+            "type": "string"
+          },
+          "fake": {
+            "$ref": "#/$defs/FakeProviderSettings",
+            "description": "Override the model kind='fake' declares, to provoke insufficient_vram on purpose (E6); absent by default, and absent entirely on a normal install. See spec.md \u00a712.",
+            "examples": [
+              {
+                "head_dim": 128,
+                "kv_heads": 8,
+                "layers": 32,
+                "size_bytes": 8540000000
+              }
+            ]
+          },
+          "kind": {
+            "default": "ollama",
+            "description": "Which provider serves the models: ollama, or fake for tests.",
+            "examples": [
+              "ollama"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "default": 300.0,
+            "description": "Per-call provider timeout.",
+            "examples": [
+              300.0
+            ],
+            "exclusiveMinimum": 0,
+            "title": "Timeout Seconds",
+            "type": "number"
+          }
+        },
+        "title": "ProviderSettings",
+        "type": "object"
+      },
+      "ProvidersSettings": {
+        "additionalProperties": true,
+        "description": "Cross-provider policy, plus the ``[providers.<name>]`` registrations themselves.\n\n``allow_remote`` is policy \u2014 may *any* remote provider be routed to at all \u2014 and it is\nevaluated above a registration's own ``remote`` flag: a remote registration in a deployment\nthat disallows remote is configured, visible and never routed to (ADR-0077 rule 4).\n\nEvery other key under ``[providers]`` is a registration, so this model allows extras and\nvalidates them itself rather than forbidding them: ``[providers.local]`` and\n``[providers] allow_remote`` share one TOML table, and pydantic sees both in one mapping.",
+        "properties": {
+          "allow_remote": {
+            "default": false,
+            "description": "Permit a remote provider at all \u2014 an explicit, deliberate opt-in.",
+            "examples": [
+              false
+            ],
+            "title": "Allow Remote",
+            "type": "boolean"
+          },
+          "registrations": {
+            "additionalProperties": {
+              "$ref": "#/$defs/ProviderRegistrationSettings"
+            },
+            "description": "The named registrations, keyed by their operator-chosen names.",
+            "title": "Registrations",
+            "type": "object"
+          }
+        },
+        "title": "ProvidersSettings",
+        "type": "object"
+      },
+      "QueueSettings": {
+        "additionalProperties": false,
+        "description": "``[queue]`` \u2014 job queue depth, leasing and ageing policy (Phase 5).",
+        "properties": {
+          "ageing_interval_seconds": {
+            "default": 30,
+            "examples": [
+              30
+            ],
+            "minimum": 1,
+            "title": "Ageing Interval Seconds",
+            "type": "integer"
+          },
+          "ageing_priority_per_minute": {
+            "default": 1.0,
+            "examples": [
+              1.0
+            ],
+            "minimum": 0,
+            "title": "Ageing Priority Per Minute",
+            "type": "number"
+          },
+          "cancelling_watchdog_seconds": {
+            "default": 30,
+            "description": "How long a job may sit in `cancelling` before the scheduler forces it to `cancelled` and records that it did (queue \u00a78, \u00a79).",
+            "examples": [
+              30
+            ],
+            "minimum": 1,
+            "title": "Cancelling Watchdog Seconds",
+            "type": "integer"
+          },
+          "idempotency_ttl_hours": {
+            "default": 24.0,
+            "description": "How long a job's idempotency key stays reserved after enqueue. A key reused after this starts new work rather than replaying an old result (api.md \u00a74, data model \u00a72).",
+            "examples": [
+              24.0
+            ],
+            "exclusiveMinimum": 0,
+            "title": "Idempotency Ttl Hours",
+            "type": "number"
+          },
+          "lease_renewal_interval_seconds": {
+            "default": 20,
+            "description": "lease_seconds must exceed 3x this plus slack.",
+            "examples": [
+              20
+            ],
+            "minimum": 1,
+            "title": "Lease Renewal Interval Seconds",
+            "type": "integer"
+          },
+          "lease_seconds": {
+            "default": 60,
+            "examples": [
+              60
+            ],
+            "minimum": 1,
+            "title": "Lease Seconds",
+            "type": "integer"
+          },
+          "max_active_per_source": {
+            "default": 200,
+            "description": "Active (non-terminal) jobs one source \u2014 a token, or an X-Client-Name on loopback \u2014 may hold at once; a submission past it is refused with QUEUE_FULL naming the source and the cap (spec \u00a714). 0 disables the per-source cap.",
+            "examples": [
+              200
+            ],
+            "minimum": 0,
+            "title": "Max Active Per Source",
+            "type": "integer"
+          },
+          "max_affinity_streak": {
+            "default": 5,
+            "examples": [
+              5
+            ],
+            "minimum": 1,
+            "title": "Max Affinity Streak",
+            "type": "integer"
+          },
+          "max_depth": {
+            "default": 1000,
+            "examples": [
+              1000
+            ],
+            "minimum": 1,
+            "title": "Max Depth",
+            "type": "integer"
+          },
+          "max_wait_seconds": {
+            "default": 3600,
+            "examples": [
+              3600
+            ],
+            "minimum": 1,
+            "title": "Max Wait Seconds",
+            "type": "integer"
+          },
+          "overflow_allowance": {
+            "default": 100,
+            "examples": [
+              100
+            ],
+            "minimum": 0,
+            "title": "Overflow Allowance",
+            "type": "integer"
+          },
+          "poll_interval_ms": {
+            "default": 250,
+            "examples": [
+              250
+            ],
+            "minimum": 1,
+            "title": "Poll Interval Ms",
+            "type": "integer"
+          }
+        },
+        "title": "QueueSettings",
+        "type": "object"
+      },
+      "ResidencySettings": {
+        "additionalProperties": false,
+        "description": "``[residency]`` \u2014 model unload policy, per device (Phase 5, queue \u00a76).",
+        "properties": {
+          "max_resident_models": {
+            "default": 1,
+            "description": "Per GPU.",
+            "examples": [
+              1
+            ],
+            "minimum": 1,
+            "title": "Max Resident Models",
+            "type": "integer"
+          },
+          "unload_idle_seconds": {
+            "default": 900,
+            "examples": [
+              900
+            ],
+            "minimum": 0,
+            "title": "Unload Idle Seconds",
+            "type": "integer"
+          }
+        },
+        "title": "ResidencySettings",
+        "type": "object"
+      },
+      "RoutingSettings": {
+        "additionalProperties": false,
+        "description": "``[routing]`` \u2014 scoring strategy and confidence policy (Phase 3).",
+        "properties": {
+          "base_switch_penalty": {
+            "default": 0.1,
+            "description": "Two-level residency's penalty for a candidate that would need its own base loaded while another base is resident (routing \u00a76.1, ADR-0066). Chosen, not measured: twice prefer_resident_bonus, so a base switch is never decided by the tie-break the bonus exists to be. A deployment that has measured its own load times should set it from them.",
+            "examples": [
+              0.1
+            ],
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Base Switch Penalty",
+            "type": "number"
+          },
+          "explanation_retention_days": {
+            "default": 0,
+            "description": "0 = forever.",
+            "examples": [
+              0
+            ],
+            "minimum": 0,
+            "title": "Explanation Retention Days",
+            "type": "integer"
+          },
+          "min_confidence": {
+            "default": 0.05,
+            "examples": [
+              0.05
+            ],
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Min Confidence",
+            "type": "number"
+          },
+          "min_present_weight": {
+            "default": 0.5,
+            "examples": [
+              0.5
+            ],
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Min Present Weight",
+            "type": "number"
+          },
+          "prefer_resident_bonus": {
+            "default": 0.05,
+            "examples": [
+              0.05
+            ],
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Prefer Resident Bonus",
+            "type": "number"
+          },
+          "remote_cost_factor": {
+            "default": 0.9,
+            "description": "The cost factor applied to a remote provider's candidates (routing \u00a76). 1.0 is always used for local providers; anything below 1 prefers local at equal capability.",
+            "examples": [
+              0.9
+            ],
+            "exclusiveMinimum": 0,
+            "maximum": 1,
+            "title": "Remote Cost Factor",
+            "type": "number"
+          },
+          "require_adapter_evidence": {
+            "default": true,
+            "description": "Refuse to *route* to an adapter subject with no measured evidence for the profile's top-weighted capability (ADR-0064 rule 3). On by default: until FreeWeight measures adapters, every adapter subject is unmeasured, so adapters are invisible to routed selection while pins keep working. That is 'no benchmark, no use' behaving correctly.",
+            "examples": [
+              true
+            ],
+            "title": "Require Adapter Evidence",
+            "type": "boolean"
+          },
+          "strategy": {
+            "default": "weighted_evidence",
+            "examples": [
+              "weighted_evidence"
+            ],
+            "title": "Strategy",
+            "type": "string"
+          },
+          "task_profiles_path": {
+            "default": "",
+            "description": "A task_profiles.toml to import at startup instead of the shipped one. Empty means the shipped file. The import is an upsert per (profile_id, version), so a file naming a shipped profile replaces it and one naming a new id adds it.",
+            "examples": [
+              "/etc/loadcoach/task_profiles.toml"
+            ],
+            "title": "Task Profiles Path",
+            "type": "string"
+          }
+        },
+        "title": "RoutingSettings",
+        "type": "object"
+      },
+      "RuntimeModelOverride": {
+        "additionalProperties": false,
+        "description": "A per-model override of the default runtime profile (ADR-0023).\n\nEvery field left ``None`` says nothing and lets the ``[runtime]`` default through.\n``kv_cache_precision`` and ``flash_attention`` are llama.cpp launch settings (ADR-0120): a\nresolved profile that sets either for an Ollama registration is rejected by name at routing\ntime, and a quantized cache without flash attention likewise \u2014 both are evaluated on the\n*resolved* profile, because the default level may supply the other half.",
+        "properties": {
+          "context_size": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Context window to serve for this specific model, in tokens.",
+            "examples": [
+              32768
+            ],
+            "title": "Context Size"
+          },
+          "flash_attention": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Flash attention for this model (llamacpp only, ADR-0120).",
+            "examples": [
+              true
+            ],
+            "title": "Flash Attention"
+          },
+          "kv_cache_precision": {
+            "anyOf": [
+              {
+                "enum": [
+                  "f16",
+                  "q8_0",
+                  "q4_0"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "KV-cache precision for this model: f16, q8_0 or q4_0 (llamacpp only, ADR-0120). q8_0 and q4_0 require flash attention on the resolved profile.",
+            "examples": [
+              "q8_0"
+            ],
+            "title": "Kv Cache Precision"
+          }
+        },
+        "title": "RuntimeModelOverride",
+        "type": "object"
+      },
+      "RuntimeSettings": {
+        "additionalProperties": false,
+        "description": "``[runtime]`` \u2014 the default runtime profile every execution resolves against (ADR-0023).\n\nEvery field defaults to a value meaning \"provider decides\"; ``context_size = 0`` and\n``kv_cache_precision = \"\"`` are that sentinel in TOML's type system, since the profile itself\n(``baseaicore.RuntimeProfile``) uses ``None`` for the same meaning once loaded.",
+        "properties": {
+          "context_size": {
+            "default": 0,
+            "description": "Context window to serve, in tokens. 0 leaves it to the provider; a task profile with min_context_tokens sets it explicitly where the provider reports context_configurable.",
+            "examples": [
+              0
+            ],
+            "minimum": 0,
+            "title": "Context Size",
+            "type": "integer"
+          },
+          "flash_attention": {
+            "default": false,
+            "description": "Empty/false leaves it to the provider.",
+            "examples": [
+              false
+            ],
+            "title": "Flash Attention",
+            "type": "boolean"
+          },
+          "keep_alive": {
+            "default": "5m",
+            "description": "How long the provider holds a model resident after a call.",
+            "examples": [
+              "5m"
+            ],
+            "title": "Keep Alive",
+            "type": "string"
+          },
+          "kv_cache_precision": {
+            "default": "",
+            "description": "Empty leaves it to the provider. f16, q8_0 or q4_0 is sent to llama.cpp launches; q8_0 and q4_0 require flash_attention = true (ADR-0120).",
+            "enum": [
+              "",
+              "f16",
+              "q8_0",
+              "q4_0"
+            ],
+            "examples": [
+              ""
+            ],
+            "title": "Kv Cache Precision",
+            "type": "string"
+          },
+          "models": {
+            "additionalProperties": {
+              "$ref": "#/$defs/RuntimeModelOverride"
+            },
+            "description": "Per-model runtime overrides, keyed by canonical model ID.",
+            "examples": [
+              {
+                "ollama/qwen3.5:9b-q8_0@sha256:1f3a9c4e2b70": {
+                  "context_size": 32768
+                }
+              }
+            ],
+            "title": "Models",
+            "type": "object"
+          }
+        },
+        "title": "RuntimeSettings",
+        "type": "object"
+      },
+      "ServerSettings": {
+        "additionalProperties": false,
+        "description": "Bind address and HTTP-level limits.",
+        "properties": {
+          "allow_lan_exposure": {
+            "default": false,
+            "description": "Acknowledges a deliberate bind to every interface (0.0.0.0). Without it such a bind refuses to start.",
+            "examples": [
+              false
+            ],
+            "title": "Allow Lan Exposure",
+            "type": "boolean"
+          },
+          "allowed_hosts": {
+            "default": [],
+            "description": "Host header values accepted on a non-loopback bind, against DNS rebinding. Comma-separated in the environment.",
+            "examples": [
+              [
+                "loadcoach.local"
+              ]
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Hosts",
+            "type": "array"
+          },
+          "failed_auth_per_minute": {
+            "default": 20,
+            "description": "Failed authentications one address may make per minute before it is refused with 429 for the rest of the minute (ADR-0014 \u00a76). 0 disables.",
+            "examples": [
+              20
+            ],
+            "minimum": 0,
+            "title": "Failed Auth Per Minute",
+            "type": "integer"
+          },
+          "host": {
+            "default": "127.0.0.1",
+            "description": "Interface to bind. Loopback by default; anything else requires allowed_hosts and at least one active API token (ADR-0026).",
+            "examples": [
+              "127.0.0.1"
+            ],
+            "title": "Host",
+            "type": "string"
+          },
+          "max_body_bytes": {
+            "default": 16777216,
+            "description": "The largest request body accepted, refused with 413 before buffering (Security Standards \u00a714). Matches SetSpec's envelope limit, the largest document any endpoint parses.",
+            "examples": [
+              16777216
+            ],
+            "minimum": 1024,
+            "title": "Max Body Bytes",
+            "type": "integer"
+          },
+          "port": {
+            "default": 8766,
+            "description": "TCP port for the web UI and the API.",
+            "examples": [
+              8766
+            ],
+            "maximum": 65535,
+            "minimum": 1,
+            "title": "Port",
+            "type": "integer"
+          },
+          "rate_limit_burst": {
+            "default": 100,
+            "description": "How many requests one credential may make at once before the rate applies.",
+            "examples": [
+              100
+            ],
+            "minimum": 1,
+            "title": "Rate Limit Burst",
+            "type": "integer"
+          },
+          "rate_limit_per_minute": {
+            "default": 600,
+            "description": "Requests per minute one credential may make to /api/v1, sustained (spec \u00a714). A token bucket: rate_limit_burst may arrive at once, then this rate. 0 disables. At the limit a caller gets 429 RATE_LIMITED with Retry-After, never a dropped request.",
+            "examples": [
+              600
+            ],
+            "minimum": 0,
+            "title": "Rate Limit Per Minute",
+            "type": "integer"
+          },
+          "trusted_proxies": {
+            "default": [],
+            "description": "CIDR networks of reverse proxies whose X-Forwarded-For may be believed (ADR-0014 \u00a77). When the connecting peer is inside one, the client address \u2014 what the failed-authentication brake and the unauthenticated rate bucket key on \u2014 is taken from the last untrusted hop of X-Forwarded-For; from any other peer the header is ignored entirely, because anyone can send it. Empty by default: behind a proxy with this unset, every caller shares the proxy's address and one caller's failures brake them all. Comma-separated in the environment.",
+            "examples": [
+              [
+                "127.0.0.0/8"
+              ]
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Trusted Proxies",
+            "type": "array"
+          }
+        },
+        "title": "ServerSettings",
+        "type": "object"
+      },
+      "StorageSettings": {
+        "additionalProperties": false,
+        "description": "Database location, resolved through WeightsDB (ADR-0006).",
+        "properties": {
+          "auto_migrate": {
+            "default": true,
+            "description": "Migrate on startup. Unset means true on SQLite and false on PostgreSQL, where a failed migration cannot be rolled back automatically (database standards \u00a75.1).",
+            "examples": [
+              true
+            ],
+            "title": "Auto Migrate",
+            "type": "boolean"
+          },
+          "backup_retention": {
+            "default": 5,
+            "description": "Automatic pre-migration backups kept before the oldest is rotated away.",
+            "examples": [
+              5
+            ],
+            "minimum": 0,
+            "title": "Backup Retention",
+            "type": "integer"
+          },
+          "content_retention_hours": {
+            "default": 24,
+            "description": "How long a finished job keeps its prompt and response text before the retention sweep replaces them with their hashes (spec \u00a714: content is stored as hashes by default; data model \u00a73). 0 scrubs at the first sweep after completion. A queued job always keeps its transcript until it has run. Runtime-changeable.",
+            "examples": [
+              24
+            ],
+            "minimum": 0,
+            "title": "Content Retention Hours",
+            "type": "integer"
+          },
+          "database_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SQLAlchemy URL. Unset resolves to a SQLite file under the XDG data directory; PostgreSQL is the other supported dialect (ADR-0006).",
+            "examples": [
+              "sqlite:////var/lib/loadcoach/loadcoach.sqlite3"
+            ],
+            "title": "Database Url"
+          },
+          "retain_content": {
+            "default": false,
+            "description": "Keep prompt and response text for ever, disabling the retention sweep. A privacy decision, so config-only: it cannot be changed through PUT /settings.",
+            "examples": [
+              false
+            ],
+            "title": "Retain Content",
+            "type": "boolean"
+          },
+          "statement_timeout_ms": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "PostgreSQL statement (and lock) timeout. Unset leaves the server default; SQLite uses its own busy timeout, which the engine always sets.",
+            "examples": [
+              30000
+            ],
+            "title": "Statement Timeout Ms"
+          }
+        },
+        "title": "StorageSettings",
+        "type": "object"
+      },
+      "TelemetrySettings": {
+        "additionalProperties": false,
+        "description": "``[telemetry]`` \u2014 GPU sampling behaviour.",
+        "properties": {
+          "interval_ms": {
+            "default": 1000,
+            "examples": [
+              1000
+            ],
+            "exclusiveMinimum": 0,
+            "title": "Interval Ms",
+            "type": "integer"
+          },
+          "vram_headroom_bytes": {
+            "default": 536870912,
+            "description": "Per GPU.",
+            "examples": [
+              536870912
+            ],
+            "minimum": 0,
+            "title": "Vram Headroom Bytes",
+            "type": "integer"
+          }
+        },
+        "title": "TelemetrySettings",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "description": "The complete, validated LoadCoach configuration.\n\nConstructed only by :func:`load_settings`, which resolves the precedence chain first \u2014 never\ncall ``Settings(**raw_dict)`` directly on unmerged input, or the file/env/CLI layering in\nconfiguration standards \u00a71 is bypassed.",
+    "properties": {
+      "adapters": {
+        "$ref": "#/$defs/AdaptersSettings"
+      },
+      "evidence": {
+        "$ref": "#/$defs/EvidenceSettings"
+      },
+      "execution": {
+        "$ref": "#/$defs/ExecutionSettings"
+      },
+      "logging": {
+        "$ref": "#/$defs/LoggingSettings"
+      },
+      "provider": {
+        "$ref": "#/$defs/ProviderSettings"
+      },
+      "providers": {
+        "$ref": "#/$defs/ProvidersSettings"
+      },
+      "queue": {
+        "$ref": "#/$defs/QueueSettings"
+      },
+      "residency": {
+        "$ref": "#/$defs/ResidencySettings"
+      },
+      "routing": {
+        "$ref": "#/$defs/RoutingSettings"
+      },
+      "runtime": {
+        "$ref": "#/$defs/RuntimeSettings"
+      },
+      "server": {
+        "$ref": "#/$defs/ServerSettings"
+      },
+      "storage": {
+        "$ref": "#/$defs/StorageSettings"
+      },
+      "telemetry": {
+        "$ref": "#/$defs/TelemetrySettings"
+      }
+    },
+    "title": "Settings",
+    "type": "object"
+  },
+  "problems": [],
+  "provider_form": "singular",
+  "runtime_changeable": [
+    {
+      "description": "Stop dispatch without dropping jobs.",
+      "key": "queue.paused",
+      "kind": "bool",
+      "maximum": null,
+      "minimum": null
+    },
+    {
+      "description": "Finish in-flight work and claim nothing new.",
+      "key": "queue.draining",
+      "kind": "bool",
+      "maximum": null,
+      "minimum": null
+    },
+    {
+      "description": "The residency tie-break bonus (routing \u00a76).",
+      "key": "routing.prefer_resident_bonus",
+      "kind": "float",
+      "maximum": 1.0,
+      "minimum": 0.0
+    },
+    {
+      "description": "The measured-weight floor below which a decision is flagged low_evidence.",
+      "key": "routing.min_present_weight",
+      "kind": "float",
+      "maximum": 1.0,
+      "minimum": 0.0
+    },
+    {
+      "description": "Evidence below this confidence is ignored (routing \u00a75).",
+      "key": "routing.min_confidence",
+      "kind": "float",
+      "maximum": 1.0,
+      "minimum": 0.0
+    },
+    {
+      "description": "The cost factor applied to a remote provider's candidates (routing \u00a76).",
+      "key": "routing.remote_cost_factor",
+      "kind": "float",
+      "maximum": 1.0,
+      "minimum": 0.01
+    },
+    {
+      "description": "Hours a finished job keeps its prompt and response text (spec \u00a714).",
+      "key": "storage.content_retention_hours",
+      "kind": "int",
+      "maximum": 8760,
+      "minimum": 0
+    }
+  ],
+  "schema_version": "1.0",
+  "security_keys": [
+    "evidence.allowed_source_hosts",
+    "evidence.freeweight_api_key_env",
+    "evidence.freeweight_api_key_file",
+    "evidence.freeweight_url",
+    "logging.include_content",
+    "provider.base_url",
+    "provider.kind",
+    "providers.allow_remote",
+    "server.allow_lan_exposure",
+    "server.allowed_hosts",
+    "server.host",
+    "server.port",
+    "server.trusted_proxies",
+    "storage.database_url",
+    "storage.retain_content"
+  ],
+  "sources": {
+    "adapters.directory": "default",
+    "evidence.accept_schema_majors": "default",
+    "evidence.allowed_source_hosts": "default",
+    "evidence.freeweight_api_key_env": "default",
+    "evidence.freeweight_api_key_file": "default",
+    "evidence.freeweight_url": "default",
+    "evidence.import_interval_hours": "default",
+    "execution.attempt_backoff_seconds": "default",
+    "execution.default_timeout_seconds": "default",
+    "execution.max_attempts": "default",
+    "execution.max_concurrent_jobs": "default",
+    "logging.format": "default",
+    "logging.include_content": "default",
+    "logging.level": "default",
+    "provider.base_url": "default",
+    "provider.fake": "default",
+    "provider.kind": "default",
+    "provider.timeout_seconds": "default",
+    "providers.allow_remote": "default",
+    "providers.registrations": "default",
+    "queue.ageing_interval_seconds": "default",
+    "queue.ageing_priority_per_minute": "default",
+    "queue.cancelling_watchdog_seconds": "default",
+    "queue.idempotency_ttl_hours": "default",
+    "queue.lease_renewal_interval_seconds": "default",
+    "queue.lease_seconds": "default",
+    "queue.max_active_per_source": "default",
+    "queue.max_affinity_streak": "default",
+    "queue.max_depth": "default",
+    "queue.max_wait_seconds": "default",
+    "queue.overflow_allowance": "default",
+    "queue.poll_interval_ms": "default",
+    "residency.max_resident_models": "default",
+    "residency.unload_idle_seconds": "default",
+    "routing.base_switch_penalty": "default",
+    "routing.explanation_retention_days": "default",
+    "routing.min_confidence": "default",
+    "routing.min_present_weight": "default",
+    "routing.prefer_resident_bonus": "default",
+    "routing.remote_cost_factor": "default",
+    "routing.require_adapter_evidence": "default",
+    "routing.strategy": "default",
+    "routing.task_profiles_path": "default",
+    "runtime.context_size": "default",
+    "runtime.flash_attention": "default",
+    "runtime.keep_alive": "default",
+    "runtime.kv_cache_precision": "default",
+    "runtime.models": "default",
+    "server.allow_lan_exposure": "default",
+    "server.allowed_hosts": "default",
+    "server.failed_auth_per_minute": "default",
+    "server.host": "default",
+    "server.max_body_bytes": "default",
+    "server.port": "default",
+    "server.rate_limit_burst": "default",
+    "server.rate_limit_per_minute": "default",
+    "server.trusted_proxies": "default",
+    "storage.auto_migrate": "default",
+    "storage.backup_retention": "default",
+    "storage.content_retention_hours": "default",
+    "storage.database_url": "env LOADCOACH_STORAGE__DATABASE_URL",
+    "storage.retain_content": "default",
+    "storage.statement_timeout_ms": "default",
+    "telemetry.interval_ms": "default",
+    "telemetry.vram_headroom_bytes": "default"
+  },
+  "version": "<version>"
+}

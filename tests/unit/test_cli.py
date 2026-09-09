@@ -63,6 +63,82 @@ def test_config_validate_exits_three_for_invalid_config(tmp_path: Path) -> None:
     assert "INSECURE_BINDING" in result.stderr
 
 
+def test_config_validate_file_exits_zero_for_a_valid_candidate(tmp_path: Path) -> None:
+    """ADR-0127 rule 2: `--file` runs an arbitrary candidate through the ordinary validation."""
+    candidate = tmp_path / "candidate.toml"
+    candidate.write_text("[server]\nport = 9001\n")
+    result = runner.invoke(app, ["config", "validate", "--file", str(candidate)])
+    assert result.exit_code == 0
+
+
+def test_config_validate_file_names_an_unknown_key(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate.toml"
+    candidate.write_text('[server]\nhost_typo = "x"\n')
+    result = runner.invoke(app, ["config", "validate", "--file", str(candidate)])
+    assert result.exit_code == 3
+    assert "server.host_typo" in result.stderr
+
+
+def test_config_validate_file_refuses_an_insecure_bind(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate.toml"
+    candidate.write_text('[server]\nhost = "0.0.0.0"\n')
+    result = runner.invoke(app, ["config", "validate", "--file", str(candidate)])
+    assert result.exit_code == 3
+    assert "INSECURE_BINDING" in result.stderr
+
+
+def test_config_validate_file_reports_a_missing_file_cleanly(tmp_path: Path) -> None:
+    missing = tmp_path / "does-not-exist.toml"
+    result = runner.invoke(app, ["config", "validate", "--file", str(missing)])
+    assert result.exit_code == 3
+    assert str(missing) in result.stderr
+
+
+def test_config_validate_file_never_touches_the_installations_own_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_config = tmp_path / "config.toml"
+    real_config.write_text("# operator's real config\n[server]\nport = 8766\n")
+    monkeypatch.setenv("LOADCOACH_CONFIG", str(real_config))
+    before = real_config.read_bytes()
+    candidate = tmp_path / "candidate.toml"
+    candidate.write_text("[server]\nport = 9999\n")
+    result = runner.invoke(app, ["config", "validate", "--file", str(candidate)])
+    assert result.exit_code == 0
+    assert real_config.read_bytes() == before
+
+
+def test_config_schema_json_flag_produces_the_document() -> None:
+    import json
+
+    result = runner.invoke(app, ["config", "schema", "--json"])
+    assert result.exit_code == 0
+    document = json.loads(result.stdout)
+    assert document["application"] == "loadcoach"
+    assert document["schema_version"] == "1.0"
+    assert document["provider_form"] == "singular"
+    assert {"key": "queue.paused", "kind": "bool"}.items() <= next(
+        entry for entry in document["runtime_changeable"] if entry["key"] == "queue.paused"
+    ).items()
+    assert "server.host" in document["security_keys"]
+    assert "storage.content_retention_hours" not in document["config_only"]
+
+
+def test_config_schema_never_prints_a_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOADCOACH_EVIDENCE__FREEWEIGHT_API_KEY_ENV", "SOME_SECRET_VALUE_NAME")
+    result = runner.invoke(app, ["config", "schema", "--json"])
+    assert result.exit_code == 0
+    assert "SOME_SECRET_VALUE_NAME" not in result.stdout
+
+
+def test_config_schema_reports_drift_as_a_clean_error(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.toml"
+    bad.write_text('[server]\nhost = "0.0.0.0"\n')
+    result = runner.invoke(app, ["config", "schema", "--config", str(bad)])
+    assert result.exit_code == 3
+    assert "INSECURE_BINDING" in result.stderr
+
+
 def test_config_show_lists_effective_values() -> None:
     result = runner.invoke(app, ["config", "show"])
     assert result.exit_code == 0

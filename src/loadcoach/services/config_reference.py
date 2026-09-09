@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
-from loadcoach.config import Settings
+from loadcoach.config import DERIVED_CONFIG_KEYS, Settings
 from loadcoach.services.settings import CONFIG_ONLY_SECURITY_KEYS, RUNTIME_SETTINGS
 
 __all__ = ["render_configuration_reference"]
@@ -49,12 +49,14 @@ stored row is therefore always the effective value; `GET /api/v1/settings` and t
 are where they are inspected (ADR-0101).
 """
 
-_DERIVED_KEYS: frozenset[str] = frozenset({"providers.registrations"})
+_DERIVED_KEYS = DERIVED_CONFIG_KEYS
 """Fields that hold a *collected* value rather than a key an operator writes.
 
 ``providers.registrations`` is filled from the ``[providers.<name>]`` subtables, so a row for it
 would advertise a key nobody types and an environment variable that could not set it. The
-``[providers]`` section's own prose explains the real shape.
+``[providers]`` section's own prose explains the real shape. Defined once, in
+:data:`loadcoach.config.DERIVED_CONFIG_KEYS`, and shared with the settings-schema document
+(ADR-0127) so the two cannot disagree.
 """
 
 _SECURITY_NOTES: dict[str, str] = {

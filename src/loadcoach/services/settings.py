@@ -26,12 +26,20 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Final
 
 from baseaicore import SuiteError, ValidationError
 from sqlalchemy import select
 
-from loadcoach.config import env_var_for
+from loadcoach.config import (
+    DERIVED_CONFIG_KEYS,
+    ENV_PREFIX,
+    Settings,
+    env_var_for,
+    leaf_keys,
+    load_settings_tolerant,
+)
 from loadcoach.domain.authorization import Principal, authorize
 from loadcoach.infrastructure.db.models import Setting
 from loadcoach.infrastructure.db.repositories.settings import SettingsRepository
@@ -40,14 +48,16 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from datetime import datetime
 
-    from loadcoach.config import Settings
     from loadcoach.services.database import Database
 
 __all__ = [
     "CONFIG_ONLY_SECURITY_KEYS",
     "RUNTIME_SETTINGS",
+    "SCHEMA_VERSION",
     "RuntimeSetting",
     "SettingConfigOnly",
+    "config_schema_document",
+    "database_overlay",
     "read_runtime_settings",
     "runtime_settings_document",
     "shadowing_source",
@@ -344,4 +354,128 @@ def runtime_settings_document(database: Database, *, settings: Settings) -> dict
         "settings": effective,
         "definitions": definitions,
         "config_only": sorted(CONFIG_ONLY_SECURITY_KEYS),
+    }
+
+
+def database_overlay(settings: Settings) -> dict[str, tuple[Any, str]]:
+    """The runtime-changeable values the ``settings`` table decides, and how to label them.
+
+    Configuration standards §7 asks ``config show`` to mark database-sourced values
+    ``(database)``. This opens the configured database read-only to find them, and **never
+    raises**: an absent, unmigrated or unreadable database is not a failure of the caller —
+    printing the configured values is exactly the right answer when there is no database to
+    consult, and a command or document that needed one would be unusable on a fresh install.
+    Shared by ``loadcoach config show`` and :func:`config_schema_document`, so the two cannot
+    disagree about which layer produced a value.
+
+    Args:
+        settings: The loaded :class:`Settings` — the file/environment layers as resolved.
+
+    Returns:
+        ``path -> (value, source)`` for the keys the database decides, plus the keys whose stored
+        row is beaten by an environment variable — those keep their configured value and say that
+        a row exists and does nothing. Empty when no database can be read. ``queue.paused`` and
+        ``queue.draining`` are absent: they are not fields of ``Settings``, so there is no row to
+        mark for them here.
+    """
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from loadcoach.services.database import Database
+
+    database_url = settings.storage.database_url
+    if database_url is None:  # pragma: no cover — StorageSettings always fills this in
+        return {}
+    url = make_url(database_url)
+    # Connecting would create the file. A read-only inspection must not leave a database behind
+    # that `db status` would then report as unmigrated.
+    if (
+        url.drivername.startswith("sqlite")
+        and url.database not in (None, ":memory:")
+        and not Path(str(url.database)).is_file()
+    ):
+        return {}
+    try:
+        with Database.from_url(database_url) as database:
+            document = runtime_settings_document(database, settings=settings)
+    except (SQLAlchemyError, SuiteError, OSError):
+        return {}
+    overlay: dict[str, tuple[Any, str]] = {}
+    for key, definition in document["definitions"].items():
+        if definition["source"] == "database":
+            overlay[key] = (document["settings"][key], "database")
+        elif definition["shadowed_by"] is not None:
+            overlay[key] = (
+                document["settings"][key],
+                f"{definition['shadowed_by']}; database row {definition['stored']} shadowed",
+            )
+    return overlay
+
+
+SCHEMA_VERSION: Final = "1.0"
+"""The version of the settings-schema document :func:`config_schema_document` emits (ADR-0127)."""
+
+
+def config_schema_document(config_path: str | Path | None = None) -> dict[str, Any]:
+    """Build the ADR-0127 rule 1 settings-schema document.
+
+    Everything comes from objects that already exist and are already tested: pydantic's own
+    ``Settings.model_json_schema()``, :data:`RUNTIME_SETTINGS`, :data:`CONFIG_ONLY_SECURITY_KEYS`
+    and the per-leaf sources :func:`~loadcoach.config.load_settings` and :func:`database_overlay`
+    already compute for ``config show``. Nothing here is a second copy of a key list.
+
+    Args:
+        config_path: As :func:`~loadcoach.config.load_settings`; the file WeightRoomGym (or an
+            operator) wants described. Defaults to the resolved installation config.
+
+    Returns:
+        ``schema_version``, ``application``, ``version``, ``env_prefix``, ``config_path``,
+        ``json_schema``, ``runtime_changeable`` (one entry per :data:`RUNTIME_SETTINGS` key, as
+        ``key``/``kind``/``minimum``/``maximum``/``description``), ``security_keys`` (sorted
+        :data:`CONFIG_ONLY_SECURITY_KEYS`), ``config_only`` (every other leaf an operator writes —
+        :data:`~loadcoach.config.DERIVED_CONFIG_KEYS` excluded), ``provider_form`` (``"singular"``
+        or ``"plural"``, ADR-0077 — which form is effective, so a form generator does not render
+        two editors for one registration), ``sources`` (the same per-leaf layer ``config show``
+        prints, database overlay included) and ``problems`` (an unknown key in the file, never
+        dropped — see :func:`~loadcoach.config.load_settings_tolerant`).
+
+    Raises:
+        ConfigurationError: A *known* key in the file fails validation, both provider forms are
+            configured, or an unsafe bind combination is configured — the same refusals
+            ``config show`` and ``config validate`` give.
+    """
+    from loadcoach import __about__
+
+    loaded, problems = load_settings_tolerant(config_path)
+
+    sources = dict(loaded.sources)
+    for path, (_value, source) in database_overlay(loaded.settings).items():
+        sources[path] = source
+
+    runtime_keys = set(RUNTIME_SETTINGS)
+    security_keys = set(CONFIG_ONLY_SECURITY_KEYS)
+    config_only = sorted(set(leaf_keys()) - runtime_keys - security_keys - DERIVED_CONFIG_KEYS)
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "application": "loadcoach",
+        "version": __about__.__version__,
+        "env_prefix": ENV_PREFIX,
+        "config_path": str(loaded.config_path),
+        "json_schema": Settings.model_json_schema(),
+        "runtime_changeable": [
+            {
+                "key": setting.key,
+                "kind": setting.kind.__name__,
+                "minimum": setting.minimum,
+                "maximum": setting.maximum,
+                "description": setting.description,
+            }
+            for setting in RUNTIME_SETTINGS.values()
+        ],
+        "security_keys": sorted(security_keys),
+        "config_only": config_only,
+        "provider_form": "plural" if loaded.settings.providers.registrations else "singular",
+        "sources": sources,
+        "problems": list(problems),
     }

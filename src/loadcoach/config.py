@@ -29,6 +29,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 __all__ = [
     "EXAMPLE_CONFIG_TOML",
+    "DERIVED_CONFIG_KEYS",
     "ENV_PREFIX",
     "LOOPBACK_HOSTS",
     "AdaptersSettings",
@@ -54,13 +55,22 @@ __all__ = [
     "config_dir",
     "data_dir",
     "env_var_for",
+    "leaf_keys",
     "load_settings",
+    "load_settings_tolerant",
     "resolve_config_path",
     "state_dir",
 ]
 
 ENV_PREFIX = "LOADCOACH_"
 LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
+DERIVED_CONFIG_KEYS: frozenset[str] = frozenset({"providers.registrations"})
+"""Leaf keys that are *collected*, not written by an operator (see :class:`ProvidersSettings`).
+
+Shared by the configuration reference (``services/config_reference.py``) and the settings-schema
+document (``services/settings.py``, ADR-0127) so a key nobody types is never reported as an
+ordinary key in either place.
+"""
 _ALL_INTERFACES_HOST = "0.0.0.0"  # noqa: S104 — compared against, never bound to, by this module
 _RESERVED_ENV_SUFFIXES = frozenset({"CONFIG", "DATA_DIR", "LOG_LEVEL"})
 _DEFAULT_PORT = 8766
@@ -1016,6 +1026,16 @@ def _known_dotted_keys() -> list[str]:
     return known
 
 
+def leaf_keys() -> tuple[str, ...]:
+    """Every ``section.field`` dotted path :class:`Settings` recognizes.
+
+    Built from the same walk as :func:`_known_dotted_keys`, filtered to leaves — the schema
+    document (ADR-0127) and the configuration reference both need this list, and neither keeps a
+    second copy of it.
+    """
+    return tuple(key for key in _known_dotted_keys() if "." in key)
+
+
 def _translate_validation_error(
     exc: PydanticValidationError, config_path: Path
 ) -> ConfigurationError:
@@ -1141,6 +1161,31 @@ def _refuse_both_provider_forms(merged: dict[str, Any], config_path: Path) -> No
     )
 
 
+def _read_file(resolved_path: Path) -> tuple[dict[str, Any], bool]:
+    """Parse ``resolved_path`` as TOML, or return an empty mapping when it does not exist."""
+    if not resolved_path.is_file():
+        return {}, False
+    try:
+        with resolved_path.open("rb") as handle:
+            return tomllib.load(handle), True
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigurationError(
+            f"Configuration file {resolved_path} is not valid TOML: {exc}",
+            details={"file": str(resolved_path)},
+        ) from exc
+
+
+def _validate(merged: dict[str, Any], resolved_path: Path) -> Settings:
+    """Validate a merged, layered configuration dict into a :class:`Settings`."""
+    _refuse_both_provider_forms(merged, resolved_path)
+    try:
+        settings = Settings.model_validate(merged)
+    except PydanticValidationError as exc:
+        raise _translate_validation_error(exc, resolved_path) from exc
+    _validate_security(settings)
+    return settings
+
+
 def load_settings(
     *,
     config_path: str | Path | None = None,
@@ -1165,35 +1210,77 @@ def load_settings(
             check for an active API token — see :mod:`loadcoach.bootstrap`.
     """
     resolved_path = resolve_config_path(config_path)
-    file_data: dict[str, Any] = {}
-    file_used = False
-    if resolved_path.is_file():
-        try:
-            with resolved_path.open("rb") as handle:
-                file_data = tomllib.load(handle)
-        except tomllib.TOMLDecodeError as exc:
-            raise ConfigurationError(
-                f"Configuration file {resolved_path} is not valid TOML: {exc}",
-                details={"file": str(resolved_path)},
-            ) from exc
-        file_used = True
-
+    file_data, file_used = _read_file(resolved_path)
     env_data = _read_env(ENV_PREFIX)
     cli_data = cli_overrides or {}
     merged = _deep_merge(_deep_merge(file_data, env_data), cli_data)
-    _refuse_both_provider_forms(merged, resolved_path)
-
-    try:
-        settings = Settings.model_validate(merged)
-    except PydanticValidationError as exc:
-        raise _translate_validation_error(exc, resolved_path) from exc
-
-    _validate_security(settings)
-
+    settings = _validate(merged, resolved_path)
     sources = _track_sources(file_data, env_data, cli_data)
     return LoadedSettings(
         settings=settings, config_path=resolved_path, config_file_used=file_used, sources=sources
     )
+
+
+def load_settings_tolerant(
+    config_path: str | Path | None = None,
+) -> tuple[LoadedSettings, tuple[str, ...]]:
+    """Like :func:`load_settings`, but an unknown key in the file is reported, never fatal.
+
+    Built for ``config schema`` (ADR-0127 rule 1): the tool that describes why a configuration
+    file doesn't load cannot itself refuse to load it. Every other kind of problem — a bad type,
+    an out-of-range value, both provider forms, an unsafe bind — still raises exactly as
+    :func:`load_settings` does; only an unrecognized key path is stripped and reported back rather
+    than failing the whole document. A section that validates its own extra keys — ``[providers]``
+    and its ``[providers.<name>]`` registrations (ADR-0077) — is passed through untouched, since
+    there is nothing here for it to strip: the model's own ``extra="allow"`` already accepts them.
+
+    Args:
+        config_path: As :func:`load_settings`.
+
+    Returns:
+        The validated :class:`LoadedSettings` (built with unknown keys removed) and a tuple of
+        ``"unknown configuration key '…'"`` messages, empty when the file had none.
+
+    Raises:
+        ConfigurationError: The file is not valid TOML, a *known* key fails validation, both
+            provider forms are configured, or an unsafe bind combination is configured.
+    """
+    resolved_path = resolve_config_path(config_path)
+    file_data, file_used = _read_file(resolved_path)
+    known_sections = set(Settings.model_fields)
+    known_leaves = set(leaf_keys())
+    problems: list[str] = []
+    clean_file: dict[str, Any] = {}
+    for section, fields in file_data.items():
+        if section not in known_sections:
+            problems.append(f"unknown configuration key '{section}'")
+            continue
+        section_model = Settings.model_fields[section].annotation
+        allows_extra = (
+            isinstance(section_model, type)
+            and issubclass(section_model, BaseModel)
+            and section_model.model_config.get("extra") == "allow"
+        )
+        if not isinstance(fields, dict) or allows_extra:
+            clean_file[section] = fields  # not a table, or validates its own extras
+            continue
+        clean_fields: dict[str, Any] = {}
+        for field_name, value in fields.items():
+            path = f"{section}.{field_name}"
+            if path not in known_leaves:
+                problems.append(f"unknown configuration key '{path}'")
+                continue
+            clean_fields[field_name] = value
+        clean_file[section] = clean_fields
+
+    env_data = _read_env(ENV_PREFIX)
+    merged = _deep_merge(_deep_merge(clean_file, env_data), {})
+    settings = _validate(merged, resolved_path)
+    sources = _track_sources(clean_file, env_data, {})
+    loaded = LoadedSettings(
+        settings=settings, config_path=resolved_path, config_file_used=file_used, sources=sources
+    )
+    return loaded, tuple(problems)
 
 
 EXAMPLE_CONFIG_TOML = """\
