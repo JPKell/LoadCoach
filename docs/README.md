@@ -12,6 +12,7 @@ Operator documents, written for this release:
 * [openapi.json](openapi.json) — the API, as a committed snapshot.
 * [LLAMACPP_SETUP.md](LLAMACPP_SETUP.md) — running llama.cpp behind the suite: install, the model
   directory, adapters, residency and swapping, router mode, model suggestions (mirrored).
+* [MEMORY_SAFETY.md](MEMORY_SAFETY.md) — keeping Ollama and `llama-server` from taking the host down: the cgroup caps, `--fit`, per-model KV-cache precision, the max-fit ceiling (mirrored).
 
 The specification set — `apps/loadcoach/{spec,routing,queue-and-scheduling,api,data-model,
 development-plan,risks}.md` and the standards it cites — is **mirrored** from the suite's
