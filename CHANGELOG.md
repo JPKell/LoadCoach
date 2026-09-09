@@ -7,6 +7,8 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-09-09
+
 ### Added
 
 - **Per-model `kv_cache_precision` and `flash_attention`** in `[runtime.models."<canonical id>"]`,
