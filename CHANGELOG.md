@@ -7,6 +7,17 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-09-09
+
+### Changed
+
+- **BREAKING (CLI JSON): `loadcoach token list --json` wraps the list in `items`, not `tokens`** —
+  the collection envelope API and contract standards require, which CLI standards carry to
+  `--json` output (ADR-0131). Each record is unchanged. A script reading `.tokens` reads `.items`.
+- Released as a **minor**, not a major, by the operator's explicit decision recorded in ADR-0131:
+  there are no users of this output yet, and its one consumer (WeightRoomGym) reads both names.
+  This is a deliberate, recorded exception to packaging and release standards §3.2.
+
 ## [1.3.1] — 2026-09-09
 
 ### Added
