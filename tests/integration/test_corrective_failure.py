@@ -1,12 +1,12 @@
 """The corrective retry survives an empty answer, and a refused request writes its attempts.
 
-Both halves are G1's, found on the real stack (`docs/history/G1_HANDOFF.md` §9.2). A reasoning
-model under JSON mode returns nothing about half the time; `corrective_turns` then appended
-`Message(ASSISTANT, content="")`, which ModelRack refuses, and the refusal escaped mid-execution:
-`/generate` answered `VALIDATION_ERROR`, the job stayed `executing` until a watchdog or a cancel,
-and **its attempts were never written** — which is why the `finish_reason` behind those empty
-answers is unrecoverable to this day. The second half is the one that matters more: whatever is
-refused, the rows survive.
+Both halves are G1's, found on the real stack (`docs/history/handoffs/G1_HANDOFF.md` §9.2). A
+reasoning model under JSON mode returns nothing about half the time; `corrective_turns` then
+appended `Message(ASSISTANT, content="")`, which ModelRack refuses, and the refusal escaped
+mid-execution: `/generate` answered `VALIDATION_ERROR`, the job stayed `executing` until a watchdog
+or a cancel, and **its attempts were never written** — which is why the `finish_reason` behind those
+empty answers is unrecoverable to this day. The second half is the one that matters more: whatever
+is refused, the rows survive.
 """
 
 from __future__ import annotations

@@ -1,9 +1,9 @@
 """The tool wire: `tools` on the request, `tool_calls` on a message (api.md §4, ADR-0075).
 
-Half of this wire already existed: a response has carried `output.tool_calls` since M4. What did
-not exist was the inbound half, so a model was never told which tools it had — at G1, on the real
-stack, gpt-oss:20b invented `repo_browser.list_dir` out of its own vocabulary and every call it
-made was refused (`docs/history/G1_HANDOFF.md` §9.3). These tests pin the inbound half: the offer
+Half of this wire already existed: a response has carried `output.tool_calls` since M4. What did not
+exist was the inbound half, so a model was never told which tools it had — at G1, on the real stack,
+gpt-oss:20b invented `repo_browser.list_dir` out of its own vocabulary and every call it made was
+refused (`docs/history/handoffs/G1_HANDOFF.md` §9.3). These tests pin the inbound half: the offer
 reaches the provider unmodified, a candidate that cannot use tools is a routing rejection with a
 reason rather than a silent drop, and a transcript carrying tool turns replays natively.
 """
@@ -168,7 +168,7 @@ ASSISTANT_CALL = ToolCall(id="ollama-17052f91-0", name="list_dir", arguments={"p
 
 
 def test_an_assistant_turn_with_calls_and_no_content_replays(tmp_path: Path) -> None:
-    """The exact turn that broke G1 (`docs/history/G1_HANDOFF.md` §10.4, turn 3 s1).
+    """The exact turn that broke G1 (`docs/history/handoffs/G1_HANDOFF.md` §10.4, turn 3 s1).
 
     Before this, `MessageBody` had no `tool_calls`, so a turn that answered with calls and no text
     could not be put back on the wire at all: ModelRack refuses an assistant message with neither,

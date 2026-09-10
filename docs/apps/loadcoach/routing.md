@@ -91,7 +91,7 @@ true` then `think: false` — over **one** prompt for every model: PromptCadence
 1.1.0 rendered in I3 gate D's shape (287-character system turn, 1 976-character user turn) under
 `tools.plan`'s execution block, `format: "json"`, `temperature = 0.1`, `num_predict = 4096`. The
 digests, the raw run log and the exact request bodies are in
-[`history/I6_HANDOFF.md`](../../history/I6_HANDOFF.md) §4; nothing here judges answer quality.
+[`history/handoffs/I6_HANDOFF.md`](../../history/handoffs/I6_HANDOFF.md) §4; nothing here judges answer quality.
 
 | Model (Ollama tag) | `think: true` | `think: false` |
 |---|---|---|
@@ -304,7 +304,7 @@ The three adapter constraints, in the words a caller needs:
   only by an application holding a Commissioner ledger, about a request it meant to send.
 
 `kind = "fake"` declares a small model by default so a fake-provider journey never trips
-`insufficient_vram` on its own (E6, `docs/history/E6_HANDOFF.md`); `[provider.fake]`'s `size_bytes`, `layers`,
+`insufficient_vram` on its own (E6, `docs/history/handoffs/E6_HANDOFF.md`); `[provider.fake]`'s `size_bytes`, `layers`,
 `kv_heads` and `head_dim` — set all four together, never a subset, since the KV term dominates
 `size_bytes` at any interesting context length — let an operator provoke this rejection on purpose
 and inspect the full `estimate` block it produces.

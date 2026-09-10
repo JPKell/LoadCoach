@@ -635,7 +635,7 @@ on a real provider at all.
   `checks`, the same shape the synchronous response has always rendered. A caller that advances
   on an answer can now tell one the model chose to end from one cut off at the token limit, and
   can read the same facts back for a job it lost track of, instead of inferring either from the
-  text. Surfaced by PromptCadence's Phase 3 (`docs/history/D2_HANDOFF.md` §2), whose advance contract refuses
+  text. Surfaced by PromptCadence's Phase 3 (`docs/history/handoffs/D2_HANDOFF.md` §2), whose advance contract refuses
   to read an undeclared finish as success.
 
   **Additive within `/api/v1`**: no field removed, no existing field's type changed, no new API
@@ -789,7 +789,7 @@ on a real provider at all.
   the raw driver cursor, because the pragma is a documented no-op inside a transaction and the
   connection is in one by the time SQLAlchemy would emit it.
 - **The corrective retry no longer crashes on an empty answer, and a refused request writes its
-  attempts** (G2, found at G1: `docs/history/G1_HANDOFF.md` §9.2). `corrective_turns` appended
+  attempts** (G2, found at G1: `docs/history/handoffs/G1_HANDOFF.md` §9.2). `corrective_turns` appended
   `Message(ASSISTANT, content=previous_text)` unconditionally, so a model that answered with
   nothing — a reasoning model under JSON mode does, about half the time — produced an assistant
   turn ModelRack refuses. The refusal escaped mid-execution: `/generate` returned
@@ -803,7 +803,7 @@ on a real provider at all.
   *built* now **fails the job with every attempt already made committed**, `error_code`
   `VALIDATION_ERROR`, `completed_at` set. It is not a provider failure and not a routing failure:
   nothing was called and no candidate was rejected. (E6, found at E4:
-  `docs/history/E4_HANDOFF.md` §5). `build_provider("fake")` used to construct ModelRack's unscripted
+  `docs/history/handoffs/E4_HANDOFF.md` §5). `build_provider("fake")` used to construct ModelRack's unscripted
   `FakeProvider()`, whose `DEFAULT_MODEL` declares an 8.5 GB model — so routing's
   `insufficient_vram` hard constraint rejected the only candidate whenever the host had little
   free VRAM, including plain `tools.agent`, unchanged. A provider that exists so the suite and an
