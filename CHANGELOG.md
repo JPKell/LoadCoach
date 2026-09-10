@@ -7,6 +7,20 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-09-10
+
+### Added
+
+- **`POST /generate/stream` and `GET /jobs/{id}/stream` stream thinking live** as an
+  `event: thinking` frame, `{"delta", "index"}` inside the event envelope, one per reasoning delta
+  the provider streams (ADR-0132). ModelRack's Ollama and llama.cpp providers already yielded
+  these deltas; LoadCoach collected them into `result.reasoning` and forwarded none, so a caller
+  saw a thinking model's reasoning only after its answer. `index` counts thinking frames alone, so
+  `token` indices are unchanged; a provider with no reasoning channel sends no frame; like
+  `token`, the frame is live and not replayed, and `result.reasoning.summary` is unchanged.
+  Additive inside `/api/v1`: a client that ignores unknown events, as API standards require, sees
+  no difference. Found by WeightRoomGym row W6 capturing a real stream on the reference machine.
+
 ## [1.4.0] — 2026-09-09
 
 ### Changed
