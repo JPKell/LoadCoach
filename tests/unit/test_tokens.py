@@ -113,4 +113,6 @@ def test_the_cli_prints_the_token_once_and_never_again(database: Database) -> No
     assert runner.invoke(app, ["token", "revoke", "reviewer"]).exit_code == 5
     assert "revoked" in runner.invoke(app, ["token", "list"]).stdout
     empty = runner.invoke(app, ["token", "list", "--json"])
-    assert len(json.loads(empty.stdout)["tokens"]) == 2
+    listed_json = json.loads(empty.stdout)
+    assert len(listed_json["items"]) == 2  # ADR-0131: the standard collection envelope
+    assert "tokens" not in listed_json

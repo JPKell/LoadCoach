@@ -87,7 +87,10 @@ def list_command(
     with open_database(config) as (database, _settings):
         records = list_tokens(database)
     if json_output:
-        typer.echo(json.dumps({"tokens": [record.as_json() for record in records]}))
+        # `items`, the collection envelope API and contract standards require and CLI standards
+        # §11 carries to `--json` (ADR-0131). Renamed from `tokens` in 1.4.0 as a deliberate
+        # minor-release break; WeightRoomGym reads both for one console major.
+        typer.echo(json.dumps({"items": [record.as_json() for record in records]}))
         return
     if not records:
         typer.echo("no tokens; loopback is open, and a non-loopback bind will refuse to start")
