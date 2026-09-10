@@ -1384,11 +1384,15 @@ class Worker:
         return JobState.ADMITTED
 
     def _on_chunk(self, job: ClaimedJob) -> Callable[[StreamChunk], None]:
+        from loadcoach.services.job_events import THINKING_EVENT
+
         sink = self.runtime.sink
 
         def publish(chunk: StreamChunk) -> None:
             if chunk.kind == "token":
                 sink.publish_token(job.job_id, chunk.payload)
+            elif chunk.kind == "thinking":
+                sink.publish_live(job.job_id, THINKING_EVENT, chunk.payload)
 
         return publish
 

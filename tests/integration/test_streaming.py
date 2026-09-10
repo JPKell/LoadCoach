@@ -324,3 +324,51 @@ def test_post_generate_returns_the_documented_body(
     assert re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", body["job_id"])
     assert body["timing"]["provider_ms"] >= 0
     assert body["timing"]["loadcoach_overhead_ms"] >= 0
+
+
+def test_thinking_streams_live_as_its_own_enveloped_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0132: each ThinkingDelta is a `thinking` frame, enveloped, with its own index; the
+    `token` frames a caller reassembles the answer from are exactly what they were before."""
+    thinking_script = FakeScript(
+        models=(_model(),),
+        generations=(
+            FakeGeneration(
+                text="Local inference keeps data on the machine.",
+                thinking="The user asked about local inference. Keep it short.",
+            ),
+        ),
+        repeat_final_generation=True,
+    )
+    with _client(tmp_path, monkeypatch, thinking_script) as client:
+        frames = _frames(_stream(client, {"task": "general.chat", "prompt": "hello"}))
+
+    events = [event for _, event, _ in frames]
+    assert "thinking" in events
+    assert events.index("thinking") < events.index("token"), "thinking precedes the answer"
+    thinking = [
+        setspec.load_envelope(data, expect="event.envelope", supported=[SchemaVersion(1, 0)])
+        for _, event, data in frames
+        if event == "thinking" and data
+    ]
+    assert all(envelope.payload["type"] == "thinking" for envelope in thinking)
+    assert [envelope.payload["index"] for envelope in thinking] == list(range(len(thinking)))
+    tokens = [json.loads(data) for _, event, data in frames if event == "token" and data]
+    assert [token["index"] for token in tokens] == list(range(len(tokens)))
+
+    result = next(data for _, event, data in frames if event == "result" and data)
+    payload = setspec.load_envelope(
+        result, expect="event.envelope", supported=[SchemaVersion(1, 0)]
+    ).payload
+    assert "".join(e.payload["delta"] for e in thinking) == payload["reasoning"]["summary"]
+    assert "".join(token["delta"] for token in tokens) == payload["output"]["text"]
+
+
+def test_a_reply_without_thinking_sends_no_thinking_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script: FakeScript
+) -> None:
+    """ADR-0132 rule 5 and ADR-0016: no channel means no frame, never an empty one."""
+    with _client(tmp_path, monkeypatch, script) as client:
+        frames = _frames(_stream(client, {"task": "general.chat", "prompt": "hello"}))
+    assert "thinking" not in [event for _, event, _ in frames]

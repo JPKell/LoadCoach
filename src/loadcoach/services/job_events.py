@@ -50,6 +50,7 @@ __all__ = [
     "LIVE_BUFFER_SIZE",
     "TERMINAL_JOB_EVENTS",
     "TERMINAL_STREAM_EVENTS",
+    "THINKING_EVENT",
     "TOKEN_EVENT",
     "EventWriter",
     "JobEventSink",
@@ -65,6 +66,10 @@ starting a few milliseconds after the execution thread — would otherwise miss 
 since they are never stored. The buffer closes that gap for the job's lifetime and is dropped
 with the terminal event: after completion a reconnect replays the persisted frames only, which
 is api.md §4's promise. Bounded, so a runaway generation costs a fixed amount of memory."""
+
+THINKING_EVENT = "thinking"
+"""A live reasoning delta, ``{"delta", "index"}`` (ADR-0132). Enveloped like every frame but
+``token``: MirrorWall's bare-frame exception is ``TOKEN_EVENT`` alone, by construction."""
 
 # ``TOKEN_EVENT`` is re-exported from MirrorWall rather than spelled here: the one bare
 # (un-enveloped) frame is the one MirrorWall's formatter keys on (ADR-0025 §3). api.md §5 lists it

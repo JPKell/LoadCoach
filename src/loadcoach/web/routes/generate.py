@@ -447,9 +447,13 @@ def _drive(
     without one.
     """
 
+    from loadcoach.services.job_events import THINKING_EVENT
+
     def publish(chunk: StreamChunk) -> None:
         if chunk.kind == "token":
             sink.publish_token(job_id, chunk.payload)
+        elif chunk.kind == "thinking":
+            sink.publish_live(job_id, THINKING_EVENT, chunk.payload)
         elif chunk.kind == "tool_call":
             sink.publish_live(job_id, "tool_call", chunk.payload)
 

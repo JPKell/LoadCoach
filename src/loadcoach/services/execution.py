@@ -697,6 +697,7 @@ def _drain(
     ``started`` is the caller's own mark, so time to first token is measured from the same instant
     provider time is, rather than from a moment inside this function.
     """
+    thinking_index = 0
     for event in provider.stream(request):
         if isinstance(event, TokenDelta):
             if collected.ttft_ms is None:
@@ -707,6 +708,11 @@ def _drain(
             index += 1
         elif isinstance(event, ThinkingDelta):
             collected.thinking += event.text
+            if on_chunk is not None and event.text:
+                # ADR-0132: forwarded live as its own frame. Its own counter, so the `token`
+                # indices a caller already reassembles by stay contiguous.
+                on_chunk(StreamChunk("thinking", {"delta": event.text, "index": thinking_index}))
+                thinking_index += 1
         elif isinstance(event, ToolCallDelta):
             collected.tool_calls.append(
                 {
