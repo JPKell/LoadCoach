@@ -262,10 +262,18 @@ Same body; `text/event-stream` response:
 
 ```text
 event: routing      data: {"schema":"event.envelope","schema_version":"1.0",…,"payload":{…}}
+event: thinking     data: {"schema":"event.envelope",…,"payload":{"delta": "The user ", "index": 0,…}}
 event: token        data: {"delta": "Local ", "index": 0}
 event: tool_call    data: {"schema":"event.envelope",…,"payload":{…}}
 event: result       data: {"schema":"event.envelope",…,"payload":{…the full response object…}}
 ```
+
+**`thinking`** (from `loadcoach 1.5.0`, [ADR-0132](../../adr/0132-loadcoach-streams-thinking-deltas-as-their-own-frame.md))
+carries one reasoning delta as the provider streams it, before and sometimes between the answer's
+`token` frames. `index` counts thinking frames alone, so `token` indices are unchanged. A provider
+that streams no reasoning (`openai_compatible`) sends none — never an empty frame — and the whole
+reasoning is still in `result.reasoning.summary`, which is also where a reconnecting caller finds
+the thinking it missed: like `token`, `thinking` frames are live and not replayed.
 
 Every frame carries the SetSpec event envelope **except** `token`, which is bare — the one documented
 exception, taken because a five-field envelope per token is roughly a hundred bytes of overhead on the
@@ -281,7 +289,7 @@ persisted job events.
 | `POST /jobs` | Asynchronous submission; same body as `/generate` plus `class`, `priority`, `max_wait_seconds`, `idempotent`. Returns `202` with the job |
 | `GET /jobs` | Filter by state, class, task, model, date; cursor pagination |
 | `GET /jobs/{id}` | Full job: state, attempts, routing summary, usage, timings, validation (with its `checks`), degradations, and the output with its `finish_reason` — the same `output` and `validation` shapes as `POST /generate` (§4) |
-| `GET /jobs/{id}/stream` | SSE: state changes, tokens (when streaming was requested), terminal result |
+| `GET /jobs/{id}/stream` | SSE: state changes, tokens and thinking (when streaming was requested; ADR-0132), terminal result |
 | `POST /jobs/{id}/cancel` | 202, or 409 `JOB_NOT_CANCELLABLE` |
 | `GET /jobs/{id}/explanation` | The complete routing explanation |
 | `POST /jobs/{id}/feedback` | Caller feedback (see §6) |
