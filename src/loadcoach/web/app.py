@@ -52,6 +52,7 @@ from loadcoach.web.limits import BodySizeLimitMiddleware, SameOriginMiddleware
 from loadcoach.web.rate_limit import RateLimitMiddleware
 from loadcoach.web.rendering import configure_shell, render, templates
 from loadcoach.web.routes import access as access_routes
+from loadcoach.web.routes import adapters as adapters_routes
 from loadcoach.web.routes import dashboard as dashboard_routes
 from loadcoach.web.routes import evidence as evidence_routes
 from loadcoach.web.routes import generate as generate_routes
@@ -406,6 +407,7 @@ def create_app(settings: Settings, *, config_path: Path | None = None) -> FastAP
     app.include_router(reliability_routes.router, prefix="/api/v1")
     app.include_router(settings_routes.router, prefix="/api/v1")
     app.include_router(providers_routes.router, prefix="/api/v1")
+    app.include_router(adapters_routes.router, prefix="/api/v1")
     app.include_router(dashboard_routes.ui_router)
     app.include_router(models_routes.ui_router)
     app.include_router(task_profiles_routes.ui_router)

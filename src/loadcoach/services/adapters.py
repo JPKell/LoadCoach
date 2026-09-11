@@ -40,6 +40,7 @@ __all__ = [
     "AdapterView",
     "adapter_facts_by_base_name",
     "adapter_overview",
+    "adapter_report",
     "scan_adapters",
     "show_adapter",
     "sync_adapters",
@@ -367,3 +368,132 @@ def adapter_facts_by_base_name(database: Database) -> dict[str, tuple[AdapterFac
             )
         )
     return {name: tuple(facts) for name, facts in grouped.items()}
+
+
+def adapter_report(
+    database: Database,
+    settings: Settings,
+    registrations: tuple[ProviderRegistration, ...] = (),
+    *,
+    principal: Principal | None = None,
+    route_limit: int = 20,
+) -> dict[str, Any]:
+    """``GET /adapters``' document: every adapter, where it is held, resident, routed (api.md §2).
+
+    The directory is the truth (ADR-0061), so the list starts from :func:`adapter_overview`; the
+    ``adapters`` table is joined in only for what the directory cannot say — the row id that
+    residency and routing candidates name. A row whose artifact has left the directory is still
+    listed, ``in_directory: false``, because a stored decision names it and deleting it from the
+    view would orphan that decision as surely as deleting the row would.
+
+    Args:
+        database: The application's database handle.
+        settings: The resolved configuration.
+        registrations: The live registrations, asked what each holds.
+        principal: Who asks; ``read`` is enough. ``None`` is an internal call.
+        route_limit: The routing candidates listed per adapter, newest first.
+
+    Returns:
+        ``enabled``, ``note``, ``directory``, ``adapters``, ``invalid``, ``drafts``,
+        ``unmanifested``. With ``[adapters] directory`` unset, ``enabled`` is ``false`` and ``note``
+        names the key — the feature being off is a state, not a failure.
+
+    Raises:
+        InsufficientScope: ``principal`` is below ``read``.
+    """
+    from baseaicore.timeutil import to_rfc3339
+
+    from loadcoach.infrastructure.db.models import (
+        Model,
+        Residency,
+        RoutingCandidate,
+        RoutingDecision,
+    )
+
+    authorize(principal, "read")
+    try:
+        overview = adapter_overview(settings, registrations, principal=principal)
+    except AdaptersDisabled as disabled:
+        return {
+            "enabled": False,
+            "note": disabled.message,
+            "directory": None,
+            "adapters": [],
+            "invalid": [],
+            "drafts": [],
+            "unmanifested": [],
+        }
+    document = overview.as_json()
+    with database.read() as session:
+        rows = session.execute(select(Adapter).order_by(Adapter.name)).scalars().all()
+        by_digest = {row.artifact_sha256: row for row in rows}
+        entries: list[dict[str, Any]] = []
+        for view in document["adapters"]:
+            row = by_digest.pop(view["artifact_sha256"], None)
+            entries.append(
+                {**view, "in_directory": True, "adapter_id": None if row is None else row.id}
+            )
+        entries.extend(
+            {
+                "name": row.name,
+                "artifact_sha256": row.artifact_sha256,
+                "artifact_path": row.artifact_path,
+                "manifest_path": row.manifest_path,
+                "base_model_name": row.base_model_name,
+                "base_artifact_digest": row.base_artifact_digest,
+                "base_confidence": row.base_identity_confidence,
+                "declared_capabilities": list(
+                    cast("list[str]", row.declared_capabilities_json or [])
+                ),
+                "data_classification": row.data_classification,
+                "available": row.available,
+                "unavailable_reason": row.unavailable_reason,
+                "registered_on": [],
+                "pending_on": [],
+                "notes": None,
+                "in_directory": False,
+                "adapter_id": row.id,
+            }
+            for row in by_digest.values()
+        )
+        for entry in entries:
+            adapter_id = entry["adapter_id"]
+            if adapter_id is None:
+                entry["resident"], entry["routes"] = [], []
+                continue
+            resident = session.execute(
+                select(Residency, Model.canonical_id)
+                .join(Model, Model.id == Residency.model_id)
+                .where(Residency.adapter_id == adapter_id, Residency.resident.is_(True))
+                .order_by(Residency.gpu_index)
+            ).all()
+            entry["resident"] = [
+                {
+                    "gpu_index": residency.gpu_index,
+                    "base_canonical_id": canonical_id,
+                    "last_used_at": to_rfc3339(residency.last_used_at),
+                }
+                for residency, canonical_id in resident
+            ]
+            routed = session.execute(
+                select(RoutingCandidate, RoutingDecision)
+                .join(RoutingDecision, RoutingDecision.id == RoutingCandidate.decision_id)
+                .where(RoutingCandidate.adapter_id == adapter_id)
+                .order_by(RoutingDecision.requested_at.desc())
+                .limit(route_limit)
+            ).all()
+            entry["routes"] = [
+                {
+                    "decision_id": decision.id,
+                    "job_id": decision.job_id,
+                    "task_profile_id": decision.task_profile_id,
+                    "requested_at": to_rfc3339(decision.requested_at),
+                    "rank": candidate.rank,
+                    "rejected": bool(candidate.rejected),
+                    "rejection_reason": candidate.rejection_reason,
+                    "selected": decision.selected_adapter_id == adapter_id
+                    and decision.selected_model_id == candidate.model_id,
+                }
+                for candidate, decision in routed
+            ]
+    return {"enabled": True, "note": None, **document, "adapters": entries}

@@ -790,6 +790,30 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/adapters": {
+      "get": {
+        "description": "Every adapter the directory describes, the providers holding it, residency and routes.",
+        "operationId": "get_adapters_api_v1_adapters_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Adapters Api V1 Adapters Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The adapter registry",
+        "tags": [
+          "adapters"
+        ]
+      }
+    },
     "/api/v1/evidence": {
       "get": {
         "description": "Return imported evidence as a collection of SetSpec envelopes (ADR-0025 \u00a72).\n\nArgs:\n    request: The incoming request.\n    capability: Exact capability ID.\n    model: Model canonical ID.\n    match_state: One of ``bound``, ``unmatched``, ``ambiguous_name_only``.\n    min_confidence: Confidence floor.\n    stale: Stale records only, or fresh only.\n    limit: Page size.\n    cursor: The previous page's ``next_cursor``.\n\nReturns:\n    ``{\"items\": [...], \"page\": {...}, \"summary\": {...}}``. ``items`` are\n    ``capability.evidence`` envelopes; ``summary`` is the store overview the page and the\n    routing explanation share.\n\nRaises:\n    ValidationError: ``match_state`` is not one of the three.",

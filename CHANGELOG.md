@@ -9,6 +9,15 @@ packaging and release standards §3.
 
 ### Added
 
+- **`GET /api/v1/adapters`** (`read`; api.md §2): every adapter the `[adapters] directory`
+  describes — its manifest facts, availability, the registrations holding it now or after a
+  restart — with its registry row id, each device where a resident base last served it, and the
+  20 newest routing candidates that named it (the decision, the rank or the rejection code, and
+  whether it was selected). A row the directory no longer describes is listed with
+  `in_directory: false`; with the directory unset the answer is `enabled: false` and a note naming
+  the key. The adapter view the CLI's `adapters list` gives, for a caller that can only reach the
+  API: WeightRoomGym's LoadCoach tab (row WP2). Additive inside `/api/v1`.
+
 - **MirrorWall 0.3 adopted on the pages that want it** (row WM2, `apps/weightroom/design.md`
   §6): the job and model lists render dense; the System page shows each health component with
   the suite's status dot beside its own word; the telemetry bar carries inline meters on CPU,
