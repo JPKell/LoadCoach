@@ -2,6 +2,7 @@
   "application": "loadcoach",
   "config_only": [
     "adapters.directory",
+    "console.url",
     "evidence.accept_schema_majors",
     "evidence.import_interval_hours",
     "execution.attempt_backoff_seconds",
@@ -65,6 +66,23 @@
           }
         },
         "title": "AdaptersSettings",
+        "type": "object"
+      },
+      "ConsoleSettings": {
+        "additionalProperties": false,
+        "description": "Where WeightRoomGym is, when one fronts this application (row WM2).\n\nSet, the top bar gains the suite's tab strip: WeightRoomGym itself and the peer applications\nthrough it (``<url>/apps/<name>``). Unset \u2014 the default \u2014 nothing is rendered: an\napplication knows only its own port, and a strip of loopback links another machine cannot\nreach would be a strip of dead links.",
+        "properties": {
+          "url": {
+            "default": "",
+            "description": "WeightRoomGym's base URL (https://<host>:8769); empty renders no application tab strip.",
+            "examples": [
+              "https://jordan-main.local:8769"
+            ],
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "title": "ConsoleSettings",
         "type": "object"
       },
       "EvidenceSettings": {
@@ -1087,6 +1105,9 @@
       "adapters": {
         "$ref": "#/$defs/AdaptersSettings"
       },
+      "console": {
+        "$ref": "#/$defs/ConsoleSettings"
+      },
       "evidence": {
         "$ref": "#/$defs/EvidenceSettings"
       },
@@ -1200,6 +1221,7 @@
   ],
   "sources": {
     "adapters.directory": "default",
+    "console.url": "default",
     "evidence.accept_schema_majors": "default",
     "evidence.allowed_source_hosts": "default",
     "evidence.freeweight_api_key_env": "default",

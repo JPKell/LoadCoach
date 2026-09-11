@@ -7,6 +7,19 @@ packaging and release standards §3.
 
 ## [Unreleased]
 
+### Added
+
+- **MirrorWall 0.3 adopted on the pages that want it** (row WM2, `apps/weightroom/design.md`
+  §6): the job and model lists render dense; the System page shows each health component with
+  the suite's status dot beside its own word; the telemetry bar carries inline meters on CPU,
+  RAM, GPU and VRAM; the job page gains MirrorWall's bounded, pausable log pane, fed by the new
+  `GET /jobs/{job_id}/log` — the same event source as `/api/v1/jobs/{job_id}/stream`, rendered
+  as `log` frames (tokens skipped) and closed with `log.closed` on the terminal event; and the
+  top bar gains the suite's tab strip — WeightRoomGym and the peer applications through it — when
+  the new `[console] url` names the console. Unset, the strip is absent and the masthead is
+  byte-for-byte what it was. Every page now extends the application's own `base.html` over
+  MirrorWall's. htmx loads on the job page only (ADR-0128). `mirrorwall>=0.3.1,<0.4`.
+
 ## [1.5.0] — 2026-09-10
 
 ### Added

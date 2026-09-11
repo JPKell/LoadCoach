@@ -1,4 +1,4 @@
-{% extends "mirrorwall/base.html" %}
+{% extends "base.html" %}
 {% from "mirrorwall/components.html" import badge, empty_state, pagination, select, table %}
 {% block title %}Jobs — LoadCoach{% endblock %}
 {% block content %}
@@ -39,7 +39,7 @@
   job.created_at | timestamp
 ]) %}
 {% endfor %}
-{{ table(columns, rows, caption="Newest first. Every transition is persisted with a reason. Sorting applies to this page only; the full history is one cursor at a time.",
+{{ table(columns, rows, density="dense", caption="Newest first. Every transition is persisted with a reason. Sorting applies to this page only; the full history is one cursor at a time.",
          table_id="jobs", sortable=false, complete=false, row_count=jobs | length) }}
 {{ pagination(previous_href=None, next_href=next_href, summary=(jobs | length) ~ " of the newest jobs shown" ~ (", more follow" if next_href else "")) }}
 {% endif %}

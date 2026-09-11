@@ -50,7 +50,7 @@ from loadcoach.services.telemetry_stream import TelemetrySampler
 from loadcoach.services.worker import build_runtime
 from loadcoach.web.limits import BodySizeLimitMiddleware, SameOriginMiddleware
 from loadcoach.web.rate_limit import RateLimitMiddleware
-from loadcoach.web.rendering import render, templates
+from loadcoach.web.rendering import configure_shell, render, templates
 from loadcoach.web.routes import access as access_routes
 from loadcoach.web.routes import dashboard as dashboard_routes
 from loadcoach.web.routes import evidence as evidence_routes
@@ -362,6 +362,7 @@ def create_app(settings: Settings, *, config_path: Path | None = None) -> FastAP
         lifespan=_lifespan,
     )
     app.state.settings = settings
+    configure_shell(console_url=settings.console.url)
     # The file a provider edit writes (ADR-0117). Resolved here when the caller did not say,
     # which is what a test that builds an app without a file gets.
     app.state.config_path = config_path if config_path is not None else resolve_config_path()

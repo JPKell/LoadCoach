@@ -1,4 +1,4 @@
-{% extends "mirrorwall/base.html" %}
+{% extends "base.html" %}
 {% from "mirrorwall/components.html" import badge, empty_state, table %}
 {% block title %}Models — LoadCoach{% endblock %}
 {% block content %}
@@ -78,7 +78,7 @@ by running one small pinned job on it, which is the same path any job takes.</p>
 ]) %}
 {% endfor %}
 {% endfor %}
-{{ table(columns, rows, caption="Every model discovery has seen, available or not — with each adapter subject under the base it runs on.",
+{{ table(columns, rows, density="dense", caption="Every model discovery has seen, available or not — with each adapter subject under the base it runs on.",
          table_id="models", sortable=true, complete=true, row_count=rows | length) }}
 {% endif %}
 {% endblock %}

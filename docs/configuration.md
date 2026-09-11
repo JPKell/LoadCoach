@@ -178,3 +178,11 @@ Structured-logging behaviour.
 | `logging.level` | `LOADCOACH_LOGGING__LEVEL` | `str` | `'INFO'` | — | no | — | `'INFO'` | Log verbosity. |
 | `logging.format` | `LOADCOACH_LOGGING__FORMAT` | `'text' \| 'json' \| 'auto'` | `'auto'` | — | no | — | `'auto'` | text, json, or auto (text on a TTY, json otherwise). |
 | `logging.include_content` | `LOADCOACH_LOGGING__INCLUDE_CONTENT` | `bool` | `False` | — | no | **config-only:** Logs full prompts and responses when true. | `False` | Log full prompts and responses. Off by default: only hashes and lengths are logged. |
+
+## `[console]`
+
+Where WeightRoomGym is, when one fronts this application (row WM2).
+
+| Key | Environment variable | Type | Default | Range | Runtime-changeable | Security | Example | Description |
+|---|---|---|---|---|---|---|---|---|
+| `console.url` | `LOADCOACH_CONSOLE__URL` | `str` | `''` | — | no | — | `'https://jordan-main.local:8769'` | WeightRoomGym's base URL (https://<host>:8769); empty renders no application tab strip. |

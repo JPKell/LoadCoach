@@ -14,7 +14,7 @@ operator UI (dashboard, jobs, live queue, models, reliability, system, settings)
 a LAN bind needs — scopes checked at the route and in the service, per-token rate limits,
 per-source queue caps, CSRF, Host validation, body limits, content retention.
 
-Every runtime dependency resolves from PyPI (`weightsdb>=0.2,<0.3`, `mirrorwall>=0.2.2,<0.3`);
+Every runtime dependency resolves from PyPI (`weightsdb>=0.2,<0.3`, `mirrorwall>=0.3.1,<0.4`);
 `pip install loadcoach` resolves entirely from the index, `requirements/ci.lock` is hash-pinned
 against it, and every CI job installs from that lock.
 
@@ -58,7 +58,7 @@ Declared version ranges from `pyproject.toml` — kept from drifting by
 | `modelrack` | `>=0.8,<0.9` |
 | `sweatmeter` | `>=0.4,<0.5` |
 | `weightsdb` | `>=0.2,<0.3` |
-| `mirrorwall` | `>=0.2.2,<0.3` |
+| `mirrorwall` | `>=0.3.1,<0.4` |
 
 ## Documentation
 

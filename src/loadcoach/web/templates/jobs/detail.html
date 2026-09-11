@@ -1,5 +1,5 @@
-{% extends "mirrorwall/base.html" %}
-{% from "mirrorwall/components.html" import empty_state, kv_list, table %}
+{% extends "base.html" %}
+{% from "mirrorwall/components.html" import empty_state, kv_list, log_pane, table %}
 {% block title %}Job {{ job.job_id }} — LoadCoach{% endblock %}
 {% block content %}
 <h2>Job</h2>
@@ -79,6 +79,11 @@ before the sweep keeps the text.</p>
 {% else %}
 {{ empty_state("No caller has given feedback on this job. POST /api/v1/jobs/" ~ job.job_id ~ "/feedback, or `loadcoach job feedback " ~ job.job_id ~ " --accepted`.") }}
 {% endif %}
+
+<h3>Live</h3>
+{#- MirrorWall 0.3's log pane (row WM2): the job's own event stream as log frames, bounded and
+    pausable; it closes on the terminal event. The table below is the persisted history. -#}
+{{ log_pane("job-log", stream_url="/jobs/" ~ job.job_id ~ "/log", label="Events, live") }}
 
 <h3>Events</h3>
 {% set columns = [{"label": "#", "numeric": true}, {"label": "When"}, {"label": "Event"}, {"label": "Message"}] %}

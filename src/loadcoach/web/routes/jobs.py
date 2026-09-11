@@ -15,7 +15,14 @@ from typing import Any
 
 from fastapi import APIRouter, Query, Request, Response, status
 from fastapi.responses import HTMLResponse
-from mirrorwall import clamp_limit, paginated_response, sse_response
+from mirrorwall import (
+    Event,
+    clamp_limit,
+    log_line,
+    log_pane_response,
+    paginated_response,
+    sse_response,
+)
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from starlette.responses import StreamingResponse
@@ -198,6 +205,47 @@ async def get_job_stream(
         # This stream carries live tokens too, so it gets the same 2 ms poll as
         # /generate/stream (F12/M5C-12) — see the comment there for the measurement.
         poll_interval_seconds=0.002,
+        terminal_events=_STREAM_TERMINAL,
+    )
+
+
+def _log_frame_line(event: Event) -> str | None:
+    """One job event as a ``log_pane`` line; tokens are the reply, not the log, and are skipped."""
+    if event.type == "token":
+        return None
+    payload = dict(event.payload)
+    level = "info"
+    if event.type in ("error", "job.failed") or payload.get("error"):
+        level = "error"
+    elif event.type in ("job.cancelled", "job.deferred", "job.retried"):
+        level = "warning"
+    text = event.type
+    message = payload.get("message")
+    if isinstance(message, str) and message:
+        text += f" — {message}"
+    return log_line(text, level=level)
+
+
+@ui_router.get("/jobs/{job_id}/log", include_in_schema=False)
+async def job_log(request: Request, principal: CurrentPrincipal, job_id: str) -> StreamingResponse:
+    """The job's events as a MirrorWall ``log_pane`` stream (row WM2).
+
+    The same source and loop as ``/api/v1/jobs/{job_id}/stream``, rendered as ``log`` frames
+    the pane swaps in, closed with ``log.closed`` after the terminal event; the enveloped stream
+    stays the API.
+    """
+    authorize(principal, "read")
+    import anyio
+
+    app = request.app
+    await anyio.to_thread.run_sync(get_job, app.state.database, job_id)
+    return log_pane_response(
+        app.state.event_sink.source(app.state.database, job_id),
+        stream_id=job_id,
+        last_event_id=request.headers.get("last-event-id"),
+        render_line=_log_frame_line,
+        generator=GENERATOR,
+        heartbeat_seconds=15.0,
         terminal_events=_STREAM_TERMINAL,
     )
 
@@ -408,5 +456,7 @@ def job_page(request: Request, principal: CurrentPrincipal, job_id: str) -> HTML
             events=events,
             explanation=explanation,
             narrative=None if explanation is None else narrate(explanation),
+            # htmx on this page only (ADR-0128): the log pane's SSE region is the one swap.
+            mirrorwall={"htmx": True},
         )
     )
