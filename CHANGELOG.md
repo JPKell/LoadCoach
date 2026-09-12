@@ -29,6 +29,19 @@ packaging and release standards §3.
   byte-for-byte what it was. Every page now extends the application's own `base.html` over
   MirrorWall's. htmx loads on the job page only (ADR-0128). `mirrorwall>=0.3.1,<0.4`.
 
+### Fixed
+
+- **A stop no longer waits for a live stream for ever** (row WPF4, `WP6_HANDOFF.md` finding 6):
+  `serve` bounds uvicorn's graceful shutdown at 5 seconds. Uvicorn's default is to wait until every
+  open connection closes, and LoadCoach's SSE streams — the Queue page, the telemetry bar, a job's
+  log pane, and WeightRoomGym's proxies of all three — end only when their client goes away, so a
+  `systemctl --user stop loadcoach.service` with any of them connected sat in `stop-sigterm` until
+  systemd's 90 s timeout and was `SIGKILL`ed, losing the shutdown entirely: the queue runtime's
+  threads, the provider handles and the database handle were never closed. The stop now ends by
+  `SIGTERM` — measured at 15.1 s with a stream open *and* a job executing, against 90 s before —
+  and runs the teardown. A cancelled stream's client reconnects and replays from its
+  `Last-Event-ID`; `loadcoach queue drain` is still how to finish in-flight work before stopping.
+
 ## [1.5.0] — 2026-09-10
 
 ### Added
