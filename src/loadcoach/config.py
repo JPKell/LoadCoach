@@ -378,6 +378,18 @@ class ProviderRegistrationSettings(BaseModel):
         description="Which provider adapter serves this registration.",
         examples=["ollama", "llamacpp", "fake"],
     )
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether this registration is registered at all. A disabled registration keeps its "
+            "block in the file — nothing about it is lost or has to be retyped — and is skipped "
+            "by the registry: no handle is built for it, discovery never lists it, routing "
+            "cannot reach it, and the models it last served answer "
+            "`unavailable_reason = 'provider_disabled'`. Disabling every registration is "
+            "refused: an application with no provider registers nothing and serves nothing."
+        ),
+        examples=[True],
+    )
     base_url: str = Field(
         default="",
         description="The provider's API endpoint, where its kind takes one.",
@@ -461,6 +473,24 @@ class ProviderRegistrationSettings(BaseModel):
         return self
 
 
+def _registration_valued(schema: dict[str, Any]) -> None:
+    """Say in the JSON schema that an extra key under ``[providers]`` is a registration table.
+
+    ``extra="allow"`` alone emits ``additionalProperties: true``, which is less than the truth:
+    :meth:`ProvidersSettings._collect_registrations` refuses an extra that is not a registration
+    table, so every extra key **is** a :class:`ProviderRegistrationSettings`. A generated settings
+    form reading ``config schema --json`` (ADR-0127) needs that: without it, an operator's
+    ``[providers.local]`` keys are types the document cannot resolve and the form has to show them
+    raw. The reference is taken from the ``registrations`` field's own schema rather than written
+    out, so it cannot name a definition this document does not carry.
+
+    Args:
+        schema: The generated schema of this model; mutated in place, as pydantic's
+            ``json_schema_extra`` callable contract expects.
+    """
+    schema["additionalProperties"] = schema["properties"]["registrations"]["additionalProperties"]
+
+
 class ProvidersSettings(BaseModel):
     """Cross-provider policy, plus the ``[providers.<name>]`` registrations themselves.
 
@@ -473,7 +503,7 @@ class ProvidersSettings(BaseModel):
     ``[providers] allow_remote`` share one TOML table, and pydantic sees both in one mapping.
     """
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", json_schema_extra=_registration_valued)
 
     allow_remote: bool = Field(
         default=False,

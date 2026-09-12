@@ -9,6 +9,23 @@ packaging and release standards §3.
 
 ### Added
 
+- **`[providers.<name>] enabled`** (default `true`, row WX9): a registration an operator parks
+  keeps its block in the configuration file and is skipped by the registry — no provider handle
+  is built for it, discovery never lists it, routing cannot reach it, and every model it last
+  served answers `available = false` with `unavailable_reason = "provider_disabled"`. Re-enabling
+  brings them back on the next discovery pass with no other action. Writable through
+  `PUT /providers/{name}` and the Providers page; disabling the last enabled registration is
+  refused, as removing the last registration already was, because an application with no
+  registered provider serves nothing.
+
+### Fixed
+
+- **`config schema --json` now types an operator's `[providers.<name>]` keys.** `extra="allow"`
+  emitted `additionalProperties: true` for `[providers]`, which is less than the truth — the
+  model refuses an extra that is not a registration table — so a form generated from the document
+  (ADR-0127) could not resolve `providers.local.base_url` and had to show it raw. The schema now
+  carries the registration reference the `registrations` field already declares.
+
 - **`GET /api/v1/adapters`** (`read`; api.md §2): every adapter the `[adapters] directory`
   describes — its manifest facts, availability, the registrations holding it now or after a
   restart — with its registry row id, each device where a resident base last served it, and the

@@ -111,3 +111,40 @@ def test_an_environment_variable_is_reported_as_shadowing(
     settings = load_settings(config_path=config_path).settings
     views = {view.name: view for view in describe_registrations(settings)}
     assert views["ollama"].shadowed_by == "LOADCOACH_PROVIDERS__OLLAMA__BASE_URL"
+
+
+# --- `enabled` (row WX9) ----------------------------------------------------------------------
+
+
+def test_enabled_is_writable_and_reported(config_path: Path) -> None:
+    save_registration(config_path, "workstation", {"kind": "ollama"})
+    save_registration(config_path, "workstation", {"enabled": False})
+
+    settings = load_settings(config_path=config_path).settings
+    views = {view.name: view for view in describe_registrations(settings)}
+    assert views["workstation"].enabled is False
+    assert views["workstation"].as_json()["enabled"] is False
+    assert views["ollama"].enabled is True
+    assert "workstation" in config_path.read_text(encoding="utf-8")
+
+
+def test_disabling_the_last_enabled_registration_is_refused_and_writes_nothing(
+    config_path: Path,
+) -> None:
+    """The checkbox route into `delete_registration`'s failure mode, refused the same way."""
+    before = config_path.read_text(encoding="utf-8")
+
+    with pytest.raises(ValidationError) as raised:
+        save_registration(config_path, "ollama", {"enabled": False})
+
+    assert raised.value.details["field"] == "enabled"
+    assert config_path.read_text(encoding="utf-8") == before
+
+
+def test_one_of_two_may_be_disabled(config_path: Path) -> None:
+    save_registration(config_path, "workstation", {"kind": "ollama"})
+    save_registration(config_path, "ollama", {"enabled": False})
+
+    settings = load_settings(config_path=config_path).settings
+    views = {view.name: view for view in describe_registrations(settings)}
+    assert (views["ollama"].enabled, views["workstation"].enabled) == (False, True)

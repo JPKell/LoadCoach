@@ -12,7 +12,11 @@ from baseaicore import ConfigurationError
 from modelrack.testing import DEFAULT_MODEL, FakeProvider
 
 from loadcoach.config import FakeProviderSettings, ProviderSettings, Settings
-from loadcoach.infrastructure.providers.factory import build_provider, build_registrations
+from loadcoach.infrastructure.providers.factory import (
+    build_provider,
+    build_registrations,
+    disabled_registration_names,
+)
 
 
 def test_the_default_fake_model_is_small_and_not_named_8b() -> None:
@@ -170,3 +174,67 @@ def test_a_named_fake_block_carries_its_own_model_overrides() -> None:
     assert isinstance(registration.provider, FakeProvider)
     (model,) = registration.provider.script.models
     assert model.size_bytes == DEFAULT_MODEL.size_bytes
+
+
+# --- `[providers.<name>] enabled` (row WX9) ---------------------------------------------------
+
+
+def test_a_disabled_block_is_kept_in_the_configuration_and_out_of_the_registry() -> None:
+    """Disabling is a registry fact, not a deletion: the block is still configured."""
+    settings = Settings.model_validate(
+        {
+            "providers": {
+                "keep": {"kind": "fake"},
+                "parked": {"kind": "ollama", "base_url": "http://127.0.0.1:11434"},
+            }
+        }
+    )
+    settings.providers.registrations["parked"].enabled = False
+
+    registrations = build_registrations(settings)
+
+    assert [one.name for one in registrations] == ["keep"]
+    assert set(settings.providers.registrations) == {"keep", "parked"}
+    assert disabled_registration_names(settings) == ("parked",)
+
+
+def test_enabled_defaults_to_true_so_an_existing_file_registers_exactly_as_before() -> None:
+    settings = Settings.model_validate({"providers": {"one": {"kind": "fake"}}})
+
+    assert settings.providers.registrations["one"].enabled is True
+    assert [one.name for one in build_registrations(settings)] == ["one"]
+    assert disabled_registration_names(settings) == ()
+
+
+def test_disabling_every_registration_is_refused_rather_than_registering_nothing() -> None:
+    settings = Settings.model_validate(
+        {"providers": {"a": {"kind": "fake"}, "b": {"kind": "fake"}}}
+    )
+    for one in settings.providers.registrations.values():
+        one.enabled = False
+
+    with pytest.raises(ConfigurationError) as raised:
+        build_registrations(settings)
+
+    assert raised.value.details["disabled"] == ["a", "b"]
+
+
+def test_a_singular_block_has_no_enabled_key_and_no_disabled_names() -> None:
+    """ADR-0077 rule 1: the singular block is one registration, and nothing disables it."""
+    settings = Settings.model_validate({"provider": {"kind": "fake"}})
+
+    assert disabled_registration_names(settings) == ()
+    assert [one.name for one in build_registrations(settings)] == ["fake"]
+
+
+def test_the_schema_types_an_extra_key_under_providers_as_a_registration_table() -> None:
+    """``extra="allow"`` alone says ``additionalProperties: true``, which is less than the truth.
+
+    WeightRoomGym's generated settings form resolves `[providers.<name>]` leaves through this
+    (ADR-0127); without it an operator's registration keys are types no reader can resolve.
+    """
+    schema = Settings.model_json_schema()
+    extra = schema["$defs"]["ProvidersSettings"]["additionalProperties"]
+
+    assert extra == {"$ref": "#/$defs/ProviderRegistrationSettings"}
+    assert "enabled" in schema["$defs"]["ProviderRegistrationSettings"]["properties"]

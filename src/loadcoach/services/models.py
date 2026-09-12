@@ -60,8 +60,8 @@ class DiscoveryOutcome:
     Attributes:
         added: Rows this pass created.
         updated: Rows this pass refreshed.
-        unavailable: Rows this pass retired, having not been reported by a registration that
-            answered.
+        unavailable: Rows this pass retired — not reported by a registration that answered, or
+            served by a registration this configuration disables.
         total: Descriptors read, across every registration that answered.
         checked_at: When.
         unreachable: The names of registrations that could not be listed. Empty on a clean pass;
@@ -218,6 +218,7 @@ def discover_models(
     providers: Provider | Sequence[ProviderRegistration],
     *,
     now: datetime,
+    disabled_provider_names: Sequence[str] = (),
     principal: Principal | None = None,
 ) -> DiscoveryOutcome:
     """Run one discovery pass over every registered provider and persist what they serve.
@@ -238,6 +239,13 @@ def discover_models(
             :class:`~modelrack.provider.Provider` for a caller that holds only one — it is
             discovered under the empty registration name, which is what an unnamed provider is.
         now: The instant to record every upsert against. Injected for deterministic tests.
+        disabled_provider_names: Registrations this configuration disables
+            (:func:`~loadcoach.infrastructure.providers.factory.disabled_registration_names`).
+            They are not in ``providers`` — that is what disabling means — so this pass would
+            otherwise leave their models available for ever, unreachable and claiming to be fine.
+            Every model last served by one of these names is retired with
+            ``unavailable_reason = "provider_disabled"``, and re-enabling the block brings them
+            back on the next pass with no other action.
         principal: Who asks. ``admin`` is required (M5-17's rule — the scope is checked in the
             service as well as at the route; F8/M5C-8 closed the one writer that skipped it);
             ``None`` is an internal call with no request behind it (startup, a scheduled
@@ -302,7 +310,13 @@ def discover_models(
                     updated += 1
 
         unavailable = 0
+        disabled = frozenset(disabled_provider_names)
         for model in session.query(Model).filter_by(available=True).all():
+            if model.provider_name in disabled:
+                model.available = False
+                model.unavailable_reason = "provider_disabled"
+                unavailable += 1
+                continue
             if model.canonical_id in seen_canonical_ids:
                 continue
             # Only a registration that answered can retire its own models. A row served by a
@@ -594,6 +608,7 @@ def try_discover_models(
     providers: Provider | Sequence[ProviderRegistration],
     *,
     now: datetime,
+    disabled_provider_names: Sequence[str] = (),
 ) -> DiscoveryOutcome | None:
     """Run :func:`discover_models`, returning ``None`` instead of raising on a provider failure.
 
@@ -601,7 +616,9 @@ def try_discover_models(
     because the provider is unreachable — spec §5: LoadCoach starts and serves with no provider.
     """
     try:
-        return discover_models(database, providers, now=now)
+        return discover_models(
+            database, providers, now=now, disabled_provider_names=disabled_provider_names
+        )
     except ProviderError:
         return None
 

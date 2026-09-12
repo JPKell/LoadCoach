@@ -21,7 +21,10 @@ from sqlalchemy import func, select
 
 from loadcoach.config import LOOPBACK_HOSTS, InsecureBindingError, LoadedSettings, load_settings
 from loadcoach.infrastructure.db.models import ApiToken
-from loadcoach.infrastructure.providers.factory import build_registrations
+from loadcoach.infrastructure.providers.factory import (
+    build_registrations,
+    disabled_registration_names,
+)
 from loadcoach.observability.logging import configure_logging
 from loadcoach.services.adapters import sync_adapters
 from loadcoach.services.database import Database, ensure_ready
@@ -150,7 +153,12 @@ def bootstrap() -> Application:
         # in the first second of this process already sees the subjects the operator configured.
         # A no-op when `[adapters] directory` is empty, which is the default.
         sync_adapters(database, loaded.settings, now=datetime.now(UTC))
-        try_discover_models(database, registrations, now=datetime.now(UTC))
+        try_discover_models(
+            database,
+            registrations,
+            now=datetime.now(UTC),
+            disabled_provider_names=disabled_registration_names(loaded.settings),
+        )
         # After discovery: a manual score names a model by canonical_id and is skipped, not an
         # error, if that model has not been discovered yet.
         import_manual_capability_scores(database, now=datetime.now(UTC))

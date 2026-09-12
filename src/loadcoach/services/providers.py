@@ -43,6 +43,7 @@ __all__ = [
 
 WRITABLE_FIELDS: Final[tuple[str, ...]] = (
     "kind",
+    "enabled",
     "base_url",
     "timeout_seconds",
     "remote",
@@ -70,6 +71,7 @@ class RegistrationView:
 
     name: str
     kind: str
+    enabled: bool
     base_url: str
     timeout_seconds: float
     remote: bool
@@ -83,6 +85,7 @@ class RegistrationView:
         return {
             "name": self.name,
             "kind": self.kind,
+            "enabled": self.enabled,
             "base_url": self.base_url,
             "timeout_seconds": self.timeout_seconds,
             "remote": self.remote,
@@ -130,6 +133,7 @@ def describe_registrations(settings: Settings) -> list[RegistrationView]:
         RegistrationView(
             name=name,
             kind=registration.kind,
+            enabled=registration.enabled,
             base_url=registration.base_url,
             timeout_seconds=registration.timeout_seconds,
             remote=registration.remote,
@@ -225,6 +229,29 @@ def _write(config_path: Path, base_digest: str | None, edit: Any) -> None:
     _validated(config_path, document)
 
 
+def _refuse_disabling_the_last(providers: Any) -> None:
+    """Refuse a ``[providers]`` table in which no registration is left enabled.
+
+    The same failure mode as deleting the last registration, reached by a checkbox instead of a
+    button: :func:`~loadcoach.infrastructure.providers.factory.build_registrations` refuses a
+    configuration that registers nothing, so writing one would leave a file the next start will
+    not load — and would do it from a browser, with no path back through the browser.
+
+    Args:
+        providers: The ``[providers]`` table of the candidate document.
+
+    Raises:
+        ValidationError: Every registration in the table sets ``enabled = false``.
+    """
+    names = [key for key in providers if isinstance(providers[key], dict)]
+    if names and not any(providers[name].get("enabled", True) for name in names):
+        message = (
+            "that would leave every provider registration disabled, and an application with no "
+            "registered provider serves nothing. Enable another registration first."
+        )
+        raise ValidationError(message, details={"field": "enabled", "registrations": names})
+
+
 def save_registration(
     config_path: Path,
     name: str,
@@ -287,6 +314,7 @@ def save_registration(
                 table.pop(field_name, None)
                 continue
             table[field_name] = value
+        _refuse_disabling_the_last(providers)
 
     _write(config_path, base_digest, _edit)
 
