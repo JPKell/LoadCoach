@@ -33,6 +33,23 @@ def test_health_json_flag_produces_valid_json() -> None:
     assert "components" in payload
 
 
+def test_serve_bounds_uvicorn_s_graceful_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Row WPF4: ``serve`` hands uvicorn a stop bound, so an open SSE stream cannot hold it open.
+
+    Uvicorn's default is to wait for ever, and LoadCoach's streams never end on their own; the stop
+    then outlives systemd's ``TimeoutStopSec`` and the unit is ``SIGKILL``ed. ``uvicorn.run`` itself
+    is never called for real here — it blocks — so this asserts what ``serve`` hands it; the stop
+    that results is measured over a real socket in ``tests/e2e/test_graceful_stop.py``.
+    """
+    from loadcoach.cli.commands.system import SHUTDOWN_GRACE_SECONDS
+
+    passed: dict[str, object] = {}
+    monkeypatch.setattr("uvicorn.run", lambda target, **kwargs: passed.update(kwargs))
+    result = runner.invoke(app, ["serve", "--host", "127.0.0.1", "--port", "18771"])
+    assert result.exit_code == 0, result.output
+    assert passed["timeout_graceful_shutdown"] == SHUTDOWN_GRACE_SECONDS
+
+
 def test_version_prints_application_name() -> None:
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0

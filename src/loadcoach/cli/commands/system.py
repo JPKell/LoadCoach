@@ -9,11 +9,30 @@ is only reached once that command actually runs.
 from __future__ import annotations
 
 import json
-from typing import Annotated
+from typing import Annotated, Final
 
 import typer
 
-__all__ = ["doctor", "health", "print_version", "serve", "version"]
+__all__ = ["SHUTDOWN_GRACE_SECONDS", "doctor", "health", "print_version", "serve", "version"]
+
+SHUTDOWN_GRACE_SECONDS: Final = 5
+"""How long a stop waits for open connections before they are cancelled.
+
+Uvicorn's default is to wait for ever, and LoadCoach serves open-ended SSE streams — the Queue
+page, the telemetry bar, a job's log pane, and the console's proxies of all three — which never
+end on their own. So an unbounded wait means a ``systemctl stop`` cannot finish while any of them
+is connected: at row WP6 the unit sat in ``stop-sigterm`` until systemd's ``TimeoutStopSec``
+(90 s) and was ``SIGKILL``ed, which loses the lifespan's teardown (row WPF4). Bounding the wait
+makes the stop end on the ``SIGTERM`` systemd sent — uvicorn restores the default disposition and
+re-raises it, which systemd counts as a clean stop — and run the teardown first, so the queue
+runtime's threads, the provider handles and the database handle all close.
+
+Five seconds because it is only ever spent on a connection that has not finished: an ordinary
+request completes in milliseconds, and a stream is cancelled rather than waited out. A client on
+a cancelled stream sees its connection close and reconnects, replaying from ``Last-Event-ID``;
+work in flight is not waited for here either — ``loadcoach queue drain`` is what finishes that
+first, and a job still executing is recovered on the next start (queue §10).
+"""
 
 
 def serve(
@@ -57,6 +76,7 @@ def serve(
         host=loaded.settings.server.host,
         port=loaded.settings.server.port,
         log_config=None,
+        timeout_graceful_shutdown=SHUTDOWN_GRACE_SECONDS,
     )
 
 

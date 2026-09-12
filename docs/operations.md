@@ -48,6 +48,13 @@ recovered on the next start: leases are reaped, idempotent work is re-queued, no
 is failed explicitly with `WORKER_LOST`, and nothing is duplicated (queue §10). The recovery summary
 is logged and shown on the Queue page.
 
+A stop waits **5 seconds** for open connections and then cancels them, so a live page — the Queue
+page, the telemetry bar, a job's log pane, or WeightRoomGym's proxy of any of them — cannot hold the
+process open until systemd's stop timeout kills it. A cancelled stream's client reconnects and
+replays from its `Last-Event-ID`, so it is correct again after one frame. The workers are then given
+up to 10 seconds to finish their current transition; a job still executing after that is recovered
+on the next start. `loadcoach queue drain` is how to let in-flight work finish *before* stopping.
+
 ## Runtime-changeable settings
 
 `PUT /api/v1/settings`, the Settings page, or the table directly: `queue.paused`,
