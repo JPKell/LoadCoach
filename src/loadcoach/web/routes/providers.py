@@ -36,7 +36,12 @@ __all__ = ["router", "ui_router"]
 router = APIRouter(tags=["providers"])
 ui_router = APIRouter(tags=["ui"], include_in_schema=False)
 
-_BOOLEAN_FIELDS = frozenset({"remote"})
+_BOOLEAN_FIELDS = frozenset({"remote", "enabled"})
+"""Keys the page posts as checkboxes: absent means ``false``, which is what an unticked box is.
+
+Both forms on the page therefore carry an ``enabled`` box — a page that omitted it would add
+every new registration disabled.
+"""
 _NUMERIC_FIELDS = frozenset({"timeout_seconds"})
 
 

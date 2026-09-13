@@ -408,10 +408,17 @@ precedence chain, the previous file is kept as `config.toml.bak`, and the runnin
 its provider handles so the change is live without a restart. Nothing else this process read at
 startup is re-read.
 
+`enabled` (default `true`) is one of the writable keys. Writing `false` keeps the block in the
+file and takes the registration out of the registry: no provider handle is built for it,
+discovery never lists it, routing cannot reach it, and every model it last served answers
+`available = false` with `unavailable_reason = "provider_disabled"` on the next discovery pass.
+Writing `true` again brings them back on the pass after it, with no other action.
+
 Refusals: `400 VALIDATION_ERROR` names a key outside the registration — `allow_remote` included,
 because the egress boundary stays config-only — or a value the registration model rejects;
 `409 CONFLICT` means the file changed since `base_digest` was read, and nothing was written; the
-last remaining registration cannot be deleted.
+last remaining registration cannot be deleted, and the last **enabled** registration cannot be
+disabled — both would leave the application with no provider at all.
 
 ## 10. Errors
 

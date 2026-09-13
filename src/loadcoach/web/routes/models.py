@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from loadcoach.domain.authorization import authorize
 from loadcoach.domain.priority import JobClass
 from loadcoach.domain.routing.subject import RuntimeOverrides
+from loadcoach.infrastructure.providers.factory import disabled_registration_names
 from loadcoach.services.models import (
     ModelOverview,
     discover_models,
@@ -136,6 +137,7 @@ def discover(request: Request, principal: CurrentPrincipal) -> dict[str, Any]:
         app.state.database,
         getattr(app.state, "provider_registrations", None) or app.state.provider,
         now=datetime.now(UTC),
+        disabled_provider_names=disabled_registration_names(app.state.settings),
         principal=principal,
     )
     return {

@@ -163,3 +163,41 @@ def test_manual_score_for_a_discovered_model_is_imported(tmp_path: Path) -> None
         assert entry.declared_capabilities
     finally:
         database.close()
+
+
+def test_a_disabled_registrations_models_say_provider_disabled_and_come_back(
+    tmp_path: Path,
+) -> None:
+    """Row WX9: `[providers.<name>] enabled = false` takes the block out of the registry.
+
+    The registration is simply absent from the pass — that is what disabling is — so without
+    naming it the models it last served would stay `available` for ever, unreachable and claiming
+    to be fine.
+    """
+    from loadcoach.infrastructure.providers.factory import ProviderRegistration
+
+    database = _database(tmp_path)
+    try:
+        provider = FakeProvider()
+        registration = ProviderRegistration(
+            name="parked", kind="fake", is_remote=False, provider=provider
+        )
+        discover_models(database, [registration], now=datetime.now(UTC))
+        before = list_registry(database)
+        assert before and all(entry.available for entry in before)
+
+        # Disabled: the registry holds nothing, and the pass is told which names it does not hold.
+        outcome = discover_models(
+            database, [], now=datetime.now(UTC), disabled_provider_names=("parked",)
+        )
+
+        assert outcome.unavailable == len(before)
+        after = list_registry(database)
+        assert len(after) == len(before)
+        assert all(entry.unavailable_reason == "provider_disabled" for entry in after)
+
+        # Re-enabled: the next pass brings them back with no other action.
+        discover_models(database, [registration], now=datetime.now(UTC))
+        assert all(entry.available for entry in list_registry(database))
+    finally:
+        database.close()

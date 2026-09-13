@@ -342,6 +342,15 @@
             "title": "Base Url",
             "type": "string"
           },
+          "enabled": {
+            "default": true,
+            "description": "Whether this registration is registered at all. A disabled registration keeps its block in the file \u2014 nothing about it is lost or has to be retyped \u2014 and is skipped by the registry: no handle is built for it, discovery never lists it, routing cannot reach it, and the models it last served answer `unavailable_reason = 'provider_disabled'`. Disabling every registration is refused: an application with no provider registers nothing and serves nothing.",
+            "examples": [
+              true
+            ],
+            "title": "Enabled",
+            "type": "boolean"
+          },
           "fake": {
             "$ref": "#/$defs/FakeProviderSettings",
             "description": "For kind='fake' only; see ProviderSettings.fake."
@@ -492,7 +501,9 @@
         "type": "object"
       },
       "ProvidersSettings": {
-        "additionalProperties": true,
+        "additionalProperties": {
+          "$ref": "#/$defs/ProviderRegistrationSettings"
+        },
         "description": "Cross-provider policy, plus the ``[providers.<name>]`` registrations themselves.\n\n``allow_remote`` is policy \u2014 may *any* remote provider be routed to at all \u2014 and it is\nevaluated above a registration's own ``remote`` flag: a remote registration in a deployment\nthat disallows remote is configured, visible and never routed to (ADR-0077 rule 4).\n\nEvery other key under ``[providers]`` is a registration, so this model allows extras and\nvalidates them itself rather than forbidding them: ``[providers.local]`` and\n``[providers] allow_remote`` share one TOML table, and pydantic sees both in one mapping.",
         "properties": {
           "allow_remote": {

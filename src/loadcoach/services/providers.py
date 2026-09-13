@@ -43,6 +43,7 @@ __all__ = [
 
 WRITABLE_FIELDS: Final[tuple[str, ...]] = (
     "kind",
+    "enabled",
     "base_url",
     "timeout_seconds",
     "remote",
@@ -70,6 +71,7 @@ class RegistrationView:
 
     name: str
     kind: str
+    enabled: bool
     base_url: str
     timeout_seconds: float
     remote: bool
@@ -83,6 +85,7 @@ class RegistrationView:
         return {
             "name": self.name,
             "kind": self.kind,
+            "enabled": self.enabled,
             "base_url": self.base_url,
             "timeout_seconds": self.timeout_seconds,
             "remote": self.remote,
@@ -130,6 +133,7 @@ def describe_registrations(settings: Settings) -> list[RegistrationView]:
         RegistrationView(
             name=name,
             kind=registration.kind,
+            enabled=registration.enabled,
             base_url=registration.base_url,
             timeout_seconds=registration.timeout_seconds,
             remote=registration.remote,
@@ -225,6 +229,55 @@ def _write(config_path: Path, base_digest: str | None, edit: Any) -> None:
     _validated(config_path, document)
 
 
+def _refuse_a_server_that_cannot_launch(name: str, table: Any) -> None:
+    """Refuse a ``kind = "llamacpp"`` table with no ``model_directory``.
+
+    The factory refuses it too, but it refuses at *registration* — after this module has already
+    written the file, so the write lands, the re-register raises, and the next start refuses a
+    file the browser wrote. Checked here against the **merged** table, so an edit that changes
+    only ``timeout_seconds`` on a registration that already names its directory is untouched.
+
+    Args:
+        name: The registration being written.
+        table: Its table in the candidate document, after this edit.
+
+    Raises:
+        ValidationError: The kind is ``llamacpp`` and the directory is missing or blank.
+    """
+    if str(table.get("kind", "")) != "llamacpp":
+        return
+    if str(table.get("model_directory", "")).strip():
+        return
+    message = (
+        f"providers.{name}.model_directory is required for kind='llamacpp': the server is "
+        "launched over a directory of GGUF weights, and there is no default worth guessing."
+    )
+    raise ValidationError(message, details={"field": "model_directory", "name": name})
+
+
+def _refuse_disabling_the_last(providers: Any) -> None:
+    """Refuse a ``[providers]`` table in which no registration is left enabled.
+
+    The same failure mode as deleting the last registration, reached by a checkbox instead of a
+    button: :func:`~loadcoach.infrastructure.providers.factory.build_registrations` refuses a
+    configuration that registers nothing, so writing one would leave a file the next start will
+    not load — and would do it from a browser, with no path back through the browser.
+
+    Args:
+        providers: The ``[providers]`` table of the candidate document.
+
+    Raises:
+        ValidationError: Every registration in the table sets ``enabled = false``.
+    """
+    names = [key for key in providers if isinstance(providers[key], dict)]
+    if names and not any(providers[name].get("enabled", True) for name in names):
+        message = (
+            "that would leave every provider registration disabled, and an application with no "
+            "registered provider serves nothing. Enable another registration first."
+        )
+        raise ValidationError(message, details={"field": "enabled", "registrations": names})
+
+
 def save_registration(
     config_path: Path,
     name: str,
@@ -287,6 +340,8 @@ def save_registration(
                 table.pop(field_name, None)
                 continue
             table[field_name] = value
+        _refuse_a_server_that_cannot_launch(name, table)
+        _refuse_disabling_the_last(providers)
 
     _write(config_path, base_digest, _edit)
 

@@ -26,6 +26,13 @@ unroutable until that key is changed in the file.</p>
     <p class="field-hint" id="{{ registration.name }}-kind-hint">ollama, llamacpp or fake.</p>
   </div>
   <div class="field">
+    <label for="{{ registration.name }}-enabled"><input type="checkbox" id="{{ registration.name }}-enabled"
+           name="enabled"{% if registration.enabled %} checked{% endif %}> enabled</label>
+    <p class="field-hint">Unticked keeps this block in the file and takes it out of the registry:
+    nothing is discovered through it, routing cannot reach it, and the models it last served read
+    <span class="mono">provider_disabled</span>. The last enabled registration cannot be unticked.</p>
+  </div>
+  <div class="field">
     <label for="{{ registration.name }}-base_url">base_url</label>
     <input type="text" id="{{ registration.name }}-base_url" name="base_url" value="{{ registration.base_url }}"
            aria-describedby="{{ registration.name }}-base_url-hint">
@@ -83,6 +90,9 @@ unroutable until that key is changed in the file.</p>
   </div>
   <div class="field">
     <label for="new-remote"><input type="checkbox" id="new-remote" name="remote"> remote</label>
+  </div>
+  <div class="field">
+    <label for="new-enabled"><input type="checkbox" id="new-enabled" name="enabled" checked> enabled</label>
   </div>
   <button type="submit" name="action" value="save" data-variant="primary">Add registration</button>
 </form>

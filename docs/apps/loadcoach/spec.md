@@ -99,7 +99,9 @@ POST /models/{model_ref}/warm
 file itself, in place and with the operator's comments intact
 ([ADR-0117](../../adr/0117-provider-registrations-are-edited-in-place-in-the-config-file.md)); the
 file stays the source of truth, and `providers.allow_remote` — the egress boundary — stays
-config-only. `POST /models/{model_ref}/enabled` carries an operator's decision that a discovered
+config-only. `enabled` is one of the keys they write: a registration an operator parks stays
+configured and is skipped by the registry, which is what a routing explanation and the model
+registry then report. `POST /models/{model_ref}/enabled` carries an operator's decision that a discovered
 model may not be used, which routing then names as `model_disabled`
 ([ADR-0118](../../adr/0118-a-discovered-model-can-be-disabled.md)).
 
@@ -264,6 +266,11 @@ environment, then CLI, field by field. Principal sections:
               # after its kind, declaring remote = false (ADR-0077). Writing it *and* any
               # [providers.<name>] block is refused at startup, naming both.
 [providers.local]     kind = "ollama"     base_url = "http://127.0.0.1:11434"  remote = false
+                      enabled = true
+              # enabled defaults to true. `enabled = false` keeps the block in the file and takes
+              # it out of the registry: no handle is built, discovery never lists it, routing
+              # cannot reach it, and the models it last served read `provider_disabled`. Disabling
+              # every registration is refused — an application with no provider serves nothing.
 [providers.llama]     kind = "llamacpp"   model_directory = "~/models/llm"     remote = false
               # kind = "llamacpp" launches and supervises its own server, so it takes a directory
               # of GGUF weights rather than a base_url; `model_directory` is required (there is no

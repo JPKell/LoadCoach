@@ -39,6 +39,7 @@ __all__ = [
     "build_provider",
     "build_registrations",
     "close_registrations",
+    "disabled_registration_names",
 ]
 
 logger = logging.getLogger(__name__)
@@ -179,9 +180,12 @@ def build_registrations(settings: Settings) -> tuple[ProviderRegistration, ...]:
 
     The one composition root for providers, plural. A singular ``[provider]`` block yields exactly
     one registration named after its kind, declaring ``remote = false``; named
-    ``[providers.<name>]`` blocks yield one each, in name order so that discovery, ``doctor`` and
-    every explanation list them the same way twice running. A configuration writing both forms
-    never reaches here — :func:`~loadcoach.config.load_settings` refuses it (ADR-0077 rule 3).
+    ``[providers.<name>]`` blocks yield one each **that sets** ``enabled`` (the default), in name
+    order so that discovery, ``doctor`` and every explanation list them the same way twice
+    running. A disabled block stays in the file and is skipped here — that is the whole of what
+    disabling does, and every other refusal follows from the registry not holding it. A
+    configuration writing both forms never reaches here — :func:`~loadcoach.config.load_settings`
+    refuses it (ADR-0077 rule 3).
 
     Args:
         settings: The resolved application configuration.
@@ -197,11 +201,20 @@ def build_registrations(settings: Settings) -> tuple[ProviderRegistration, ...]:
         LoadCoach 1.0's behaviour unchanged.
 
     Raises:
-        ConfigurationError: A registration names an unsupported kind, or a ``fake`` registration
-            sets only some of its four model-shape overrides.
+        ConfigurationError: A registration names an unsupported kind, a ``fake`` registration
+            sets only some of its four model-shape overrides, or **every** named registration is
+            disabled — which would leave this application with no provider at all.
     """
     named = settings.providers.registrations
     if named:
+        enabled = {name: one for name, one in named.items() if one.enabled}
+        if not enabled:
+            raise ConfigurationError(
+                "every [providers.<name>] block sets enabled = false, so this configuration "
+                "registers no provider at all and could serve nothing. Re-enable at least one "
+                f"of {', '.join(sorted(named))}.",
+                details={"field": "providers", "disabled": sorted(named)},
+            )
         built = tuple(
             ProviderRegistration(
                 name=name,
@@ -209,7 +222,7 @@ def build_registrations(settings: Settings) -> tuple[ProviderRegistration, ...]:
                 is_remote=registration.remote,
                 provider=_build_one(registration, field=f"providers.{name}.kind", name=name),
             )
-            for name, registration in sorted(named.items())
+            for name, registration in sorted(enabled.items())
         )
     else:
         singular = settings.provider
@@ -224,6 +237,25 @@ def build_registrations(settings: Settings) -> tuple[ProviderRegistration, ...]:
             ),
         )
     return _offer_adapters(built, settings)
+
+
+def disabled_registration_names(settings: Settings) -> tuple[str, ...]:
+    """The names of the ``[providers.<name>]`` blocks this configuration disables, in name order.
+
+    The complement of what :func:`build_registrations` builds, and the one place that complement
+    is computed: discovery retires the models a disabled registration last served, and it needs
+    the names the registry deliberately does not hold.
+
+    Args:
+        settings: The resolved application configuration.
+
+    Returns:
+        The disabled registration names. Empty for a singular ``[provider]`` block, which has no
+        such key (ADR-0077 rule 1).
+    """
+    return tuple(
+        sorted(name for name, one in settings.providers.registrations.items() if not one.enabled)
+    )
 
 
 def _offer_adapters(
