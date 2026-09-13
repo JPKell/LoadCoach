@@ -20,6 +20,11 @@ packaging and release standards §3.
 
 ### Fixed
 
+- **A `kind = "llamacpp"` registration with no `model_directory` is refused before it lands.** The
+  factory refused it too, but at *registration* — after `PUT /providers/{name}` (or the Providers
+  page) had already written the file, so the write landed, the re-register raised, and the next
+  start refused a file the browser wrote. Checked against the merged table, so an edit that touches
+  only another key on a registration already naming its directory is unaffected.
 - **`config schema --json` now types an operator's `[providers.<name>]` keys.** `extra="allow"`
   emitted `additionalProperties: true` for `[providers]`, which is less than the truth — the
   model refuses an extra that is not a registration table — so a form generated from the document

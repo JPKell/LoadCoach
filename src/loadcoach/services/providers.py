@@ -229,6 +229,32 @@ def _write(config_path: Path, base_digest: str | None, edit: Any) -> None:
     _validated(config_path, document)
 
 
+def _refuse_a_server_that_cannot_launch(name: str, table: Any) -> None:
+    """Refuse a ``kind = "llamacpp"`` table with no ``model_directory``.
+
+    The factory refuses it too, but it refuses at *registration* — after this module has already
+    written the file, so the write lands, the re-register raises, and the next start refuses a
+    file the browser wrote. Checked here against the **merged** table, so an edit that changes
+    only ``timeout_seconds`` on a registration that already names its directory is untouched.
+
+    Args:
+        name: The registration being written.
+        table: Its table in the candidate document, after this edit.
+
+    Raises:
+        ValidationError: The kind is ``llamacpp`` and the directory is missing or blank.
+    """
+    if str(table.get("kind", "")) != "llamacpp":
+        return
+    if str(table.get("model_directory", "")).strip():
+        return
+    message = (
+        f"providers.{name}.model_directory is required for kind='llamacpp': the server is "
+        "launched over a directory of GGUF weights, and there is no default worth guessing."
+    )
+    raise ValidationError(message, details={"field": "model_directory", "name": name})
+
+
 def _refuse_disabling_the_last(providers: Any) -> None:
     """Refuse a ``[providers]`` table in which no registration is left enabled.
 
@@ -314,6 +340,7 @@ def save_registration(
                 table.pop(field_name, None)
                 continue
             table[field_name] = value
+        _refuse_a_server_that_cannot_launch(name, table)
         _refuse_disabling_the_last(providers)
 
     _write(config_path, base_digest, _edit)
